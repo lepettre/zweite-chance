@@ -197,6 +197,113 @@
       ],
       "min_discount_pct": null,
       "max_price": null
+    },
+    {
+      "name": "Varmblixt Donut Smart",
+      "enabled": true,
+      "keywords": [],
+      "exclude": [],
+      "article_numbers": [
+        "706.129.40"
+      ],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Bluetooth",
+      "enabled": true,
+      "keywords": [
+        "Bluetooth"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "324",
+        "421",
+        "245",
+        "325",
+        "146",
+        "289",
+        "328"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Evedal",
+      "enabled": true,
+      "keywords": [
+        "Evedal"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": 40,
+      "max_price": null
+    },
+    {
+      "name": "MÖLNÅS Kühlschrank",
+      "enabled": true,
+      "keywords": [
+        "MÖLNÅS"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "IKEA PS 2026 Nachttisch",
+      "enabled": true,
+      "keywords": [],
+      "exclude": [],
+      "article_numbers": [
+        "606.199.42"
+      ],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Kortlinje Wecker",
+      "enabled": true,
+      "keywords": [
+        "Kortlinje"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "TAGGTOFS Bambus-Papier-Lampe",
+      "enabled": true,
+      "keywords": [
+        "TAGGTOFS"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
     }
   ]
 }
