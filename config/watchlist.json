@@ -1,13 +1,18 @@
 {
-  "_hilfe": "Alle Felder optional. keywords: ein Treffer genuegt (mehrere Woerter in einem Eintrag muessen alle vorkommen). article_numbers mit oder ohne Punkte. stores: Markt-IDs oder Namensteile. conditions: Textteile aus Zustand/Rabattgrund. Gemeldet wird bei neuen, wieder aufgetauchten oder billiger gewordenen Angeboten.",
   "rules": [
     {
       "name": "Beispiel: KALLAX in Hamburg ab 30 %",
       "enabled": false,
-      "keywords": ["kallax"],
-      "exclude": ["einsatz"],
+      "keywords": [
+        "kallax"
+      ],
+      "exclude": [
+        "einsatz"
+      ],
       "article_numbers": [],
-      "stores": ["Hamburg"],
+      "stores": [
+        "Hamburg"
+      ],
       "min_discount_pct": 30,
       "max_price": null,
       "conditions": []
@@ -15,7 +20,183 @@
     {
       "name": "Beispiel: bestimmte Artikelnummer, egal wo",
       "enabled": false,
-      "article_numbers": ["802.758.87"]
+      "article_numbers": [
+        "802.758.87"
+      ]
+    },
+    {
+      "name": "Knivshult",
+      "enabled": true,
+      "keywords": [
+        "Knivshult Schublade"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Kallax grün/rot",
+      "enabled": true,
+      "keywords": [],
+      "exclude": [],
+      "article_numbers": [
+        "206.041.41"
+      ],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Ypperlig",
+      "enabled": true,
+      "keywords": [
+        "Ypperlig"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Frekvens",
+      "enabled": true,
+      "keywords": [
+        "Frekvens"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Vappeby",
+      "enabled": true,
+      "keywords": [
+        "Vappeby"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Stolpa",
+      "enabled": true,
+      "keywords": [
+        "Stolpa"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Mossjön",
+      "enabled": true,
+      "keywords": [
+        "Mossjön"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Ivar",
+      "enabled": true,
+      "keywords": [
+        "Ivar"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Industriell",
+      "enabled": true,
+      "keywords": [
+        "Industriell"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Stockholm Teppich",
+      "enabled": true,
+      "keywords": [
+        "Stockholm Teppich"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "SYMFONISK 505.065.87",
+      "enabled": true,
+      "article_numbers": [
+        "505.065.87"
+      ]
+    },
+    {
+      "name": "Gefrierschrank",
+      "enabled": true,
+      "keywords": [
+        "Gefrierschrank"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
     }
   ]
 }
