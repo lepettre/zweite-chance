@@ -1,0 +1,78 @@
+name: Abruf (stündlich)
+
+on:
+  schedule:
+    - cron: "17 * * * *"        # jede Stunde um :17 (UTC). GitHub kann Laeufe verzoegern.
+  workflow_dispatch:            # manuell: Actions > "Abruf (stündlich)" > Run workflow
+  push:
+    paths: ["inbox/**"]         # Snapshots aus dem Lesezeichen-Skript hier hochladen
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tracker
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Abhängigkeit (Browser-TLS-Profil gegen Bot-Schutz)
+        run: python -m pip install -r requirements.txt
+
+      - name: Tests (Python-Tracker + Browser-Abgleich)
+        run: |
+          python -m unittest discover -s tests -q
+          node tests/test_core.js
+
+      - name: Snapshots aus inbox/ einspielen
+        if: github.event_name == 'push'
+        run: |
+          for f in $(ls inbox/*.json inbox/*.json.gz 2>/dev/null | sort); do
+            echo "::group::$f"
+            if python -m tracker.run --ingest "$f" --no-export; then git rm -q "$f"; else echo "::warning::$f nicht eingespielt"; fi
+            echo "::endgroup::"
+          done
+          python -m tracker.run --export
+
+      - name: Live-Abruf aller Märkte
+        if: github.event_name != 'push'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          EXPORT="--no-export"
+          if [ "$(date -u +%H)" = "03" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then EXPORT=""; fi
+          python -m tracker.run $EXPORT
+
+      - name: Daten committen
+        if: always()
+        run: |
+          git config user.name  "zweite-chance-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A docs/data state inbox 2>/dev/null || true
+          if git diff --cached --quiet; then echo "Keine Änderungen"; exit 0; fi
+          git commit -q -m "Daten $(date -u +%Y-%m-%dT%H:%MZ)"
+          for i in 1 2 3; do git pull -q --rebase && git push -q && break; sleep 5; done
+
+      - name: Rohdaten als Release-Asset sichern (hält das Repo klein)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          files=(out/raw/*.json.gz)
+          [ ${#files[@]} -eq 0 ] && exit 0
+          TAG="raw-$(date -u +%Y-%m)"
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "Rohdaten $(date -u +%Y-%m)" \
+              --notes "Unveränderte API-Antworten jedes Abrufs (gzip-JSON). Nachprüfbarkeit/Reproduktion." --latest=false
+          gh release upload "$TAG" "${files[@]}" --clobber
