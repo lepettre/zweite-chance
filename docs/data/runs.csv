@@ -1,2 +1,3 @@
 ts,source,stores_total,stores_ok,stores_failed,offers_seen,active,new,gone,reappeared,price_change,changed,duration_s,errors
 2026-11-05T13:55:00+00:00,actions,54,54,0,22200,22200,22200,0,0,0,0,390.1,
+2026-11-05T17:02:34+00:00,actions,54,54,0,22206,22346,146,0,0,0,1,377.9,
