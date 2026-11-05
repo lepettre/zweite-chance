@@ -58,7 +58,8 @@ jobs:
         run: |
           git config user.name  "zweite-chance-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A docs/data state inbox 2>/dev/null || true
+          mkdir -p docs/data state inbox
+          git add -A docs/data state inbox
           if git diff --cached --quiet; then echo "Keine Änderungen"; exit 0; fi
           git commit -q -m "Daten $(date -u +%Y-%m-%dT%H:%MZ)"
           for i in 1 2 3; do git pull -q --rebase && git push -q && break; sleep 5; done
