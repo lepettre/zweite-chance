@@ -771,6 +771,480 @@
       "stores": [],
       "min_discount_pct": null,
       "max_price": null
+    },
+    {
+      "name": "Knivshult",
+      "enabled": true,
+      "keywords": [
+        "Knivshult Schublade"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Kallax grün/rot",
+      "enabled": true,
+      "keywords": [],
+      "exclude": [],
+      "article_numbers": [
+        "206.041.41"
+      ],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Ypperlig",
+      "enabled": true,
+      "keywords": [
+        "Ypperlig"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Frekvens",
+      "enabled": true,
+      "keywords": [
+        "Frekvens"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Vappeby",
+      "enabled": true,
+      "keywords": [
+        "Vappeby"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Stolpa",
+      "enabled": true,
+      "keywords": [
+        "Stolpa"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Mossjön",
+      "enabled": true,
+      "keywords": [
+        "Mossjön"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Ivar",
+      "enabled": true,
+      "keywords": [
+        "Ivar"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Industriell",
+      "enabled": true,
+      "keywords": [
+        "Industriell"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Stockholm Teppich",
+      "enabled": true,
+      "keywords": [
+        "Stockholm Teppich"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "SYMFONISK 505.065.87",
+      "enabled": true,
+      "article_numbers": [
+        "505.065.87"
+      ]
+    },
+    {
+      "name": "Gefrierschrank",
+      "enabled": true,
+      "keywords": [
+        "Gefrierschrank"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Varmblixt Donut Smart",
+      "enabled": true,
+      "keywords": [],
+      "exclude": [],
+      "article_numbers": [
+        "706.129.40"
+      ],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Bluetooth",
+      "enabled": true,
+      "keywords": [
+        "Bluetooth"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "324",
+        "421",
+        "245",
+        "325",
+        "146",
+        "289",
+        "328"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Evedal",
+      "enabled": true,
+      "keywords": [
+        "Evedal"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": 40,
+      "max_price": null
+    },
+    {
+      "name": "MÖLNÅS Kühlschrank",
+      "enabled": true,
+      "keywords": [
+        "MÖLNÅS"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "IKEA PS 2026 Nachttisch",
+      "enabled": true,
+      "keywords": [],
+      "exclude": [],
+      "article_numbers": [
+        "606.199.42"
+      ],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Kortlinje Wecker",
+      "enabled": true,
+      "keywords": [
+        "Kortlinje"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "TAGGTOFS Bambus-Papier-Lampe",
+      "enabled": true,
+      "keywords": [
+        "TAGGTOFS"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Stockholm-Decke",
+      "enabled": true,
+      "keywords": [
+        "Stockholm Plaid"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "421",
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Stoftmoln Smart-Lampe warmweiß",
+      "enabled": true,
+      "keywords": [],
+      "exclude": [],
+      "article_numbers": [
+        "304.974.90"
+      ],
+      "conditions": [],
+      "stores": [
+        "421",
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Kungsfors",
+      "enabled": true,
+      "keywords": [
+        "Kungsfors"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "421",
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Botkyrka",
+      "enabled": true,
+      "keywords": [
+        "Botkyrka"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Tonstadt gr. Bücherregal",
+      "enabled": true,
+      "keywords": [],
+      "exclude": [],
+      "article_numbers": [
+        "705.284.61"
+      ],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Stockholm Glas-Kommode",
+      "enabled": true,
+      "keywords": [],
+      "exclude": [],
+      "article_numbers": [
+        "605.866.92"
+      ],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Stockholm gr. Bücherregal",
+      "enabled": true,
+      "keywords": [],
+      "exclude": [],
+      "article_numbers": [
+        "005.866.33"
+      ],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Stockholm Messingtablett",
+      "enabled": true,
+      "keywords": [],
+      "exclude": [],
+      "article_numbers": [
+        "905.924.51"
+      ],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Sinarp Eiche",
+      "enabled": true,
+      "keywords": [
+        "Sinarp Eiche"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "324",
+        "421",
+        "245",
+        "325",
+        "146"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Tonstad Regal",
+      "enabled": true,
+      "keywords": [
+        "Tonstad Regal"
+      ],
+      "exclude": [],
+      "article_numbers": [],
+      "conditions": [],
+      "stores": [
+        "245",
+        "325",
+        "146",
+        "289"
+      ],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "Küchen-Ausziehbrause Majsjön",
+      "enabled": true,
+      "keywords": [],
+      "exclude": [],
+      "article_numbers": [
+        "506.019.14"
+      ],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "IKEA PS 2026 Papierleuchte",
+      "enabled": true,
+      "keywords": [],
+      "exclude": [],
+      "article_numbers": [
+        "IKEA PS 2026"
+      ],
+      "conditions": [],
+      "stores": [],
+      "min_discount_pct": null,
+      "max_price": null
+    },
+    {
+      "name": "STOCKHOLM 2025 205.904.98",
+      "enabled": true,
+      "article_numbers": [
+        "205.904.98"
+      ]
     }
   ]
 }
