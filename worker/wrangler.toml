@@ -1,0 +1,14 @@
+name = "zc-helper"
+main = "worker.mjs"
+compatibility_date = "2025-01-01"
+
+[triggers]
+crons = ["5 * * * *"]
+
+[[kv_namespaces]]
+binding = "WL"
+id = "97306339b34c42a7871cc3da987968aa"
+
+[vars]
+GH_REPO = "lepettre/zweite-chance"
+# Secrets (im Cloudflare-Dashboard): ACCESS_PASSWORD, GH_TOKEN, TG_SECRET, TELEGRAM_CHAT_ID
