@@ -172,34 +172,85 @@
     }
     return a.slice(0, limit).sort(compare);
   }
-  function matches(rule, o) {
-    if (rule.enabled === false) return false;
-    const hay = fold([o.title, o.product_description, o.offer_description].join(" "));
-    const kws = list(rule.keywords).filter(Boolean).map(fold);
+  /** Regel einmal vorbereiten (Normalisierung der Suchbegriffe), dann schnell auf viele Angebote anwenden. */
+  function compileRule(rule) {
+    if (rule.enabled === false) return () => false;
+    const kws = list(rule.keywords).filter(Boolean).map(fold).map((k) => k.split(/\s+/).filter(Boolean));
     const arts = list(rule.article_numbers).filter(Boolean).map(normArticle);
-    if (kws.length || arts.length) {
-      const hk = kws.some((k) => k.split(/\s+/).filter(Boolean).every((p) => hay.includes(p)));
-      const oa = o.article_numbers && o.article_numbers.length ? o.article_numbers : [o.article_number];
-      const ha = arts.some((a) => oa.includes(a));
-      if (!hk && !ha) return false;
-    }
-    if (list(rule.exclude).filter(Boolean).some((x) => hay.includes(fold(x)))) return false;
+    const excl = list(rule.exclude).filter(Boolean).map(fold);
     const stores = list(rule.stores).filter(Boolean).map((s) => fold(String(s)));
-    if (stores.length && !stores.some((s) => s === fold(o.store_id) || fold(o.store).includes(s))) return false;
-    if (rule.min_discount_pct !== null && rule.min_discount_pct !== undefined && rule.min_discount_pct !== "") {
-      if (o.discount_pct === null || o.discount_pct === undefined || o.discount_pct < Number(rule.min_discount_pct)) return false;
-    }
-    if (rule.max_price !== null && rule.max_price !== undefined && rule.max_price !== "") {
-      if (o.price === null || o.price === undefined || o.price > Number(rule.max_price)) return false;
-    }
+    const hasMin = rule.min_discount_pct !== null && rule.min_discount_pct !== undefined && rule.min_discount_pct !== "";
+    const hasMax = rule.max_price !== null && rule.max_price !== undefined && rule.max_price !== "";
+    const min = hasMin ? Number(rule.min_discount_pct) : 0, max = hasMax ? Number(rule.max_price) : 0;
     const conds = list(rule.conditions).filter(Boolean).map(fold);
-    if (conds.length) {
-      const c = fold([o.condition, o.condition_description, o.reason_discount, o.additional_info].join(" "));
-      if (!conds.some((x) => c.includes(x))) return false;
-    }
-    return true;
+    return (o) => {
+      const hay = o._rh || (o._rh = fold([o.title, o.product_description, o.offer_description].join(" ")));
+      if (kws.length || arts.length) {
+        const hk = kws.some((parts) => parts.every((p) => hay.includes(p)));
+        const oa = o.article_numbers && o.article_numbers.length ? o.article_numbers : [o.article_number];
+        if (!hk && !arts.some((a) => oa.includes(a))) return false;
+      }
+      if (excl.some((x) => hay.includes(x))) return false;
+      if (stores.length) {
+        const sid = fold(o.store_id), sn = o._rs || (o._rs = fold(o.store));
+        if (!stores.some((s) => s === sid || sn.includes(s))) return false;
+      }
+      if (hasMin && (o.discount_pct === null || o.discount_pct === undefined || o.discount_pct < min)) return false;
+      if (hasMax && (o.price === null || o.price === undefined || o.price > max)) return false;
+      if (conds.length) {
+        const c = o._rc || (o._rc = fold([o.condition, o.condition_description, o.reason_discount, o.additional_info].join(" ")));
+        if (!conds.some((x) => c.includes(x))) return false;
+      }
+      return true;
+    };
+  }
+  const compiled = new WeakMap();
+  function matches(rule, o) {
+    let f = compiled.get(rule);
+    if (!f) compiled.set(rule, f = compileRule(rule));
+    return f(o);
   }
 
-  const api = { IKEA_PAGE, KNOWN_SLUGS, storeName, storeSlug, offerLink, fold, normArticle, fmtArticle, flatten, merge, plausible, ingestSnapshot, matches, offerKey, ruleKey, dedupeRules, cleanRule, topSorted };
+  /* ---------- Entschluesselung + Entpacken (Gegenstueck zu tracker/crypto.py, tracker/pack.py) ---------- */
+  const ITERATIONS = 250000, SALT = new TextEncoder().encode("zc-site-v1");
+  const toB64 = (u8) => { let s = ""; for (const b of u8) s += String.fromCharCode(b); return btoa(s); };
+  const fromB64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  async function deriveKeyB64(password) {
+    const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+    const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: SALT, iterations: ITERATIONS }, base, 256);
+    return toB64(new Uint8Array(bits));
+  }
+  const importKey = (b64) => crypto.subtle.importKey("raw", fromB64(b64), "AES-GCM", false, ["decrypt"]);
+  async function openBlob(buf, key) {
+    const u = new Uint8Array(buf);
+    if (u[0] !== 90 || u[1] !== 67 || u[2] !== 49) throw new Error("Unbekanntes Dateiformat");
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: u.slice(3, 15) }, key, u.slice(15));
+    const stream = new Blob([plain]).stream().pipeThrough(new DecompressionStream("gzip"));
+    return JSON.parse(await new Response(stream).text());
+  }
+  const STR_FIELDS = ["id", "offer_number", "store_id", "title", "product_description", "offer_description", "article_numbers", "condition", "condition_code", "condition_description", "reason_discount", "additional_info", "image", "status", "first_seen", "last_seen", "gone_at", "price_history"];
+  function unpackOffers(d, stores, lastOk, updated) {
+    if (!d) return [];
+    const T = d.s, ix = Object.fromEntries(d.f.map((f, i) => [f, i])), out = [];
+    for (const row of d.r) {
+      const o = {};
+      for (const f of STR_FIELDS) o[f] = T[row[ix[f]]];
+      for (const f of ["price", "original_price", "reappear_count", "missing_runs"]) o[f] = row[ix[f]];
+      const arts = o.article_numbers.split(",").filter(Boolean), st = stores[o.store_id] || {};
+      const disc = o.original_price !== null && o.price !== null ? Math.round((o.original_price - o.price) * 100) / 100 : null;
+      Object.assign(o, {
+        article_numbers: arts, article_number: arts[0] || "", offer_uuid: o.id.startsWith("u:") ? o.id.slice(2) : "",
+        store: st.name || o.store_id, currency: "EUR", discount_eur: disc,
+        discount_pct: disc !== null && o.original_price ? Math.round(disc / o.original_price * 1000) / 10 : null,
+        link: offerLink(st.slug || storeSlug(st.name || o.store_id), o.offer_number), gone_at: o.gone_at || null,
+        price_history: JSON.parse(o.price_history || "[]"),
+      });
+      if (!o.last_seen) o.last_seen = (lastOk || {})[o.store_id] || updated || o.first_seen;
+      out.push(o);
+    }
+    return out;
+  }
+
+  const api = { compileRule, deriveKeyB64, importKey, openBlob, unpackOffers, IKEA_PAGE, KNOWN_SLUGS, storeName, storeSlug, offerLink, fold, normArticle, fmtArticle, flatten, merge, plausible, ingestSnapshot, matches, offerKey, ruleKey, dedupeRules, cleanRule, topSorted };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.ZC = api;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -1,18 +1,20 @@
-"""Ein Durchlauf: alle Maerkte abrufen -> Rohdaten sichern -> abgleichen -> speichern -> benachrichtigen.
+"""Ein Durchlauf: alle Maerkte abrufen -> abgleichen -> verschluesselt speichern -> Treffer vormerken.
 
   python -m tracker.run                      # Live-Abruf (GitHub Actions / lokal)
   python -m tracker.run --ingest snap.json   # Snapshot aus dem Lesezeichen-Skript einspielen
-  python -m tracker.run --export             # nur CSV-Export neu erzeugen
+  python -m tracker.run --send-outbox        # vorgemerkte Telegram-Nachrichten senden
 """
 from __future__ import annotations
 
 import argparse
 import gzip
-import hashlib
 import json
+import os
 import sys
+import threading
 import time
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
 from . import ikea_api, storage, watch
 from .merge import merge, plausible
@@ -30,6 +32,9 @@ def load_settings() -> dict:
     s.setdefault("store_slugs", {})
     s.setdefault("only_stores", [])
     s.setdefault("notify_on_first_run", False)
+    s.setdefault("archive_days", 30)
+    s.setdefault("workers", 3)
+    s.setdefault("min_gap_minutes", 0)
     return s
 
 
@@ -57,30 +62,34 @@ def live_snapshot(settings: dict, prev_meta: dict) -> dict:
     stores = store_map(raw_stores, settings)
     if settings["only_stores"]:
         stores = {k: v for k, v in stores.items() if k in set(map(str, settings["only_stores"]))}
-    results, blocked = {}, False
-    for sid in sorted(stores):
-        if blocked:
+    results, blocked = {}, threading.Event()
+
+    def one(sid: str) -> None:
+        if blocked.is_set():
             results[sid] = {"ok": False, "error": "uebersprungen nach Sperre"}
-            continue
+            return
         try:
             r = ikea_api.fetch_store(sid, settings["language"])
             results[sid] = {"ok": True, **r}
             print(f"[run] {stores[sid]['name']:<28} {sum(len(g.get('offers') or []) for g in r['content']):>5} Angebote")
         except ikea_api.BlockedError as ex:
-            blocked = True
+            blocked.set()
             results[sid] = {"ok": False, "error": str(ex)}
             print(f"[run] GESPERRT: {ex} - breche fuer diesen Lauf ab.")
         except Exception as ex:
             results[sid] = {"ok": False, "error": str(ex)[:300]}
             print(f"[run] Fehler {sid}: {ex}")
         ikea_api.pause()
+
+    with ThreadPoolExecutor(max_workers=max(1, int(settings["workers"]))) as ex:
+        list(ex.map(one, sorted(stores)))
     return {"schema": 1, "fetched_at": ts, "source": "actions", "country": settings["country"],
             "stores": list(stores.values()), "results": results}
 
 
 def process(snapshot: dict, settings: dict, t0: float) -> dict:
     ts = snapshot["fetched_at"]
-    meta = storage.read_json(storage.DATA / "meta.json", {})
+    meta = storage.read_meta() or storage.load_meta_for_legacy()
     db = storage.load_db()
     first_run = not db
     stores = {str(s["id"]): s for s in snapshot["stores"]}
@@ -101,19 +110,19 @@ def process(snapshot: dict, settings: dict, t0: float) -> dict:
         records.extend(recs)
 
     events = merge(db, records, ok, ts)
-    months = storage.save_db(db, ts)
-    storage.append_events(events)
+    months, version = storage.save_db(db, ts, int(settings["archive_days"]))
 
     counts = {t: sum(1 for e in events if e["type"] == t)
               for t in ("new", "gone", "reappeared", "price_change", "changed")}
     active = sum(1 for o in db.values() if o["status"] == "active")
 
-    # Watchlist + Telegram (Nachrichten werden nur vorgemerkt, gesendet wird nach dem Speichern)
-    wl_path = storage.ROOT / "config" / "watchlist.json"
-    rules, groups = watch.load_watchlist(wl_path)
-    notified = storage.read_json(storage.STATE / "notified.json", {})
+    # Merkliste + Telegram (Nachrichten werden nur vorgemerkt, gesendet wird nach dem Veroeffentlichen)
+    rules, groups, rules_src = watch.load_watchlist(storage.ROOT / "config" / "watchlist.json")
+    state = storage.read_bin("state.bin", None)
+    if state is None:                                  # Uebernahme des Altbestands
+        state = {"notified": storage.read_json(storage.ROOT / "state" / "notified.json", {}), "outbox": []}
+    notified, outbox = state.setdefault("notified", {}), state.setdefault("outbox", [])
     hits = watch.find_hits(rules, db, events, notified, groups)
-    outbox = storage.read_json(storage.STATE / "outbox.json", [])
     if first_run and not settings["notify_on_first_run"]:
         print(f"[watch] Erster Lauf: {len(hits)} Treffer werden still als bekannt markiert.")
         for *_, key in hits:
@@ -121,11 +130,11 @@ def process(snapshot: dict, settings: dict, t0: float) -> dict:
     else:
         queued = {m["key"] for m in outbox}
         outbox.extend(m for m in watch.queue(hits, notified, ts) if m["key"] not in queued)
-    storage._dump(storage.STATE / "notified.json", notified)
-    storage._dump(storage.STATE / "outbox.json", outbox)
-    sent = len(outbox)
-    storage._dump(storage.DATA / "watchlist.json",
-                  {"rules": rules, "store_groups": groups})
+    cutoff = (datetime.fromisoformat(ts) - timedelta(days=45)).isoformat()
+    state["notified"] = {k: v for k, v in notified.items() if str(v) >= cutoff}
+    storage.write_bin("state.bin", state)
+    storage.write_bin("watchlist.bin", {"rules": rules, "store_groups": groups})
+    print(f"[watch] Merkliste: {len(rules)} Regeln (Quelle: {rules_src}), {len(hits)} Treffer, {len(outbox)} im Postausgang")
 
     # Meta fuer die Web-App
     prev = {s["id"]: s for s in meta.get("stores", [])}
@@ -147,54 +156,70 @@ def process(snapshot: dict, settings: dict, t0: float) -> dict:
            "stores_ok": len(ok), "stores_failed": len(stores) - len(ok), "offers_seen": len(records),
            "active": active, **counts, "duration_s": round(time.time() - t0, 1),
            "errors": " | ".join(errors)[:1000]}
-    storage.append_csv(storage.DATA / "runs.csv", storage.RUN_FIELDS, [run])
-    event_months = sorted(p.stem for p in (storage.DATA / "events").glob("*.csv"))
-    current_path = storage.DATA / "current.json"
-    current_version = hashlib.sha256(current_path.read_bytes()).hexdigest()[:16] if current_path.exists() else ts
-    watch_payload = {"rules": rules, "store_groups": groups}
-    watch_version = hashlib.sha256(json.dumps(watch_payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
-    storage._dump(storage.DATA / "meta.json", {
+    runs = (meta.get("runs") or storage_legacy_runs())[-(storage.KEEP_RUNS - 1):] + [run]
+    storage.write_bin("meta.bin", {
         "updated": ts, "last_run": run, "stores": st_meta, "archive_months": months,
-        "event_months": event_months, "total_offers": len(db), "active": active,
-        "current_version": current_version, "watchlist_version": watch_version,
-        "hits_this_run": len(hits), "telegram_queued": sent, "schema": 1})
+        "total_offers": len(db), "active": active, "current_version": version, "runs": runs,
+        "worker": os.environ.get("WORKER_URL", "").rstrip("/") or None,
+        "hits_this_run": len(hits), "telegram_queued": len(outbox), "schema": 2})
     print(f"[run] fertig: {len(ok)}/{len(stores)} Maerkte ok, {active} aktiv, {counts}, {len(hits)} Treffer")
     return run
+
+
+def storage_legacy_runs() -> list[dict]:
+    """Abruf-Protokoll aus dem Altbestand (runs.csv) uebernehmen, solange noch keins existiert."""
+    import csv
+    p = storage.LEGACY / "runs.csv"
+    if not p.exists():
+        return []
+    with p.open(encoding="utf-8", newline="") as f:
+        return list(csv.DictReader(f))[-100:]
+
+
+def recently_fetched(settings: dict) -> str | None:
+    """Zeitstempel des letzten Abrufs, wenn er juenger als min_gap_minutes ist (Doppelstart vermeiden)."""
+    gap = int(settings.get("min_gap_minutes") or 0)
+    last = storage.read_meta().get("updated")
+    if gap and last and datetime.now(timezone.utc) - datetime.fromisoformat(last) < timedelta(minutes=gap):
+        return last
+    return None
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ingest", help="Snapshot-Datei (.json/.json.gz) aus dem Lesezeichen-Skript")
-    ap.add_argument("--export", action="store_true", help="nur CSV-Export erzeugen")
-    ap.add_argument("--no-export", action="store_true")
-    ap.add_argument("--force", action="store_true", help="auch aeltere Snapshots einspielen")
+    ap.add_argument("--force", action="store_true", help="auch aeltere Snapshots einspielen / Mindestabstand ignorieren")
     ap.add_argument("--send-outbox", action="store_true", help="vorgemerkte Telegram-Nachrichten senden")
     a = ap.parse_args(argv)
     settings = load_settings()
     t0 = time.time()
     if a.send_outbox:
-        sent, left = watch.send_outbox(storage.STATE / "outbox.json")
+        state = storage.read_bin("state.bin", {}) or {}
+        before = len(state.get("outbox") or [])
+        sent, left = watch.send_outbox(state)
+        if before and (sent or left != before or not state["outbox"]):
+            storage.write_bin("state.bin", state)
         print(f"[watch] {sent} Telegram-Nachrichten gesendet, {left} bleiben im Postausgang.")
-        return 0
-    if a.export:
-        storage.export_csv(storage.load_db(), now())
         return 0
     if a.ingest:
         op = gzip.open if a.ingest.endswith(".gz") else open
         with op(a.ingest, "rt", encoding="utf-8") as f:
             snap = json.load(f)
         snap.setdefault("source", "bookmarklet")
-        last = storage.read_json(storage.DATA / "meta.json", {}).get("updated")
+        last = storage.read_meta().get("updated")
         if last and snap["fetched_at"] <= last and not a.force:
             print(f"[run] Snapshot ({snap['fetched_at']}) ist nicht neuer als der Bestand ({last}). "
                   "Abbruch - mit --force trotzdem einspielen.")
             return 1
     else:
-        snap = live_snapshot(settings, storage.read_json(storage.DATA / "meta.json", {}))
-    storage.write_raw(snap, snap["fetched_at"])
+        recent = None if a.force else recently_fetched(settings)
+        if recent:
+            print(f"[run] Letzter Abruf {recent} ist juenger als {settings['min_gap_minutes']} Min. - ausgelassen.")
+            return 0
+        snap = live_snapshot(settings, storage.read_meta() or storage.load_meta_for_legacy())
+    if os.environ.get("ZC_KEEP_RAW"):
+        storage.write_raw(snap, snap["fetched_at"])
     run = process(snap, settings, t0)
-    if not a.no_export or not (storage.DATA / "exports" / "offers_all.csv").exists():
-        storage.export_csv(storage.load_db(), snap["fetched_at"])
     # Exit 2, wenn ueberhaupt kein Markt geklappt hat (Workflow wird rot -> Mail von GitHub)
     return 2 if run["stores_ok"] == 0 else 0
 

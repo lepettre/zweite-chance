@@ -4,9 +4,7 @@
   "only_stores": [],
   "store_slugs": {},
   "notify_on_first_run": false,
-  "_hinweise": {
-    "only_stores": "Leer = alle Maerkte. Sonst Liste von Markt-IDs (siehe Web-App > Daten > Maerkte).",
-    "store_slugs": "Falls ein Link zur IKEA-Seite nicht passt: {\"<Markt-ID>\": \"slug-aus-der-ikea-url\"}",
-    "notify_on_first_run": "true = beim allerersten Lauf alle vorhandenen Treffer melden"
-  }
+  "archive_days": 30,
+  "workers": 3,
+  "min_gap_minutes": 40
 }

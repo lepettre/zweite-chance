@@ -29,6 +29,9 @@ class Base(unittest.TestCase):
         (self.tmp / "config" / "watchlist.json").write_text(json.dumps({"rules": [
             {"name": "Kallax billig", "keywords": ["kallax"], "min_discount_pct": 20}]}))
         os.environ["TRACKER_ROOT"] = str(self.tmp)
+        os.environ["ZC_PASSWORD"] = "test-passwort"
+        for k in ("ZC_DATA", "WORKER_URL"):
+            os.environ.pop(k, None)
         import importlib
         import tracker.storage, tracker.run, tracker.ikea_api
         importlib.reload(tracker.storage); importlib.reload(tracker.run)
@@ -48,9 +51,9 @@ class Base(unittest.TestCase):
     def tick(self):
         self.clock += 1
         self.run.now = lambda c=self.clock: f"2026-05-0{1 + c // 24}T{c % 24:02d}:00:00+00:00"
-        rc = self.run.main(["--no-export"])
+        rc = self.run.main([])
         db = self.storage.load_db()
-        meta = json.loads((self.tmp / "docs/data/meta.json").read_text())
+        meta = self.storage.read_meta()
         return rc, db, meta
 
     def tearDown(self):
@@ -74,8 +77,9 @@ class TestMerge(Base):
         rc, db, meta = self.tick()
         self.assertEqual(len(db), 2)
         self.assertEqual(db["u:a"]["last_seen"], "2026-05-01T02:00:00+00:00", "last_seen rekonstruiert")
-        raw = (self.tmp / "docs/data/current.json").read_text()
-        self.assertNotIn("last_seen", raw, "unveraenderte Angebote ohne fluechtige Felder")
+        raw = (self.tmp / "site/d/current.bin").read_bytes()
+        self.assertTrue(raw.startswith(b"ZC1"), "veroeffentlichte Dateien sind verschluesselt")
+        self.assertNotIn(b"KALLAX", raw); self.assertNotIn(b"Berlin", raw)
 
         # Markt faellt aus -> NICHT verschwunden
         self.failing = {"148"}
@@ -93,7 +97,7 @@ class TestMerge(Base):
         self.assertEqual(len(db["u:a"]["price_history"]), 2)
         rc, db, meta = self.tick()
         self.assertEqual(db["u:b"]["status"], "gone")
-        self.assertTrue((self.tmp / "docs/data/archive").glob("*.json"))
+        self.assertTrue(list((self.tmp / "site/d").glob("a-*.bin")))
 
         # b taucht wieder auf -> selber Datensatz
         self.world["148"][0]["offers"].append(offer("b", "1002", 35.0))
@@ -101,10 +105,8 @@ class TestMerge(Base):
         self.assertEqual(db["u:b"]["status"], "active")
         self.assertEqual(db["u:b"]["reappear_count"], 1)
         self.assertEqual(len(db), 2)
-
-        ev = (self.tmp / f"docs/data/events/2026-05.csv").read_text()
-        for t in ("new", "price_change", "gone", "reappeared"):
-            self.assertIn(f",{t},", ev)
+        self.assertGreaterEqual(len(meta["runs"]), 7, "Abruf-Protokoll in meta")
+        self.assertEqual(meta["runs"][-1]["reappeared"], 1)
 
     def test_duplicates_in_response_and_fallback_key(self):
         o = {"offerNumber": "77", "price": 10}
@@ -178,7 +180,7 @@ class TestMerge(Base):
             self.world["148"].append(group("148", "KALLAX", "1", 100.0, [offer("a", "1", 70.0)]))
             self.tick(); self.send()
             self.assertEqual(len(sent), 1, sent)
-            published = json.loads((self.tmp / "docs/data/watchlist.json").read_text())
+            published = self.storage.read_bin("watchlist.bin")
             self.assertEqual(len(published["rules"]), 1, "Dubletten (auch ueber Gruppe) entfernt")
         finally:
             del os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"]

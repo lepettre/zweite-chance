@@ -5,7 +5,7 @@
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const view = $("#view");
   const TZ = "Europe/Berlin";
-  const LS = { rules: "zc.rules", lastVisit: "zc.lastVisit", prevVisit: "zc.prevVisit", source: "zc.source", layout: "zc.layout", notify: "zc.notify", seenHits: "zc.seenHits" };
+  const LS = { rules: "zc.rules", lastVisit: "zc.lastVisit", prevVisit: "zc.prevVisit", source: "zc.source", layout: "zc.layout", notify: "zc.notify", seenHits: "zc.seenHits", key: "zc.k", pw: "zc.p" };
 
   /* ---------- Formatierung ---------- */
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -66,7 +66,6 @@
     shown: 120,
   };
 
-  async function getJSON(url, cache = "no-cache") { const r = await fetch(url, { cache }); if (!r.ok) throw new Error(`${r.status} ${url}`); return r.json(); }
   async function getText(url, cache = "no-cache") { const r = await fetch(url, { cache }); if (!r.ok) throw new Error(`${r.status} ${url}`); return r.text(); }
 
   // IndexedDB (lokaler Bestand aus Lesezeichen-Importen)
@@ -80,33 +79,64 @@
   const hasLocal = () => Object.keys(S.local.db).length > 0;
   const hasRepo = () => !!S.repo.meta;
 
+  /* ---------- Zugang: alle Daten liegen verschlüsselt auf dem Server ---------- */
+  class AuthError extends Error {}
+  const AUTH = { key: null, pw: null };
+  async function getBin(name, version) {
+    const r = await fetch(`d/${name}${version ? "?v=" + encodeURIComponent(version) : ""}`, { cache: version ? "force-cache" : "no-cache" });
+    if (!r.ok) throw new Error(`${r.status} ${name}`);
+    try { return await ZC.openBlob(await r.arrayBuffer(), AUTH.key); }
+    catch (e) { throw new AuthError("Passwort stimmt nicht"); }
+  }
+  const storeIndex = () => Object.fromEntries((S.repo.meta?.stores || []).map((s) => [s.id, s]));
+  const unpack = (d) => ZC.unpackOffers(d, storeIndex(), Object.fromEntries((S.repo.meta?.stores || []).map((s) => [s.id, s.last_ok])), S.repo.meta?.updated);
+
+  const worker = {
+    get url() { return S.repo.meta?.worker || null; },
+    async call(method, body) {
+      const r = await fetch(`${this.url}/api/watchlist`, { method, headers: { "x-key": AUTH.pw, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+      if (!r.ok) throw new Error(`Worker ${r.status}`);
+      return r.json();
+    },
+  };
+  async function loadRules() {
+    S.server = { ok: false, groups: {} };
+    if (worker.url && AUTH.pw) {
+      try {
+        const w = await worker.call("GET");
+        S.server = { ok: true, groups: w.groups || {} };
+        const old = lsGet(LS.rules, []);                       // frühere, nur lokal gespeicherte Regeln einmalig übernehmen
+        const merged = ZC.dedupeRules([...(w.rules || []), ...old]);
+        S.rules = merged; S.repo.watch = []; resetRules();
+        if (old.length) { lsSet(LS.rules, []); if (merged.length !== ZC.dedupeRules(w.rules || []).length) await persistRules(); }
+        return;
+      } catch (e) { console.warn("Merkliste vom Server nicht lesbar", e); }
+    }
+    const saved = await getBin("watchlist.bin").catch((e) => { if (e instanceof AuthError) throw e; return { rules: [] }; });
+    S.repo.watch = ZC.dedupeRules((saved.rules || []).map((r, i) => ({ ...r, name: r.name || `Regel ${i + 1}`, _repo: true }))); resetRules();
+  }
+  async function persistRules() {
+    S.rules = ZC.dedupeRules(S.rules); resetRules();
+    if (S.server?.ok) {
+      try { await worker.call("PUT", { rules: S.rules.map(({ _localIndex, ...r }) => r), groups: S.server.groups }); }
+      catch (e) { toast(`<b>Merkliste nicht gespeichert:</b> ${esc(e.message)}`, 7000); }
+    } else lsSet(LS.rules, S.rules);
+  }
+
   async function loadRepo() {
-    try { S.repo.meta = await getJSON("data/meta.json"); } catch { S.repo.meta = null; return; }
-    const currentVersion = encodeURIComponent(S.repo.meta.current_version || S.repo.meta.updated || "initial");
-    const watchVersion = encodeURIComponent(S.repo.meta.watchlist_version || S.repo.meta.updated || "initial");
-    const [cur, watch] = await Promise.all([
-      getJSON(`data/current.json?v=${currentVersion}`, "force-cache").catch(() => ({ offers: [] })),
-      getJSON(`data/watchlist.json?v=${watchVersion}`, "force-cache").catch(() => ({ rules: [] }))
-    ]);
-    const lastOk = Object.fromEntries((S.repo.meta.stores || []).map((s) => [s.id, s.last_ok]));
-    const fill = (o) => { if (!o.last_seen) o.last_seen = lastOk[o.store_id] || S.repo.meta.updated || o.first_seen; return o; };
-    S.repo.current = (cur.offers || []).map(fill);
-    S.repo.watch = ZC.dedupeRules((watch.rules || []).map((r, i) => ({ ...r, name: r.name || `Regel ${i + 1}`, _repo: true })));
+    let meta;
+    try { meta = await getBin("meta.bin"); }
+    catch (e) { if (e instanceof AuthError) throw e; S.repo.meta = null; return; }
+    S.repo.meta = meta;
+    S.repo.current = unpack(await getBin("current.bin", meta.current_version).catch((e) => { if (e instanceof AuthError) throw e; return null; }));
+    await loadRules();
   }
   async function loadArchive() {
     if (S.repo.archiveLoaded || !hasRepo()) return;
     const months = S.repo.meta.archive_months || [];
-    const parts = await Promise.all(months.map((m) => getJSON(`data/archive/${m}.json`).then((d) => d.offers || []).catch(() => [])));
+    const parts = await Promise.all(months.map((m) => getBin(`a-${m}.bin`, S.repo.meta.updated).then(unpack).catch(() => [])));
     S.repo.archive = Object.fromEntries(months.map((m, i) => [m, parts[i]]));
     S.repo.archiveLoaded = true;
-  }
-  async function loadEvents(months) {
-    const out = [];
-    for (const m of months) {
-      if (!S.repo.events[m]) S.repo.events[m] = getText(`data/events/${m}.csv`).then(parseCSV).catch(() => []);
-      out.push(...(await S.repo.events[m]));
-    }
-    return out;
   }
   function activeSource() { if (S.source === "repo" && hasRepo()) return "repo"; if (S.source === "local" && hasLocal()) return "local"; if (S.source === "both" && hasRepo() && hasLocal()) return "both"; return hasRepo() ? (hasLocal() && S.source === "auto" ? "both" : "repo") : hasLocal() ? "local" : "none"; }
   function allOffers(includeArchive) {
@@ -124,8 +154,11 @@
   }
   const updatedAt = () => [S.repo.meta?.updated, S.local.updated].filter(Boolean).sort().pop() || null;
   const allRules = () => ZC.dedupeRules([...S.repo.watch, ...S.rules]);
+  let rulesMemo = null;                                   // vorbereitete Regeln; bei jeder Änderung verwerfen
+  const resetRules = () => { rulesMemo = null; };
+  const compiledRules = () => rulesMemo || (rulesMemo = allRules().filter((r) => r.enabled !== false).map((r) => ({ r, f: ZC.compileRule(r) })));
   const isNew = (o) => S.prevVisit && o.first_seen > S.prevVisit;
-  function hitRules(o) { return allRules().filter((r) => r.enabled !== false && ZC.matches(r, o)); }
+  function hitRules(o) { const out = []; for (const { r, f } of compiledRules()) if (f(o)) out.push(r); return out; }
 
   /* ---------- Filter ---------- */
   const SORTS = {
@@ -230,7 +263,7 @@
         <form class="filters" id="filters" role="search" aria-label="Filter">
           <label class="sr" for="f-q">Suche</label>
           <input id="f-q" class="inp search" name="q" type="search" placeholder="Produkt, Artikelnr., Mangel …" value="${esc(f.q || "")}" autocomplete="off">
-          <button type="button" class="btn mobile-filter-toggle" id="filter-toggle" aria-expanded="false">Filter anzeigen</button>
+          <button type="button" class="btn mobile-filter-toggle" id="filter-toggle" aria-expanded="false">Filter</button>
           <fieldset><legend>Markt</legend>
             <input class="inp" id="store-find" placeholder="Markt suchen" style="min-height:30px;padding:4px 8px;font-size:13px" aria-label="Märkte durchsuchen">
             <div id="store-checks">${checkList("s", counts(scoped, "store_id").sort((a, b) => (nameOf[a[0]] || a[0]).localeCompare(nameOf[b[0]] || b[0], "de")), setOf(f.s), (k) => nameOf[k] || k)}</div>
@@ -250,6 +283,7 @@
             ${f.art ? `<label class="switch"><input type="checkbox" name="art" value="${esc(f.art)}" checked> Artikel ${esc(ZC.fmtArticle(f.art))}</label>` : ""}
           </fieldset>
           <button type="button" class="btn" id="reset" style="width:100%">Alle Filter zurücksetzen</button>
+          <button type="button" class="btn btn--primary filters__done" id="filter-done">Ergebnisse anzeigen</button>
         </form>
         <section aria-labelledby="list-h">
           <div class="toolbar">
@@ -269,16 +303,25 @@
     const form = $("#filters");
     let current = [];
     const filterToggle = $("#filter-toggle");
-    filterToggle.addEventListener("click", () => {
-      const open = form.classList.toggle("filters--open");
+    const nActive = () => F_KEYS.filter((k) => k !== "sort" && S.filters[k]).length;
+    const setOpen = (open) => {
+      form.classList.toggle("filters--open", open);
+      document.body.classList.toggle("filters-open", open);
       filterToggle.setAttribute("aria-expanded", String(open));
-      filterToggle.textContent = open ? "Filter ausblenden" : "Filter anzeigen";
-    });
+      filterToggle.textContent = open ? "Schließen" : `Filter${nActive() ? ` (${nActive()})` : ""}`;
+      if (open) form.scrollTop = 0;
+    };
+    filterToggle.addEventListener("click", () => setOpen(!form.classList.contains("filters--open")));
+    $("#filter-done").addEventListener("click", () => { setOpen(false); window.scrollTo({ top: 0 }); });
+    document.body.classList.remove("filters-open");
+    filterToggle.textContent = `Filter${nActive() ? ` (${nActive()})` : ""}`;
     const draw = () => {
       const res = applyFilters(scoped, S.filters, mode);
       current = res;
       const visible = ZC.topSorted(res, SORTS[S.filters.sort]?.[1] || SORTS.neu[1], Math.min(S.shown, res.length));
       const sumDisc = res.reduce((a, o) => a + (o.discount_eur || 0), 0);
+      $("#filter-done").textContent = `${nf0.format(res.length)} Ergebnisse anzeigen`;
+      if (!form.classList.contains("filters--open")) filterToggle.textContent = `Filter${nActive() ? ` (${nActive()})` : ""}`;
       $("#list-count").textContent = `${nf0.format(res.length)} von ${nf0.format(scoped.length)} · Ersparnis gesamt ${eur0(sumDisc)}`;
       const box = $("#results");
       if (!res.length) { box.innerHTML = `<div class="empty"><h3>Keine Angebote gefunden</h3><p>Filter lockern oder <button class="linkbtn" id="reset2">alle zurücksetzen</button>.</p></div>`; $("#reset2")?.addEventListener("click", reset); return; }
@@ -372,22 +415,22 @@
     dlg.querySelector(".dlg__body").scrollTop = 0;
     $$("[data-close]", dlg).forEach((b) => b.addEventListener("click", () => dlg.close()));
     $$("[data-open]", dlg).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openDetail(a.dataset.open); }));
-    $("[data-copy]", dlg)?.addEventListener("click", () => { const { _hay, ...clean } = o; navigator.clipboard?.writeText(JSON.stringify(clean, null, 2)).then(() => toast("JSON kopiert.")); });
-    $("[data-watch-art]", dlg)?.addEventListener("click", () => {
+    $("[data-copy]", dlg)?.addEventListener("click", () => { const clean = Object.fromEntries(Object.entries(o).filter(([k]) => !k.startsWith("_"))); navigator.clipboard?.writeText(JSON.stringify(clean, null, 2)).then(() => toast("JSON kopiert.")); });
+    $("[data-watch-art]", dlg)?.addEventListener("click", async () => {
       const r = { name: `${o.title} ${ZC.fmtArticle(o.article_number)}`, enabled: true, article_numbers: [ZC.fmtArticle(o.article_number)] };
       if (ZC.dedupeRules([...S.repo.watch, ...S.rules]).some((x) => ZC.ruleKey(x) === ZC.ruleKey(r))) {
         toast("Der Artikel steht bereits auf deiner Merkliste.");
       } else {
-        S.rules.push(r); lsSet(LS.rules, S.rules);
-        toast(`„${esc(o.title)}“ beobachtet. Für Telegram: Merkliste → exportieren.`);
+        S.rules.push(r); await persistRules();
+        toast(S.server?.ok ? `„${esc(o.title)}“ steht auf der Merkliste.` : `„${esc(o.title)}“ beobachtet (nur in diesem Browser).`);
       }
       updateBadges();
     });
-    // Ereignisse
-    let evs = [];
-    const months = []; for (let d = new Date(o.first_seen); d <= new Date(o.last_seen || o.first_seen) || months.length === 0; d.setUTCMonth(d.getUTCMonth() + 1)) { months.push(d.toISOString().slice(0, 7)); if (months.length > 36) break; }
-    const lastM = (o.last_seen || "").slice(0, 7); if (lastM && !months.includes(lastM)) months.push(lastM);
-    if (hasRepo()) evs = (await loadEvents(months.filter((m) => (S.repo.meta.event_months || []).includes(m)))).filter((e) => e.id === o.id);
+    // Verlauf aus dem Angebot selbst (Preisverlauf, erstes/letztes Sehen) + lokale Importe
+    const ph = o.price_history || [];
+    let evs = [{ ts: o.first_seen, type: "new" }];
+    for (let i = 1; i < ph.length; i++) evs.push({ ts: ph[i][0], type: "price_change", old_price: ph[i - 1][1], new_price: ph[i][1] });
+    if (o.gone_at) evs.push({ ts: o.gone_at, type: "gone" });
     evs.push(...S.local.events.filter((e) => e.id === o.id));
     const seen = new Set(); evs = evs.filter((e) => { const k = e.ts + e.type; if (seen.has(k)) return false; seen.add(k); return true; }).sort((a, b) => a.ts.localeCompare(b.ts));
     const tl = $("#tl", dlg); if (!tl) return;
@@ -408,10 +451,6 @@
     if (r.conditions?.length) p.push(`Zustand/Grund: ${r.conditions.map(esc).join(", ")}`);
     return p.join(" · ") || "<span class='muted'>ohne Einschränkung (trifft alles)</span>";
   }
-  function repoUrl() {
-    const m = location.hostname.match(/^([^.]+)\.github\.io$/); if (!m) return null;
-    const repo = location.pathname.split("/").filter(Boolean)[0]; return `https://github.com/${m[1]}/${repo || m[1] + ".github.io"}`;
-  }
   function renderMerkliste(query) {
     if (activeSource() === "none") return renderOnboarding();
     const active = allOffers(false).filter((o) => o.status === "active");
@@ -421,29 +460,43 @@
       ...S.rules.map((r, i) => ({ ...r, _localIndex: i }))
     ]);
     const hitsOf = (r) => active.filter((o) => ZC.matches({ ...r, enabled: true }, o));
+
+    // Treffer einer Regel: eigene Seite, volle Breite (mobil nicht von Filtern/Formular verdeckt)
+    if (sel !== null && rules[sel]) {
+      const hs = hitsOf(rules[sel]).sort(SORTS.neu[1]);
+      view.innerHTML = `
+        <div class="toolbar"><div><a class="btn" href="#/merkliste">← Merkliste</a></div></div>
+        <div class="toolbar"><h2>${esc(rules[sel].name)} <small>${nf0.format(hs.length)} Treffer</small></h2></div>
+        <p class="muted" style="margin:0 0 14px">${ruleSummary(rules[sel])}</p>
+        ${hs.length ? `<ul class="offers">${hs.slice(0, 300).map(offerRow).join("")}</ul>${hs.length > 300 ? `<p class="muted">… und ${hs.length - 300} weitere.</p>` : ""}` : `<div class="empty">Derzeit kein passendes Angebot.</div>`}`;
+      return;
+    }
+
     const st = stores();
-    const gh = repoUrl();
+    const serverMode = !!S.server?.ok;
     const exportJSON = () => JSON.stringify({ rules: ZC.dedupeRules([...S.repo.watch, ...S.rules]).map(({ _repo, _localIndex, ...r }) => r) }, null, 2);
+    const wide = window.matchMedia("(min-width: 961px)").matches;
     view.innerHTML = `
       <div class="toolbar"><h2>Merkliste <small>${rules.length} Regeln</small></h2>
         <div class="toolbar__r">
           <label class="switch" title="Benachrichtigt, solange diese Seite geöffnet ist"><input type="checkbox" id="bnotify" ${lsGet(LS.notify, false) ? "checked" : ""}> Browser-Hinweise</label>
-          <button class="btn" id="exp">watchlist.json exportieren</button>
-          ${gh ? `<a class="btn" href="${gh}/edit/main/config/watchlist.json" target="_blank" rel="noopener">Auf GitHub bearbeiten ↗</a>` : ""}
+          ${serverMode ? "" : `<button class="btn" id="exp">watchlist.json exportieren</button>`}
+          <a class="btn btn--primary" href="#rf-box" id="new-rule">＋ Neue Regel</a>
         </div></div>
-      <div class="notice" style="background:#EAF2FA;border-color:#B8D0EA"><span><b>So funktioniert’s:</b> <span style="border-left:4px solid var(--blue);padding-left:6px">Blaue Regeln</span> stehen im Repo (<code>config/watchlist.json</code>) und lösen Telegram-Nachrichten aus. <span style="border-left:4px solid var(--yellow);padding-left:6px">Gelbe Regeln</span> leben nur in diesem Browser – sie markieren Treffer in allen Listen. Per „exportieren“ machst du sie zu Telegram-Regeln.</span></div>
-      <section id="rule-hits" class="rule-hits" aria-live="polite"></section>
+      <div class="notice" style="background:#EAF2FA;border-color:#B8D0EA"><span>${serverMode
+        ? "<b>Regeln werden zentral gespeichert</b> und lösen Telegram-Nachrichten aus. Änderungen gelten ab dem nächsten Abruf."
+        : "<b>Ohne Server:</b> Gelbe Regeln leben nur in diesem Browser (Markierung in den Listen). Blaue Regeln kommen vom letzten Abruf und lösen Telegram aus."}</span></div>
       <div class="cols2">
         <section>
           <div class="rules">${rules.length ? rules.map((r, i) => { const n = hitsOf(r).length; const li = r._localIndex ?? -1; return `
             <article class="rule ${r._repo ? "rule--repo" : ""} ${r.enabled === false ? "rule--off" : ""}">
               <div style="min-width:0"><h3>${esc(r.name)} ${r.enabled === false ? `<span class="muted" style="font-weight:400">(pausiert)</span>` : ""}</h3><p>${ruleSummary(r)}</p></div>
-              <div class="rule__act"><a class="btn ${sel === String(i) ? "btn--primary" : ""}" href="#/merkliste?regel=${i}">${nf0.format(n)} Treffer</a>
+              <div class="rule__act"><a class="btn" href="#/merkliste?regel=${i}">${nf0.format(n)} Treffer ›</a>
               ${r._repo || li < 0 ? "" : `<button class="btn" data-toggle="${li}" aria-label="Regel ${r.enabled === false ? "aktivieren" : "pausieren"}">${r.enabled === false ? "▶" : "❚❚"}</button><button class="btn" data-edit="${li}" aria-label="Bearbeiten">✎</button><button class="btn" data-del="${li}" aria-label="Löschen">✕</button>`}</div>
-            </article>`; }).join("") : `<div class="empty"><h3>Noch keine Regeln</h3><p>Lege rechts deine erste Suche an – oder im Angebotsdetail „Artikel auf die Merkliste“.</p></div>`}</div>
+            </article>`; }).join("") : `<div class="empty"><h3>Noch keine Regeln</h3><p>Lege deine erste Suche an – oder im Angebotsdetail „Artikel auf die Merkliste“.</p></div>`}</div>
         </section>
-        <section class="box" aria-labelledby="rf-h">
-          <h3 id="rf-h">Neue Regel</h3>
+        <details class="box" id="rf-box" ${wide ? "open" : ""} aria-labelledby="rf-h">
+          <summary><h3 id="rf-h" style="display:inline">Neue Regel</h3></summary>
           <form id="rf" class="form">
             <input type="hidden" name="idx" value="">
             <label style="grid-column:1/-1">Name<input class="inp" name="name" required placeholder="z. B. Hemnes-Kommode Hamburg"></label>
@@ -455,45 +508,40 @@
             <label>Höchstpreis €<input class="inp" name="max_price" type="number" min="0"></label>
             <fieldset style="grid-column:1/-1;border:1px solid var(--line);border-radius:var(--r);padding:8px 10px"><legend class="muted" style="font-size:12.5px">Märkte (leer = alle)</legend>
               <div class="checks" style="max-height:150px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr))">${st.map((s) => `<label class="check"><input type="checkbox" name="stores" value="${esc(s.id)}"><span>${esc(s.name)}</span></label>`).join("")}</div></fieldset>
-            <div style="grid-column:1/-1;display:flex;gap:8px"><button class="btn btn--primary" type="submit">Regel speichern</button><button class="btn" type="reset">Leeren</button><span class="muted" id="rf-preview" style="align-self:center;font-size:13px"></span></div>
+            <div style="grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--primary" type="submit">Regel speichern</button><button class="btn" type="reset">Leeren</button><span class="muted" id="rf-preview" style="align-self:center;font-size:13px"></span></div>
           </form>
-        </section>
+        </details>
       </div>
       `;
 
-    const form = $("#rf");
+    const form = $("#rf"), box = $("#rf-box");
+    $("#new-rule").addEventListener("click", (e) => { e.preventDefault(); box.open = true; box.scrollIntoView({ block: "start" }); form.elements.namedItem("name").focus(); });
     const readForm = () => { const fd = new FormData(form); return { name: fd.get("name").trim(), enabled: true, keywords: splitList(fd.get("keywords")), exclude: splitList(fd.get("exclude")), article_numbers: splitList(fd.get("article_numbers")), conditions: splitList(fd.get("conditions")), stores: fd.getAll("stores"), min_discount_pct: fd.get("min_discount_pct") ? Number(fd.get("min_discount_pct")) : null, max_price: fd.get("max_price") ? Number(fd.get("max_price")) : null }; };
     form.addEventListener("input", debounce(() => { const r = readForm(); $("#rf-preview").textContent = `→ aktuell ${nf0.format(hitsOf(r).length)} Treffer`; }, 200));
-    form.addEventListener("submit", (e) => {
+    form.addEventListener("submit", async (e) => {
       e.preventDefault(); const r = readForm(); const idx = form.elements.idx.value;
       const editIndex = idx === "" ? -1 : Number(idx);
       const duplicate = ZC.dedupeRules([...S.repo.watch, ...S.rules.map((x, i) => i === editIndex ? { ...x, _edit: true } : x)])
         .some((x) => !x._edit && ZC.ruleKey(x) === ZC.ruleKey(r));
       if (duplicate) { toast("Diese Suche ist bereits gespeichert."); return; }
       if (idx !== "") { r.enabled = S.rules[idx].enabled; S.rules[idx] = r; } else S.rules.push(r);
-      S.rules = ZC.dedupeRules(S.rules);
-      lsSet(LS.rules, S.rules); toast("Regel gespeichert."); updateBadges();
-      const selected = ZC.dedupeRules([...S.repo.watch, ...S.rules]).findIndex((x) => ZC.ruleKey(x) === ZC.ruleKey(r));
-      renderMerkliste(`regel=${selected}`);
+      await persistRules(); toast("Regel gespeichert."); updateBadges();
+      renderMerkliste();
     });
-    $$("[data-del]").forEach((b) => b.addEventListener("click", () => { if (!confirm("Regel löschen?")) return; S.rules.splice(+b.dataset.del, 1); lsSet(LS.rules, S.rules); updateBadges(); renderMerkliste(); }));
-    $$("[data-toggle]").forEach((b) => b.addEventListener("click", () => { const r = S.rules[+b.dataset.toggle]; r.enabled = r.enabled === false; lsSet(LS.rules, S.rules); updateBadges(); renderMerkliste(query); }));
+    $$("[data-del]").forEach((b) => b.addEventListener("click", async () => { if (!confirm("Regel löschen?")) return; S.rules.splice(+b.dataset.del, 1); await persistRules(); updateBadges(); renderMerkliste(); }));
+    $$("[data-toggle]").forEach((b) => b.addEventListener("click", async () => { const r = S.rules[+b.dataset.toggle]; r.enabled = r.enabled === false; await persistRules(); updateBadges(); renderMerkliste(query); }));
     $$("[data-edit]").forEach((b) => b.addEventListener("click", () => {
       const r = S.rules[+b.dataset.edit], el = form.elements; el.idx.value = b.dataset.edit; el.namedItem("name").value = r.name;
       for (const k of ["keywords", "exclude", "article_numbers", "conditions"]) el[k].value = (r[k] || []).join(", ");
       el.min_discount_pct.value = r.min_discount_pct ?? ""; el.max_price.value = r.max_price ?? "";
       $$("input[name=stores]", form).forEach((c) => (c.checked = (r.stores || []).map(String).includes(c.value)));
-      $("#rf-h").textContent = "Regel bearbeiten"; form.elements.namedItem("name").focus(); form.scrollIntoView({ block: "center" });
+      $("#rf-h").textContent = "Regel bearbeiten"; box.open = true; form.elements.namedItem("name").focus(); box.scrollIntoView({ block: "start" });
     }));
-    $("#exp").addEventListener("click", () => { download("watchlist.json", exportJSON(), "application/json"); toast(gh ? `Datei ersetzt <code>config/watchlist.json</code> – <a style="color:#FFDB00" href="${gh}/upload/main/config" target="_blank" rel="noopener">hier hochladen</a>.` : "watchlist.json heruntergeladen – im Repo unter config/ ersetzen.", 9000); });
+    $("#exp")?.addEventListener("click", () => { download("watchlist.json", exportJSON(), "application/json"); toast("watchlist.json heruntergeladen.", 6000); });
     $("#bnotify").addEventListener("change", async (e) => {
       if (e.target.checked && "Notification" in window && Notification.permission !== "granted") { const p = await Notification.requestPermission(); if (p !== "granted") { e.target.checked = false; toast("Browser-Benachrichtigungen wurden nicht erlaubt."); return; } }
       lsSet(LS.notify, e.target.checked); if (e.target.checked) markHitsSeen();
     });
-    if (sel !== null && rules[sel]) {
-      const hs = hitsOf(rules[sel]).sort(SORTS.neu[1]);
-      $("#rule-hits").innerHTML = `<div class="toolbar"><h2>Treffer: ${esc(rules[sel].name)} <small>${nf0.format(hs.length)}</small></h2></div>${hs.length ? `<ul class="offers">${hs.slice(0, 300).map(offerRow).join("")}</ul>` : `<div class="empty">Derzeit kein passendes Angebot.</div>`}`;
-    }
   }
 
   /* ---------- Statistik ---------- */
@@ -585,9 +633,8 @@
     ["price_history", "Liste [Zeitpunkt, Preis] bei jeder Preisänderung."],
   ];
   async function renderDaten(query) {
-    const meta = S.repo.meta, gh = repoUrl();
-    if (hasRepo() && !S.repo.runs) S.repo.runs = await getText("data/runs.csv").then(parseCSV).catch(() => []);
-    const runs = (S.repo.runs || []).slice(-48).reverse();
+    const meta = S.repo.meta;
+    const runs = (meta?.runs || []).slice(-48).reverse();
     const st = meta?.stores || S.local.stores || [];
     const bmSrc = await getText("bookmarklet.src.js").catch(() => "");
     const tracker = location.href.split("#")[0];
@@ -614,16 +661,9 @@
           </tbody></table>
           ${meta?.last_run?.errors ? `<p class="muted" style="font-size:13px"><b>Hinweise letzter Lauf:</b> ${esc(meta.last_run.errors)}</p>` : ""}
         </section>
-        <section class="box"><h3>Downloads</h3>
-          ${hasRepo() ? `<ul class="minilist">
-            <li><a href="data/exports/offers_all.csv" download>offers_all.csv</a><span class="muted">alle Angebote, eine Zeile je Angebot (täglich)</span></li>
-            <li><a href="data/exports/offers_all.csv.gz" download>offers_all.csv.gz</a><span class="muted">dasselbe, komprimiert</span></li>
-            <li><a href="data/current.json">current.json</a><span class="muted">aktive Angebote, aktuell</span></li>
-            ${(meta.archive_months || []).map((m) => `<li><a href="data/archive/${m}.json">archive/${m}.json</a><span class="muted">verschwunden im ${m}</span></li>`).join("")}
-            ${(meta.event_months || []).map((m) => `<li><a href="data/events/${m}.csv" download>events/${m}.csv</a><span class="muted">Ereignisprotokoll</span></li>`).join("")}
-            <li><a href="data/runs.csv" download>runs.csv</a><span class="muted">Protokoll jedes Abrufs</span></li>
-            ${gh ? `<li><a href="${gh}/releases" target="_blank" rel="noopener">Rohdaten (Releases) ↗</a><span class="muted">unveränderte API-Antworten jedes Abrufs</span></li>` : ""}
-          </ul>` : `<p class="muted">Noch keine GitHub-Daten. Siehe Einrichtung unten.</p>`}
+        <section class="box"><h3>Export</h3>
+          <p class="muted" style="font-size:13.5px;margin:0 0 10px">Die Listen „Aktuell“ und „Archiv“ haben oben einen CSV-Export (gefilterte Ansicht).</p>
+          <p><button class="btn" id="logout">Auf diesem Gerät abmelden</button></p>
           ${hasLocal() ? `<p style="margin-top:12px"><button class="btn" id="local-exp">Lokalen Bestand als CSV</button> <button class="btn" id="local-json">… als Backup-JSON</button></p>` : ""}
         </section>
       </div>
@@ -654,11 +694,12 @@
         <p><b>Eindeutigkeit.</b> Jedes Einzelstück hat bei IKEA eine Angebots-UUID; sie ist der Schlüssel. Drei gleiche Regale im selben Markt sind drei Datensätze. Doppelte Einträge innerhalb einer Antwort werden verworfen.</p>
         <p><b>Verschwinden.</b> Ein Angebot gilt erst als „weg“, wenn es in zwei aufeinanderfolgenden <i>erfolgreichen</i> Abrufen seines Markts fehlt. Fällt ein Markt aus oder liefert er unplausibel null Angebote, bleibt sein Bestand unverändert. Taucht ein Angebot wieder auf (etwa nach abgelaufener Reservierung), wird derselbe Datensatz reaktiviert.</p>
         <p><b>Datum.</b> IKEA liefert kein Einstelldatum. Alle Zeitangaben sind Beobachtungen dieses Trackers; die Genauigkeit entspricht dem Abrufintervall (≈ 1 Stunde). Angebote, die schon vor dem ersten Abruf gelistet waren, haben ein zu spätes <code>first_seen</code>.</p>
-        <p><b>Nachprüfbarkeit.</b> Jede unveränderte API-Antwort wird komprimiert als Release-Asset gesichert; die Git-Historie dokumentiert jede Änderung am Bestand.</p>
+        <p><b>Aufbewahrung.</b> Aktive Angebote bleiben bis zum Verschwinden gespeichert; verschwundene Angebote bleiben 30 Tage im Archiv. Alle Dateien liegen verschlüsselt auf dem Server und werden erst in diesem Browser entschlüsselt.</p>
         <h3 style="margin-top:20px">Felder</h3>
         <table class="tbl"><tbody>${DICT.map(([k, v]) => `<tr><td class="mono" style="white-space:nowrap">${k}</td><td>${v}</td></tr>`).join("")}</tbody></table>
       </section>`;
 
+    $("#logout").addEventListener("click", () => { lsSet(LS.key, null); lsSet(LS.pw, null); location.reload(); });
     $("#src").addEventListener("change", (e) => { S.source = e.target.value; lsSet(LS.source, S.source); updateBadges(); renderDaten(); });
     const drop = $("#drop"), file = $("#file");
     file.addEventListener("change", () => file.files[0] && importFile(file.files[0]));
@@ -732,19 +773,15 @@
 
   /* ---------- Einrichtung (noch keine Daten) ---------- */
   function renderOnboarding() {
-    const gh = repoUrl();
     view.innerHTML = `<div class="prose" style="margin:20px auto 0">
       <h2 style="font-size:30px">Noch keine Daten</h2>
-      <p>Der Monitor zeigt die Ergebnisse der stündlichen GitHub-Abrufe. Sobald der erste Lauf durch ist, erscheinen hier alle Zweite-Chance-Angebote.</p>
-      <div class="box" style="margin:18px 0"><h3>Ersten Abruf starten</h3>
-        <ol><li>Im Repo unter <b>Actions</b> den Workflow „Abruf (stündlich)“ öffnen und <b>Run workflow</b> klicken${gh ? ` (<a href="${gh}/actions" target="_blank" rel="noopener">direkt zu Actions ↗</a>)` : ""}.</li>
-        <li>Nach etwa 5–10 Minuten diese Seite neu laden.</li>
-        <li>Wird der Lauf rot (HTTP 403/429), blockiert IKEA die GitHub-Server. Dann den Weg über das Lesezeichen nutzen.</li></ol></div>
+      <p>Sobald der erste Abruf durch ist, erscheinen hier die Angebote. Der erste Lauf dauert einige Minuten; danach diese Seite neu laden.</p>
       <p><a class="btn btn--primary" href="#/daten?import=1">Selbst abrufen per Lesezeichen →</a></p></div>`;
   }
 
   /* ---------- Router & Start ---------- */
   function route() {
+    document.body.classList.remove("filters-open");
     const h = location.hash.replace(/^#\/?/, "") || "aktuell";
     const [name, query] = h.split("?");
     const tab = ["aktuell", "archiv", "merkliste", "statistik", "daten"].includes(name) ? name : "aktuell";
@@ -761,17 +798,47 @@
   function rememberVisit() { lsSet(LS.lastVisit, new Date().toISOString()); }
   async function refresh() {
     const prev = S.repo.meta?.updated;
-    await loadRepo().catch(() => {});
+    await loadRepo().catch((e) => { if (e instanceof AuthError) { lsSet(LS.key, null); location.reload(); } });
     if (S.repo.meta?.updated && S.repo.meta.updated !== prev) {
-      S.repo.archiveLoaded = false; S.repo.runs = null;
+      S.repo.archiveLoaded = false;
       updateBadges(); checkNewHits();
       if (prev) { toast(`Neue Daten (${esc(fmtDT(S.repo.meta.updated))}).`); if (!$("#detail").open && !document.activeElement?.closest?.("form")) route(); }
     } else updateBadges();
   }
+  function loginForm(message) {
+    return new Promise((resolve) => {
+      const box = $("#login"); box.hidden = false;
+      const form = $("#login-form"), msg = $("#login-msg"), pw = $("#login-pw");
+      msg.textContent = message || ""; pw.focus();
+      form.onsubmit = async (e) => {
+        e.preventDefault(); msg.textContent = "Prüfe …"; form.querySelector("button").disabled = true;
+        try {
+          const b64 = await ZC.deriveKeyB64(pw.value);
+          AUTH.key = await ZC.importKey(b64); AUTH.pw = pw.value;
+          await loadRepo();
+          lsSet(LS.key, b64); lsSet(LS.pw, pw.value);
+          box.hidden = true; resolve();
+        } catch (err) {
+          msg.textContent = err instanceof AuthError ? "Passwort stimmt nicht." : `Fehler: ${err.message || err}`;
+          form.querySelector("button").disabled = false; pw.select();
+        }
+      };
+    });
+  }
+  async function unlock() {
+    const k = lsGet(LS.key, null);
+    if (k) {
+      try { AUTH.key = await ZC.importKey(k); AUTH.pw = lsGet(LS.pw, null); await loadRepo(); return; }
+      catch (e) { if (!(e instanceof AuthError)) throw e; lsSet(LS.key, null); }
+    }
+    await loginForm();
+  }
   async function init() {
     S.prevVisit = lsGet(LS.lastVisit, null);
-    view.innerHTML = '<div class="skeleton"></div>'.repeat(6);
-    await Promise.all([loadRepo(), loadLocal()]);
+    await Promise.all([unlock(), loadLocal()]);
+    document.body.classList.remove("locked");
+    document.title = "Zweite Chance";
+    view.innerHTML = '<div class="skeleton"></div>'.repeat(2);
     updateBadges(); route(); checkNewHits();
     setTimeout(rememberVisit, 60000);
     document.addEventListener("visibilitychange", () => { if (document.hidden) rememberVisit(); else refresh(); });
