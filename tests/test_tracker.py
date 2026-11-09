@@ -122,6 +122,9 @@ class TestMerge(Base):
         self.assertTrue(all(o["status"] == "active" for o in db.values()))
         self.assertIn("leer trotz Bestand", meta["last_run"]["errors"])
 
+    def send(self):
+        self.run.main(["--send-outbox"])
+
     def test_watch_first_run_silent_then_hits(self):
         import tracker.watch as w
         sent = []
@@ -129,17 +132,75 @@ class TestMerge(Base):
         os.environ["TELEGRAM_BOT_TOKEN"] = "t"; os.environ["TELEGRAM_CHAT_ID"] = "c"
         try:
             self.world = {"148": [group("148", "KALLAX", "1", 100.0, [offer("a", "1", 70.0)])]}
-            self.tick()
+            self.tick(); self.send()
             self.assertEqual(sent, [], "erster Lauf still")
             self.world["148"][0]["offers"].append(offer("c", "3", 60.0))
             self.world["148"].append(group("148", "BILLY", "2", 100.0, [offer("d", "4", 10.0)]))
             self.tick()
+            self.assertEqual(sent, [], "vor dem Speichern wird nichts gesendet")
+            self.send()
             self.assertEqual(len(sent), 1); self.assertIn("KALLAX", sent[0])
-            self.tick()
+            self.tick(); self.send(); self.send()
             self.assertEqual(len(sent), 1, "keine Doppelmeldung")
             self.world["148"][0]["offers"][1]["price"] = 50.0     # Preissenkung
-            self.tick()
+            self.tick(); self.send()
             self.assertEqual(len(sent), 2); self.assertIn("Preis gesenkt", sent[1])
+        finally:
+            del os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"]
+
+    def test_reappeared_same_price_notified_again(self):
+        import tracker.watch as w
+        sent = []
+        w.send_telegram = lambda text, *a, **k: sent.append(text)
+        os.environ["TELEGRAM_BOT_TOKEN"] = "t"; os.environ["TELEGRAM_CHAT_ID"] = "c"
+        try:
+            product = group("148", "KALLAX", "1", 100.0, [offer("a", "1", 70.0)])
+            self.world = {"148": [product]}; self.tick(); self.send()
+            self.world = {"148": []}; self.tick(); self.tick()
+            self.world = {"148": [product]}; self.tick(); self.send()
+            self.assertEqual(len(sent), 1)
+            self.assertIn("Wieder da", sent[0])
+        finally:
+            del os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"]
+
+    def test_triple_rules_one_message(self):
+        """Genau der gemeldete Fall: dieselbe Regel steht dreifach in watchlist.json."""
+        import tracker.watch as w
+        rule = {"name": "Kallax", "keywords": ["Kallax"], "stores": ["148"]}
+        (self.tmp / "config" / "watchlist.json").write_text(json.dumps({"rules": [rule, dict(rule), dict(rule),
+            {"name": "Kallax 2", "keywords": ["kallax"], "stores": ["@Meine"]}], "store_groups": {"Meine": ["148"]}}))
+        sent = []
+        w.send_telegram = lambda text, *a, **k: sent.append(text)
+        os.environ["TELEGRAM_BOT_TOKEN"] = "t"; os.environ["TELEGRAM_CHAT_ID"] = "c"
+        try:
+            self.world = {"148": [group("148", "BILLY", "2", 100.0, [offer("d", "4", 10.0)])]}
+            self.tick(); self.send()
+            self.world["148"].append(group("148", "KALLAX", "1", 100.0, [offer("a", "1", 70.0)]))
+            self.tick(); self.send()
+            self.assertEqual(len(sent), 1, sent)
+            published = json.loads((self.tmp / "docs/data/watchlist.json").read_text())
+            self.assertEqual(len(published["rules"]), 1, "Dubletten (auch ueber Gruppe) entfernt")
+        finally:
+            del os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"]
+
+    def test_failed_send_is_retried_once(self):
+        import tracker.watch as w
+        sent, fail = [], [True]
+        def tg(text, *a, **k):
+            if fail[0]:
+                raise RuntimeError("Netz weg")
+            sent.append(text)
+        w.send_telegram = tg
+        os.environ["TELEGRAM_BOT_TOKEN"] = "t"; os.environ["TELEGRAM_CHAT_ID"] = "c"
+        try:
+            self.world = {"148": [group("148", "BILLY", "2", 100.0, [offer("d", "4", 10.0)])]}
+            self.tick()
+            self.world["148"].append(group("148", "KALLAX", "1", 100.0, [offer("a", "1", 70.0)]))
+            self.tick(); self.send()
+            self.assertEqual(sent, [])
+            fail[0] = False
+            self.tick(); self.send(); self.send()
+            self.assertEqual(len(sent), 1)
         finally:
             del os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"]
 
@@ -160,6 +221,16 @@ class TestRules(unittest.TestCase):
         self.assertTrue(matches({"conditions": ["kratzer"]}, o))
         self.assertFalse(matches({"keywords": ["malm"], "exclude": ["schublade"]}, o))
         self.assertFalse(matches({"keywords": ["malm"], "enabled": False}, o))
+
+    def test_dedupe_and_clean(self):
+        from tracker.watch import dedupe_rules
+        rules = [{"name": "A", "keywords": ["Stockholm Teppich"], "stores": ["245", "325"], "enabled": False},
+                 {"name": "B", "keywords": ["teppich stockholm"], "stores": ["325", "245"]},
+                 {"name": "PS", "article_numbers": ["IKEA PS 2026"]}]
+        out = dedupe_rules(rules)
+        self.assertEqual(len(out), 2)
+        self.assertNotEqual(out[0].get("enabled"), False, "aktiv schlaegt pausiert")
+        self.assertEqual(out[1]["keywords"], ["IKEA PS 2026"]); self.assertEqual(out[1]["article_numbers"], [])
 
 
 if __name__ == "__main__":

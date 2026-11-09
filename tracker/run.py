@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
-import shutil
 import sys
 import time
 from datetime import datetime, timezone
@@ -108,20 +108,24 @@ def process(snapshot: dict, settings: dict, t0: float) -> dict:
               for t in ("new", "gone", "reappeared", "price_change", "changed")}
     active = sum(1 for o in db.values() if o["status"] == "active")
 
-    # Watchlist + Telegram
-    rules = storage.read_json(storage.ROOT / "config" / "watchlist.json", {}).get("rules", [])
+    # Watchlist + Telegram (Nachrichten werden nur vorgemerkt, gesendet wird nach dem Speichern)
+    wl_path = storage.ROOT / "config" / "watchlist.json"
+    rules, groups = watch.load_watchlist(wl_path)
     notified = storage.read_json(storage.STATE / "notified.json", {})
-    hits = watch.find_hits(rules, db, events, notified)
+    hits = watch.find_hits(rules, db, events, notified, groups)
+    outbox = storage.read_json(storage.STATE / "outbox.json", [])
     if first_run and not settings["notify_on_first_run"]:
         print(f"[watch] Erster Lauf: {len(hits)} Treffer werden still als bekannt markiert.")
         for *_, key in hits:
             notified[key] = ts
-        sent = 0
     else:
-        sent = watch.notify(hits, notified, ts)
+        queued = {m["key"] for m in outbox}
+        outbox.extend(m for m in watch.queue(hits, notified, ts) if m["key"] not in queued)
     storage._dump(storage.STATE / "notified.json", notified)
-    shutil.copyfile(storage.ROOT / "config" / "watchlist.json", storage.DATA / "watchlist.json") \
-        if (storage.ROOT / "config" / "watchlist.json").exists() else None
+    storage._dump(storage.STATE / "outbox.json", outbox)
+    sent = len(outbox)
+    storage._dump(storage.DATA / "watchlist.json",
+                  {"rules": rules, "store_groups": groups})
 
     # Meta fuer die Web-App
     prev = {s["id"]: s for s in meta.get("stores", [])}
@@ -145,10 +149,15 @@ def process(snapshot: dict, settings: dict, t0: float) -> dict:
            "errors": " | ".join(errors)[:1000]}
     storage.append_csv(storage.DATA / "runs.csv", storage.RUN_FIELDS, [run])
     event_months = sorted(p.stem for p in (storage.DATA / "events").glob("*.csv"))
+    current_path = storage.DATA / "current.json"
+    current_version = hashlib.sha256(current_path.read_bytes()).hexdigest()[:16] if current_path.exists() else ts
+    watch_payload = {"rules": rules, "store_groups": groups}
+    watch_version = hashlib.sha256(json.dumps(watch_payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
     storage._dump(storage.DATA / "meta.json", {
         "updated": ts, "last_run": run, "stores": st_meta, "archive_months": months,
         "event_months": event_months, "total_offers": len(db), "active": active,
-        "hits_this_run": len(hits), "telegram_sent": sent, "schema": 1})
+        "current_version": current_version, "watchlist_version": watch_version,
+        "hits_this_run": len(hits), "telegram_queued": sent, "schema": 1})
     print(f"[run] fertig: {len(ok)}/{len(stores)} Maerkte ok, {active} aktiv, {counts}, {len(hits)} Treffer")
     return run
 
@@ -159,9 +168,14 @@ def main(argv=None) -> int:
     ap.add_argument("--export", action="store_true", help="nur CSV-Export erzeugen")
     ap.add_argument("--no-export", action="store_true")
     ap.add_argument("--force", action="store_true", help="auch aeltere Snapshots einspielen")
+    ap.add_argument("--send-outbox", action="store_true", help="vorgemerkte Telegram-Nachrichten senden")
     a = ap.parse_args(argv)
     settings = load_settings()
     t0 = time.time()
+    if a.send_outbox:
+        sent, left = watch.send_outbox(storage.STATE / "outbox.json")
+        print(f"[watch] {sent} Telegram-Nachrichten gesendet, {left} bleiben im Postausgang.")
+        return 0
     if a.export:
         storage.export_csv(storage.load_db(), now())
         return 0

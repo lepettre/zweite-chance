@@ -58,3 +58,17 @@ assert.ok(ZC.matches({ keywords: ["malm"], stores: ["148"] }, m)); assert.ok(!ZC
 assert.ok(ZC.matches({ conditions: ["kratzer"] }, m)); assert.ok(!ZC.matches({ keywords: ["malm"], exclude: ["schublade"] }, m));
 assert.ok(!ZC.matches({ keywords: ["malm"], enabled: false }, m));
 console.log("core.js: alle Tests bestanden");
+
+// Doppelte Merklisten-Regeln werden auch bei anderer Grossschreibung/Reihenfolge zusammengefuehrt.
+const dupRules = ZC.dedupeRules([
+  { name: "Teppich", keywords: ["Stockholm Teppich"], stores: ["245", "325"], enabled: false },
+  { name: "Teppich nochmal", keywords: ["teppich stockholm"], stores: ["325", "245"] },
+  { name: "PS 2026", article_numbers: ["IKEA PS 2026"] },
+]);
+assert.strictEqual(dupRules.length, 2);
+assert.notStrictEqual(dupRules[0].enabled, false, "aktive Regel bleibt aktiv");
+assert.deepStrictEqual(dupRules[1].keywords, ["IKEA PS 2026"]);
+assert.deepStrictEqual(dupRules[1].article_numbers, []);
+
+const top = ZC.topSorted([{ n: 9 }, { n: 1 }, { n: 7 }, { n: 2 }, { n: 3 }], (a, b) => a.n - b.n, 3);
+assert.deepStrictEqual(top.map((x) => x.n), [1, 2, 3]);

@@ -185,3 +185,24 @@ code{font-family:var(--mono);font-size:.88em;background:var(--line-2);padding:1p
 @keyframes sh{to{background-position:-200% 0}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+/* Mobile: Suche bleibt direkt erreichbar, weitere Filter sind einklappbar. */
+.mobile-filter-toggle{display:none}
+.rule-hits:empty{display:none}
+@media (max-width:960px){
+  main{padding:16px}
+  .layout{gap:12px}
+  .filters{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:0;margin:0 0 12px;max-height:none!important;overflow:visible}
+  .filters .search{grid-column:1;min-width:0}
+  .mobile-filter-toggle{display:inline-flex;grid-column:2;white-space:nowrap;min-height:42px}
+  .filters fieldset,.filters #reset{display:none}
+  .filters.filters--open{grid-template-columns:1fr}
+  .filters.filters--open .search,.filters.filters--open .mobile-filter-toggle{grid-column:1}
+  .filters.filters--open fieldset,.filters.filters--open #reset{display:block;grid-column:1}
+  .filters.filters--open .checks{max-height:180px}
+  .rule{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+  .rule__act{grid-column:1/-1;justify-content:flex-start}
+  .rule__act .btn{min-height:40px}
+  .rule-hits{margin:8px 0 20px}
+  .rule-hits .offers{max-height:62vh;overflow:auto}
+}

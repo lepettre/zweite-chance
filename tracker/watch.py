@@ -49,8 +49,8 @@ def matches(rule: dict, o: dict) -> bool:
     return True
 
 
-def triggers(events: list[dict]) -> dict[str, str]:
-    """id -> Ausloeser (new | reappeared | price_drop)."""
+def triggers(events: list[dict]) -> dict[str, tuple[str, str]]:
+    """id -> (Ausloeser, Ereigniszeit); ein Wiederauftauchen darf erneut melden."""
     out = {}
     for e in events:
         t = e["type"]
@@ -61,22 +61,107 @@ def triggers(events: list[dict]) -> dict[str, str]:
             except (TypeError, ValueError):
                 continue
         if t in NOTIFY_TYPES:
-            out[e["id"]] = t
+            out[e["id"]] = (t, str(e.get("ts") or ""))
     return out
 
 
-def find_hits(rules: list[dict], db: dict, events: list[dict], notified: dict) -> list[tuple]:
+def _canon_list(v, fn):
+    return sorted({fn(str(x)) for x in _list(v) if str(x).strip()})
+
+
+def expand_stores(rule: dict, groups: dict | None) -> list[str]:
+    """'@Hamburg' -> Markt-IDs der Gruppe; alles andere bleibt (ID oder Namensteil)."""
+    out = []
+    for s in _list(rule.get("stores")):
+        s = str(s).strip()
+        if not s:
+            continue
+        if s.startswith("@"):
+            g = (groups or {}).get(s[1:]) or next((v for k, v in (groups or {}).items()
+                                                   if fold(k) == fold(s[1:])), None)
+            out.extend(str(x) for x in (g or []))
+        else:
+            out.append(s)
+    return sorted(set(out))
+
+
+def clean_rule(rule: dict) -> dict:
+    """Artikelnummern ohne 8 Ziffern sind in Wahrheit Stichworte (z. B. 'IKEA PS 2026')."""
+    r = dict(rule)
+    arts = []
+    kws = [str(x).strip() for x in _list(r.get("keywords")) if str(x).strip()]
+    for a in _list(r.get("article_numbers")):
+        a = str(a).strip()
+        if len(norm_article(a)) == 8:
+            arts.append(a)
+        elif a:
+            kws.append(a)
+    r["article_numbers"], r["keywords"] = arts, kws
+    return r
+
+
+def rule_key(rule: dict, groups: dict | None = None) -> str:
+    """Inhaltlicher Schluessel: gleiche Kriterien = gleiche Regel, egal wie sie heisst."""
+    r = clean_rule(rule)
+    parts = [
+        ",".join(_canon_list(r.get("keywords"), lambda x: " ".join(sorted(fold(x).split())))),
+        ",".join(_canon_list(r.get("exclude"), fold)),
+        ",".join(_canon_list(r.get("article_numbers"), norm_article)),
+        ",".join(fold(x) for x in expand_stores(r, groups)),
+        str(r.get("min_discount_pct") if r.get("min_discount_pct") not in ("", None) else ""),
+        str(r.get("max_price") if r.get("max_price") not in ("", None) else ""),
+        ",".join(_canon_list(r.get("conditions"), fold)),
+    ]
+    return "|".join(parts)
+
+
+def dedupe_rules(rules: list[dict], groups: dict | None = None) -> list[dict]:
+    """Doppelte Regeln (gleiche Kriterien) entfernen; aktiv schlaegt pausiert."""
+    seen: dict[str, int] = {}
+    out: list[dict] = []
+    for r in rules:
+        r = clean_rule(r)
+        k = rule_key(r, groups)
+        if k in seen:
+            prev = out[seen[k]]
+            if prev.get("enabled") is False and r.get("enabled") is not False:
+                prev["enabled"] = True
+            continue
+        seen[k] = len(out)
+        out.append(r)
+    return out
+
+
+def load_watchlist(path) -> tuple[list[dict], dict]:
+    from .storage import read_json
+    w = read_json(path, {})
+    groups = {k: [str(x) for x in v] for k, v in (w.get("store_groups") or {}).items()}
+    return dedupe_rules(w.get("rules", []), groups), groups
+
+
+def find_hits(rules: list[dict], db: dict, events: list[dict], notified: dict,
+              groups: dict | None = None) -> list[tuple]:
+    """Ein Treffer je Angebot und Preis - auch wenn mehrere Regeln passen."""
     hits = []
-    for oid, why in triggers(events).items():
+    rules = dedupe_rules(rules, groups)
+    for oid, (why, event_ts) in triggers(events).items():
         o = db.get(oid)
         if not o or o["status"] != "active":
             continue
+        key = f"{oid}|{o.get('price')}|{why}|{event_ts}"
+        if key in notified:
+            continue
+        names, was_sent = [], False
         for i, rule in enumerate(rules):
             name = rule.get("name") or f"Regel {i + 1}"
-            key = f"{name}|{oid}|{o.get('price')}"
-            if key in notified or not matches(rule, o):
+            if not matches({**rule, "stores": expand_stores(rule, groups)}, o):
                 continue
-            hits.append((name, why, o, key))
+            if f"{name}|{oid}|{o.get('price')}" in notified:   # Schluessel der Vorversion
+                was_sent = True
+            elif name not in names:
+                names.append(name)
+        if names and not was_sent:
+            hits.append((" · ".join(names), why, o, key))
     return hits
 
 
@@ -111,29 +196,45 @@ def send_telegram(text: str, token: str, chat_id: str, preview_url: str | None =
         r.read()
 
 
-def notify(hits: list[tuple], notified: dict, ts: str, max_messages: int = 25) -> int:
-    token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
-    if not hits:
-        return 0
-    if not (token and chat):
-        print(f"[watch] {len(hits)} Treffer, aber TELEGRAM_BOT_TOKEN/CHAT_ID fehlen - nur protokolliert.")
-        for _, _, _, key in hits:
-            notified[key] = ts
-        return 0
-    sent = 0
+def queue(hits: list[tuple], notified: dict, ts: str, max_messages: int = 25) -> list[dict]:
+    """Treffer als Nachrichten vormerken. Gesendet wird erst NACH dem erfolgreichen Speichern
+    (send_outbox), damit ein abgebrochener Lauf keine Doppelmeldungen erzeugt."""
+    msgs = []
     for rule_name, why, o, key in hits[:max_messages]:
-        try:
-            send_telegram(format_hit(rule_name, why, o), token, chat, o.get("image") or None)
-            notified[key] = ts
-            sent += 1
-        except Exception as ex:  # naechster Lauf versucht es erneut
-            print(f"[watch] Telegram-Fehler: {ex}")
+        msgs.append({"key": key, "text": format_hit(rule_name, why, o), "preview": o.get("image") or None,
+                     "offer_id": o["id"]})
     rest = len(hits) - max_messages
     if rest > 0:
+        msgs.append({"key": f"rest|{ts}", "text": f"… und {rest} weitere Treffer. Alle in der Web-App unter „Merkliste“.",
+                     "preview": None})
+    for *_, key in hits:
+        notified[key] = ts
+    return msgs
+
+
+def send_outbox(path) -> tuple[int, int]:
+    """Vorgemerkte Nachrichten senden. Fehlgeschlagene bleiben fuer den naechsten Lauf liegen."""
+    from .storage import read_json, _dump
+    box = read_json(path, [])
+    if not box:
+        return 0, 0
+    token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+    if not (token and chat):
+        print(f"[watch] {len(box)} Nachrichten, aber TELEGRAM_BOT_TOKEN/CHAT_ID fehlen - verworfen.")
+        _dump(path, [])
+        return 0, 0
+    left, sent, done = [], 0, set()
+    for m in box:
+        if m["key"] in done:          # Sicherheitsnetz gegen Doppelte im Postausgang
+            continue
         try:
-            send_telegram(f"… und {rest} weitere Treffer. Alle in der Web-App unter „Merkliste“.", token, chat)
-        except Exception:
-            pass
-        for _, _, _, key in hits[max_messages:]:
-            notified[key] = ts
-    return sent
+            send_telegram(m["text"], token, chat, m.get("preview"))
+            sent += 1
+            done.add(m["key"])
+        except Exception as ex:
+            print(f"[watch] Telegram-Fehler: {ex}")
+            m["tries"] = m.get("tries", 0) + 1
+            if m["tries"] < 5:
+                left.append(m)
+    _dump(path, left)
+    return sent, len(left)

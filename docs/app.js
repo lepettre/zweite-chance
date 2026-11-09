@@ -59,15 +59,15 @@
     repo: { meta: null, current: [], archive: {}, archiveLoaded: false, watch: [], runs: null, events: {} },
     local: { db: {}, events: [], runs: [], updated: null, stores: [] },
     source: lsGet(LS.source, "auto"),
-    rules: lsGet(LS.rules, []),
+    rules: ZC.dedupeRules(lsGet(LS.rules, [])),
     prevVisit: null,
     filters: {},
     layout: lsGet(LS.layout, "list"),
     shown: 120,
   };
 
-  async function getJSON(url) { const r = await fetch(url, { cache: "no-cache" }); if (!r.ok) throw new Error(`${r.status} ${url}`); return r.json(); }
-  async function getText(url) { const r = await fetch(url, { cache: "no-cache" }); if (!r.ok) throw new Error(`${r.status} ${url}`); return r.text(); }
+  async function getJSON(url, cache = "no-cache") { const r = await fetch(url, { cache }); if (!r.ok) throw new Error(`${r.status} ${url}`); return r.json(); }
+  async function getText(url, cache = "no-cache") { const r = await fetch(url, { cache }); if (!r.ok) throw new Error(`${r.status} ${url}`); return r.text(); }
 
   // IndexedDB (lokaler Bestand aus Lesezeichen-Importen)
   const idb = {
@@ -82,11 +82,16 @@
 
   async function loadRepo() {
     try { S.repo.meta = await getJSON("data/meta.json"); } catch { S.repo.meta = null; return; }
-    const [cur, watch] = await Promise.all([getJSON("data/current.json").catch(() => ({ offers: [] })), getJSON("data/watchlist.json").catch(() => ({ rules: [] }))]);
+    const currentVersion = encodeURIComponent(S.repo.meta.current_version || S.repo.meta.updated || "initial");
+    const watchVersion = encodeURIComponent(S.repo.meta.watchlist_version || S.repo.meta.updated || "initial");
+    const [cur, watch] = await Promise.all([
+      getJSON(`data/current.json?v=${currentVersion}`, "force-cache").catch(() => ({ offers: [] })),
+      getJSON(`data/watchlist.json?v=${watchVersion}`, "force-cache").catch(() => ({ rules: [] }))
+    ]);
     const lastOk = Object.fromEntries((S.repo.meta.stores || []).map((s) => [s.id, s.last_ok]));
     const fill = (o) => { if (!o.last_seen) o.last_seen = lastOk[o.store_id] || S.repo.meta.updated || o.first_seen; return o; };
     S.repo.current = (cur.offers || []).map(fill);
-    S.repo.watch = (watch.rules || []).map((r, i) => ({ ...r, name: r.name || `Regel ${i + 1}`, _repo: true }));
+    S.repo.watch = ZC.dedupeRules((watch.rules || []).map((r, i) => ({ ...r, name: r.name || `Regel ${i + 1}`, _repo: true })));
   }
   async function loadArchive() {
     if (S.repo.archiveLoaded || !hasRepo()) return;
@@ -118,7 +123,7 @@
     return [...m.values()].sort((a, b) => a.name.localeCompare(b.name, "de"));
   }
   const updatedAt = () => [S.repo.meta?.updated, S.local.updated].filter(Boolean).sort().pop() || null;
-  const allRules = () => [...S.repo.watch, ...S.rules];
+  const allRules = () => ZC.dedupeRules([...S.repo.watch, ...S.rules]);
   const isNew = (o) => S.prevVisit && o.first_seen > S.prevVisit;
   function hitRules(o) { return allRules().filter((r) => r.enabled !== false && ZC.matches(r, o)); }
 
@@ -165,6 +170,7 @@
     });
   }
   function counts(list, key) { const m = new Map(); for (const o of list) { const k = o[key] || "–"; m.set(k, (m.get(k) || 0) + 1); } return [...m.entries()].sort((a, b) => b[1] - a[1]); }
+
 
   /* ---------- Bausteine ---------- */
   function img(o, cls = "offer__img") { return o.image ? `<img class="${cls}" src="${esc(o.image)}?f=xs" alt="" loading="lazy" decoding="async" onerror="this.outerHTML='<div class=&quot;${cls} offer__img--none&quot;>▢</div>'">` : `<div class="${cls} offer__img--none" aria-hidden="true">▢</div>`; }
@@ -224,6 +230,7 @@
         <form class="filters" id="filters" role="search" aria-label="Filter">
           <label class="sr" for="f-q">Suche</label>
           <input id="f-q" class="inp search" name="q" type="search" placeholder="Produkt, Artikelnr., Mangel …" value="${esc(f.q || "")}" autocomplete="off">
+          <button type="button" class="btn mobile-filter-toggle" id="filter-toggle" aria-expanded="false">Filter anzeigen</button>
           <fieldset><legend>Markt</legend>
             <input class="inp" id="store-find" placeholder="Markt suchen" style="min-height:30px;padding:4px 8px;font-size:13px" aria-label="Märkte durchsuchen">
             <div id="store-checks">${checkList("s", counts(scoped, "store_id").sort((a, b) => (nameOf[a[0]] || a[0]).localeCompare(nameOf[b[0]] || b[0], "de")), setOf(f.s), (k) => nameOf[k] || k)}</div>
@@ -261,15 +268,21 @@
 
     const form = $("#filters");
     let current = [];
+    const filterToggle = $("#filter-toggle");
+    filterToggle.addEventListener("click", () => {
+      const open = form.classList.toggle("filters--open");
+      filterToggle.setAttribute("aria-expanded", String(open));
+      filterToggle.textContent = open ? "Filter ausblenden" : "Filter anzeigen";
+    });
     const draw = () => {
-      const res = applyFilters(scoped, S.filters, mode).sort(SORTS[S.filters.sort]?.[1] || SORTS.neu[1]);
+      const res = applyFilters(scoped, S.filters, mode);
       current = res;
+      const visible = ZC.topSorted(res, SORTS[S.filters.sort]?.[1] || SORTS.neu[1], Math.min(S.shown, res.length));
       const sumDisc = res.reduce((a, o) => a + (o.discount_eur || 0), 0);
       $("#list-count").textContent = `${nf0.format(res.length)} von ${nf0.format(scoped.length)} · Ersparnis gesamt ${eur0(sumDisc)}`;
       const box = $("#results");
       if (!res.length) { box.innerHTML = `<div class="empty"><h3>Keine Angebote gefunden</h3><p>Filter lockern oder <button class="linkbtn" id="reset2">alle zurücksetzen</button>.</p></div>`; $("#reset2")?.addEventListener("click", reset); return; }
-      const slice = res.slice(0, S.shown);
-      box.innerHTML = (S.layout === "grid" ? `<ul class="grid">${slice.map(offerCard).join("")}</ul>` : `<ul class="offers">${slice.map(offerRow).join("")}</ul>`)
+      box.innerHTML = (S.layout === "grid" ? `<ul class="grid">${visible.map(offerCard).join("")}</ul>` : `<ul class="offers">${visible.map(offerRow).join("")}</ul>`)
         + (res.length > S.shown ? `<div class="more"><button class="btn" id="more">${nf0.format(Math.min(240, res.length - S.shown))} weitere laden (${nf0.format(res.length - S.shown)} übrig)</button></div>` : "");
       $("#more")?.addEventListener("click", () => { S.shown += 240; draw(); });
     };
@@ -290,7 +303,10 @@
     $("#sort").addEventListener("change", (e) => { S.filters.sort = e.target.value; writeQuery(mode, S.filters); draw(); });
     $$("[data-layout]").forEach((b) => b.addEventListener("click", () => { S.layout = b.dataset.layout; lsSet(LS.layout, S.layout); $$("[data-layout]").forEach((x) => x.setAttribute("aria-pressed", x === b)); draw(); }));
     $("#show-new")?.addEventListener("click", () => { $("input[name=neu]", form).checked = true; sync(); });
-    $("#csv").addEventListener("click", () => download(`zweite-chance_${mode}_${dayKey(Date.now())}.csv`, toCSV(current, EXPORT_COLS)));
+    $("#csv").addEventListener("click", () => {
+      const cmp = SORTS[S.filters.sort]?.[1] || SORTS.neu[1];
+      download(`zweite-chance_${mode}_${dayKey(Date.now())}.csv`, toCSV(current.slice().sort(cmp), EXPORT_COLS));
+    });
     draw();
   }
 
@@ -358,8 +374,14 @@
     $$("[data-open]", dlg).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openDetail(a.dataset.open); }));
     $("[data-copy]", dlg)?.addEventListener("click", () => { const { _hay, ...clean } = o; navigator.clipboard?.writeText(JSON.stringify(clean, null, 2)).then(() => toast("JSON kopiert.")); });
     $("[data-watch-art]", dlg)?.addEventListener("click", () => {
-      S.rules.push({ name: `${o.title} ${ZC.fmtArticle(o.article_number)}`, enabled: true, article_numbers: [ZC.fmtArticle(o.article_number)] });
-      lsSet(LS.rules, S.rules); toast(`„${esc(o.title)}“ beobachtet. Für Telegram: Merkliste → exportieren.`); updateBadges();
+      const r = { name: `${o.title} ${ZC.fmtArticle(o.article_number)}`, enabled: true, article_numbers: [ZC.fmtArticle(o.article_number)] };
+      if (ZC.dedupeRules([...S.repo.watch, ...S.rules]).some((x) => ZC.ruleKey(x) === ZC.ruleKey(r))) {
+        toast("Der Artikel steht bereits auf deiner Merkliste.");
+      } else {
+        S.rules.push(r); lsSet(LS.rules, S.rules);
+        toast(`„${esc(o.title)}“ beobachtet. Für Telegram: Merkliste → exportieren.`);
+      }
+      updateBadges();
     });
     // Ereignisse
     let evs = [];
@@ -394,11 +416,14 @@
     if (activeSource() === "none") return renderOnboarding();
     const active = allOffers(false).filter((o) => o.status === "active");
     const sel = new URLSearchParams(query || "").get("regel");
-    const rules = allRules();
+    const rules = ZC.dedupeRules([
+      ...S.repo.watch.map((r) => ({ ...r, _repo: true })),
+      ...S.rules.map((r, i) => ({ ...r, _localIndex: i }))
+    ]);
     const hitsOf = (r) => active.filter((o) => ZC.matches({ ...r, enabled: true }, o));
     const st = stores();
     const gh = repoUrl();
-    const exportJSON = () => JSON.stringify({ rules: [...S.repo.watch.map(({ _repo, ...r }) => r), ...S.rules.map(({ _repo, ...r }) => r)] }, null, 2);
+    const exportJSON = () => JSON.stringify({ rules: ZC.dedupeRules([...S.repo.watch, ...S.rules]).map(({ _repo, _localIndex, ...r }) => r) }, null, 2);
     view.innerHTML = `
       <div class="toolbar"><h2>Merkliste <small>${rules.length} Regeln</small></h2>
         <div class="toolbar__r">
@@ -407,13 +432,14 @@
           ${gh ? `<a class="btn" href="${gh}/edit/main/config/watchlist.json" target="_blank" rel="noopener">Auf GitHub bearbeiten ↗</a>` : ""}
         </div></div>
       <div class="notice" style="background:#EAF2FA;border-color:#B8D0EA"><span><b>So funktioniert’s:</b> <span style="border-left:4px solid var(--blue);padding-left:6px">Blaue Regeln</span> stehen im Repo (<code>config/watchlist.json</code>) und lösen Telegram-Nachrichten aus. <span style="border-left:4px solid var(--yellow);padding-left:6px">Gelbe Regeln</span> leben nur in diesem Browser – sie markieren Treffer in allen Listen. Per „exportieren“ machst du sie zu Telegram-Regeln.</span></div>
+      <section id="rule-hits" class="rule-hits" aria-live="polite"></section>
       <div class="cols2">
         <section>
-          <div class="rules">${rules.length ? rules.map((r, i) => { const n = hitsOf(r).length; const li = i - S.repo.watch.length; return `
+          <div class="rules">${rules.length ? rules.map((r, i) => { const n = hitsOf(r).length; const li = r._localIndex ?? -1; return `
             <article class="rule ${r._repo ? "rule--repo" : ""} ${r.enabled === false ? "rule--off" : ""}">
               <div style="min-width:0"><h3>${esc(r.name)} ${r.enabled === false ? `<span class="muted" style="font-weight:400">(pausiert)</span>` : ""}</h3><p>${ruleSummary(r)}</p></div>
               <div class="rule__act"><a class="btn ${sel === String(i) ? "btn--primary" : ""}" href="#/merkliste?regel=${i}">${nf0.format(n)} Treffer</a>
-              ${r._repo ? "" : `<button class="btn" data-toggle="${li}" aria-label="Regel ${r.enabled === false ? "aktivieren" : "pausieren"}">${r.enabled === false ? "▶" : "❚❚"}</button><button class="btn" data-edit="${li}" aria-label="Bearbeiten">✎</button><button class="btn" data-del="${li}" aria-label="Löschen">✕</button>`}</div>
+              ${r._repo || li < 0 ? "" : `<button class="btn" data-toggle="${li}" aria-label="Regel ${r.enabled === false ? "aktivieren" : "pausieren"}">${r.enabled === false ? "▶" : "❚❚"}</button><button class="btn" data-edit="${li}" aria-label="Bearbeiten">✎</button><button class="btn" data-del="${li}" aria-label="Löschen">✕</button>`}</div>
             </article>`; }).join("") : `<div class="empty"><h3>Noch keine Regeln</h3><p>Lege rechts deine erste Suche an – oder im Angebotsdetail „Artikel auf die Merkliste“.</p></div>`}</div>
         </section>
         <section class="box" aria-labelledby="rf-h">
@@ -433,15 +459,22 @@
           </form>
         </section>
       </div>
-      <section id="rule-hits" style="margin-top:26px"></section>`;
+      `;
 
     const form = $("#rf");
     const readForm = () => { const fd = new FormData(form); return { name: fd.get("name").trim(), enabled: true, keywords: splitList(fd.get("keywords")), exclude: splitList(fd.get("exclude")), article_numbers: splitList(fd.get("article_numbers")), conditions: splitList(fd.get("conditions")), stores: fd.getAll("stores"), min_discount_pct: fd.get("min_discount_pct") ? Number(fd.get("min_discount_pct")) : null, max_price: fd.get("max_price") ? Number(fd.get("max_price")) : null }; };
     form.addEventListener("input", debounce(() => { const r = readForm(); $("#rf-preview").textContent = `→ aktuell ${nf0.format(hitsOf(r).length)} Treffer`; }, 200));
     form.addEventListener("submit", (e) => {
       e.preventDefault(); const r = readForm(); const idx = form.elements.idx.value;
+      const editIndex = idx === "" ? -1 : Number(idx);
+      const duplicate = ZC.dedupeRules([...S.repo.watch, ...S.rules.map((x, i) => i === editIndex ? { ...x, _edit: true } : x)])
+        .some((x) => !x._edit && ZC.ruleKey(x) === ZC.ruleKey(r));
+      if (duplicate) { toast("Diese Suche ist bereits gespeichert."); return; }
       if (idx !== "") { r.enabled = S.rules[idx].enabled; S.rules[idx] = r; } else S.rules.push(r);
-      lsSet(LS.rules, S.rules); toast("Regel gespeichert."); updateBadges(); renderMerkliste(`regel=${idx !== "" ? Number(idx) + S.repo.watch.length : allRules().length - 1}`);
+      S.rules = ZC.dedupeRules(S.rules);
+      lsSet(LS.rules, S.rules); toast("Regel gespeichert."); updateBadges();
+      const selected = ZC.dedupeRules([...S.repo.watch, ...S.rules]).findIndex((x) => ZC.ruleKey(x) === ZC.ruleKey(r));
+      renderMerkliste(`regel=${selected}`);
     });
     $$("[data-del]").forEach((b) => b.addEventListener("click", () => { if (!confirm("Regel löschen?")) return; S.rules.splice(+b.dataset.del, 1); lsSet(LS.rules, S.rules); updateBadges(); renderMerkliste(); }));
     $$("[data-toggle]").forEach((b) => b.addEventListener("click", () => { const r = S.rules[+b.dataset.toggle]; r.enabled = r.enabled === false; lsSet(LS.rules, S.rules); updateBadges(); renderMerkliste(query); }));

@@ -123,6 +123,55 @@
   }
 
   const list = (v) => v === null || v === undefined ? [] : Array.isArray(v) ? v : [v];
+  function cleanRule(rule) {
+    const r = { ...rule };
+    const words = [...list(r.keywords).filter(Boolean)];
+    const arts = [];
+    for (const a of list(r.article_numbers).filter(Boolean)) {
+      const digits = normArticle(a);
+      if (digits.length === 8) arts.push(digits);
+      else words.push(String(a).trim());
+    }
+    r.keywords = words; r.article_numbers = arts;
+    return r;
+  }
+  function ruleKey(rule) {
+    const r = cleanRule(rule);
+    const uniq = (xs, fn) => [...new Set(xs.map(fn).filter(Boolean))].sort();
+    const kw = uniq(r.keywords, (x) => fold(x).split(/\s+/).filter(Boolean).sort().join(" "));
+    const fields = [kw, uniq(r.exclude || [], fold), uniq(r.article_numbers || [], normArticle),
+      uniq(r.stores || [], (x) => fold(String(x))),
+      r.min_discount_pct === null || r.min_discount_pct === undefined || r.min_discount_pct === "" ? "" : Number(r.min_discount_pct),
+      r.max_price === null || r.max_price === undefined || r.max_price === "" ? "" : Number(r.max_price),
+      uniq(r.conditions || [], fold)];
+    return JSON.stringify(fields);
+  }
+  function dedupeRules(rules) {
+    const out = [], indexes = new Map();
+    for (const input of rules || []) {
+      const rule = cleanRule(input), key = ruleKey(rule);
+      if (!indexes.has(key)) { indexes.set(key, out.length); out.push(rule); continue; }
+      const i = indexes.get(key);
+      if (out[i].enabled === false && rule.enabled !== false) out[i] = rule;
+    }
+    return out;
+  }
+  function topSorted(list, compare, limit) {
+    if (list.length <= limit) return list.slice().sort(compare);
+    const a = list.slice(); let left = 0, right = a.length - 1, target = limit - 1;
+    while (left < right) {
+      const pivot = a[(left + right) >> 1]; let i = left, j = right;
+      while (i <= j) {
+        while (compare(a[i], pivot) < 0) i++;
+        while (compare(a[j], pivot) > 0) j--;
+        if (i <= j) { [a[i], a[j]] = [a[j], a[i]]; i++; j--; }
+      }
+      if (target <= j) right = j;
+      else if (target >= i) left = i;
+      else break;
+    }
+    return a.slice(0, limit).sort(compare);
+  }
   function matches(rule, o) {
     if (rule.enabled === false) return false;
     const hay = fold([o.title, o.product_description, o.offer_description].join(" "));
@@ -151,6 +200,6 @@
     return true;
   }
 
-  const api = { IKEA_PAGE, KNOWN_SLUGS, storeName, storeSlug, offerLink, fold, normArticle, fmtArticle, flatten, merge, plausible, ingestSnapshot, matches, offerKey };
+  const api = { IKEA_PAGE, KNOWN_SLUGS, storeName, storeSlug, offerLink, fold, normArticle, fmtArticle, flatten, merge, plausible, ingestSnapshot, matches, offerKey, ruleKey, dedupeRules, cleanRule, topSorted };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.ZC = api;
 })(typeof window !== "undefined" ? window : globalThis);
