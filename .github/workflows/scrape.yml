@@ -1,11 +1,14 @@
-name: Abruf (stündlich)
+name: Abruf
 
 on:
   schedule:
-    - cron: "17 * * * *"        # jede Stunde um :17 (UTC). GitHub kann Laeufe verzoegern.
-  workflow_dispatch:            # manuell: Actions > "Abruf (stündlich)" > Run workflow
-  push:
-    paths: ["inbox/**"]         # Snapshots aus dem Lesezeichen-Skript hier hochladen
+    - cron: "23 * * * *"        # Reserve; der Cloudflare-Worker löst um :05 aus (zuverlässiger). Doppelstarts überspringt der Tracker.
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Mindestabstand ignorieren"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -17,63 +20,67 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
+    env:
+      ZC_PASSWORD: ${{ secrets.ZC_PASSWORD }}
+      WORKER_URL: ${{ secrets.WORKER_URL }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
 
-      - name: Abhängigkeit (Browser-TLS-Profil gegen Bot-Schutz)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Abhängigkeiten
         run: python -m pip install -r requirements.txt
 
-      - name: Tests (Python-Tracker + Browser-Abgleich)
+      - name: Passwort vorhanden?
         run: |
-          python -m unittest discover -s tests -q
+          [ -n "$ZC_PASSWORD" ] || { echo "::error::Secret ZC_PASSWORD fehlt (Settings > Secrets and variables > Actions)."; exit 1; }
+
+      - name: Tests
+        run: |
+          python -m unittest discover -s tests -t . -q
           node tests/test_core.js
+          node tests/test_worker.mjs
 
-      - name: Snapshots aus inbox/ einspielen
-        if: github.event_name == 'push'
-        run: |
-          for f in $(ls inbox/*.json inbox/*.json.gz 2>/dev/null | sort); do
-            echo "::group::$f"
-            if python -m tracker.run --ingest "$f" --no-export; then git rm -q "$f"; else echo "::warning::$f nicht eingespielt"; fi
-            echo "::endgroup::"
-          done
-          python -m tracker.run --export
+      - name: Letzten Stand holen
+        run: bash scripts/fetch_site.sh
 
-      - name: Live-Abruf aller Märkte
-        if: github.event_name != 'push'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      - name: Abruf aller Märkte
+        id: run
         run: |
-          EXPORT="--no-export"
-          if [ "$(date -u +%H)" = "03" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then EXPORT=""; fi
-          python -m tracker.run $EXPORT
+          set +e
+          python -m tracker.run ${{ inputs.force && '--force' || '' }}
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then exit "$rc"; fi
 
-      - name: Daten committen
-        if: always()
-        run: |
-          git config user.name  "zweite-chance-bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          mkdir -p docs/data state inbox
-          git add -A docs/data state inbox
-          if git diff --cached --quiet; then echo "Keine Änderungen"; exit 0; fi
-          git commit -q -m "Daten $(date -u +%Y-%m-%dT%H:%MZ)"
-          for i in 1 2 3; do git pull -q --rebase && git push -q && break; sleep 5; done
+      - name: Veröffentlichen
+        run: bash scripts/publish.sh
 
-      - name: Rohdaten als Release-Asset sichern (hält das Repo klein)
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Telegram senden
         run: |
-          shopt -s nullglob
-          files=(out/raw/*.json.gz)
-          [ ${#files[@]} -eq 0 ] && exit 0
-          TAG="raw-$(date -u +%Y-%m)"
-          gh release view "$TAG" >/dev/null 2>&1 || \
-            gh release create "$TAG" --title "Rohdaten $(date -u +%Y-%m)" \
-              --notes "Unveränderte API-Antworten jedes Abrufs (gzip-JSON). Nachprüfbarkeit/Reproduktion." --latest=false
-          gh release upload "$TAG" "${files[@]}" --clobber
+          before=$(sha256sum site/d/state.bin 2>/dev/null | cut -d' ' -f1 || true)
+          python -m tracker.run --send-outbox
+          after=$(sha256sum site/d/state.bin 2>/dev/null | cut -d' ' -f1 || true)
+          if [ "$before" != "$after" ]; then bash scripts/publish.sh; fi
+
+      - name: Wochensicherung (eigener Branch mit Verlauf, nichts wird gelöscht)
+        continue-on-error: true
+        run: bash scripts/backup.sh
+
+      - name: Fehlschlag melden, wenn kein Markt erreichbar war
+        if: steps.run.outputs.rc == '2'
+        run: |
+          echo "::error::Kein Markt erreichbar (gesperrt oder Schnittstelle geändert) - siehe Log."
+          exit 1

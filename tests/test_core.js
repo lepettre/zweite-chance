@@ -57,7 +57,7 @@ assert.ok(ZC.matches({ article_numbers: ["802.145.46"] }, m)); assert.ok(!ZC.mat
 assert.ok(ZC.matches({ keywords: ["malm"], stores: ["148"] }, m)); assert.ok(!ZC.matches({ keywords: ["malm"], min_discount_pct: 50 }, m));
 assert.ok(ZC.matches({ conditions: ["kratzer"] }, m)); assert.ok(!ZC.matches({ keywords: ["malm"], exclude: ["schublade"] }, m));
 assert.ok(!ZC.matches({ keywords: ["malm"], enabled: false }, m));
-console.log("core.js: alle Tests bestanden");
+
 
 // Doppelte Merklisten-Regeln werden auch bei anderer Grossschreibung/Reihenfolge zusammengefuehrt.
 const dupRules = ZC.dedupeRules([
@@ -72,3 +72,19 @@ assert.deepStrictEqual(dupRules[1].article_numbers, []);
 
 const top = ZC.topSorted([{ n: 9 }, { n: 1 }, { n: 7 }, { n: 2 }, { n: 3 }], (a, b) => a.n - b.n, 3);
 assert.deepStrictEqual(top.map((x) => x.n), [1, 2, 3]);
+
+// Python-verschluesselte Datei im Browser-Code lesen (Gegenstueck zu tracker/crypto.py + pack.py)
+(async () => {
+  const buf = require("fs").readFileSync(require("path").join(__dirname, "fixtures", "sample.bin"));
+  const key = await ZC.importKey(await ZC.deriveKeyB64("test-passwort"));
+  const packed = await ZC.openBlob(buf, key);
+  const [x, y] = ZC.unpackOffers(packed, { "148": { name: "Berlin-Lichtenberg", slug: "berlinlichtenberg" } }, { "148": "2026-01-09T00:00:00+00:00" });
+  assert.strictEqual(x.title, "KALLAX"); assert.strictEqual(x.article_number, "80275887");
+  assert.strictEqual(x.discount_pct, 20); assert.strictEqual(x.store, "Berlin-Lichtenberg");
+  assert.strictEqual(x.last_seen, "2026-01-09T00:00:00+00:00"); assert.strictEqual(x.price_history.length, 2);
+  assert.ok(x.link.endsWith("#/berlinlichtenberg/7"), x.link); assert.strictEqual(x.gone_at, null);
+  assert.deepStrictEqual(x.log.map((l) => l[1]), ["gone", "back"]);
+  assert.deepStrictEqual(y.price_history, [["2026-01-01T00:00:00+00:00", 40]], "Standard-Preisverlauf wird ergänzt"); assert.deepStrictEqual(y.log, []);
+  await assert.rejects(ZC.openBlob(buf, await ZC.importKey(await ZC.deriveKeyB64("falsch"))), "falsches Passwort");
+  console.log("core.js: alle Tests bestanden");
+})().catch((e) => { console.error(e); process.exit(1); });

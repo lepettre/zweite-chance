@@ -14,6 +14,7 @@ from __future__ import annotations
 from .normalize import content_hash
 
 GONE_AFTER = 2
+LOGGED = {"gone": "gone", "reappeared": "back", "changed": "chg"}
 # Leerer Markt trotz grossem Bestand => vermutlich Stoerung, nicht "alles verkauft"
 SUSPICIOUS_EMPTY_MIN = 10
 
@@ -31,6 +32,8 @@ def merge(db: dict, records: list[dict], ok_stores: set[str], ts: str) -> list[d
     seen_ids = set()
 
     def ev(o, typ, **kw):
+        if typ in LOGGED:                       # dauerhaft am Angebot: verschwunden / wieder da / Angaben geaendert
+            o.setdefault("log", []).append([ts, LOGGED[typ]] + ([kw["fields"]] if kw.get("fields") else []))
         events.append({"ts": ts, "type": typ, "id": o["id"], "store_id": o["store_id"],
                        "article_number": o.get("article_number", ""), "title": o.get("title", ""),
                        "price": o.get("price"), **kw})
@@ -62,7 +65,8 @@ def merge(db: dict, records: list[dict], ok_stores: set[str], ts: str) -> list[d
                        if str(r.get(k, "")) != str(o.get(k, ""))]
             if changed:
                 ev(o, "changed", fields=",".join(changed))
-        keep = {k: o.get(k) for k in ("first_seen", "gone_at", "status", "reappear_count", "price_history")}
+        keep = {k: o.get(k) for k in ("first_seen", "gone_at", "status", "reappear_count", "price_history", "log")}
+        keep["log"] = keep["log"] or []
         keep["reappear_count"] = keep["reappear_count"] or 0
         keep["price_history"] = keep["price_history"] or [[o["first_seen"], o.get("price")]]
         o.clear()

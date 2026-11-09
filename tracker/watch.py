@@ -12,6 +12,13 @@ from .normalize import fold, norm_article
 NOTIFY_TYPES = {"new", "reappeared", "price_drop"}
 
 
+def nk(key: str) -> str:
+    """Kompakter, nicht lesbarer Schluessel fuer 'bereits gemeldet' (Klartext-Schluessel nennen Suchbegriffe)."""
+    import hashlib
+    import re
+    return key if re.fullmatch(r"[0-9a-f]{12}", key) else hashlib.sha1(key.encode()).hexdigest()[:12]
+
+
 def _list(v):
     if v is None:
         return []
@@ -132,11 +139,46 @@ def dedupe_rules(rules: list[dict], groups: dict | None = None) -> list[dict]:
     return out
 
 
-def load_watchlist(path) -> tuple[list[dict], dict]:
-    from .storage import read_json
-    w = read_json(path, {})
-    groups = {k: [str(x) for x in v] for k, v in (w.get("store_groups") or {}).items()}
-    return dedupe_rules(w.get("rules", []), groups), groups
+def _worker_request(method: str, body: dict | None = None, confirm_delete: bool = False):
+    url, pw = os.environ.get("WORKER_URL", "").rstrip("/"), os.environ.get("ZC_PASSWORD", "")
+    if not (url and pw):
+        return None
+    req = urllib.request.Request(f"{url}/api/watchlist", method=method, headers={
+        "x-key": pw, "content-type": "application/json", "user-agent": "zc-tracker",
+        **({"x-confirm-delete": "2"} if confirm_delete else {})},
+        data=json.dumps(body, ensure_ascii=False).encode() if body is not None else None)
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read() or b"null")
+
+
+def load_watchlist(legacy_path=None) -> tuple[list[dict], dict, str]:
+    """Merkliste laden. Reihenfolge: Worker (Quelle der Wahrheit) -> letzte Sicherung -> Altbestand.
+    Rueckgabe: (Regeln, Marktgruppen, Quelle)."""
+    from . import storage
+    remote = None
+    try:
+        remote = _worker_request("GET")
+    except Exception as ex:
+        print(f"[watch] Worker nicht erreichbar ({ex}) - nutze letzte Sicherung.")
+    saved = storage.read_bin("watchlist.bin", None)
+    legacy = storage.read_json(legacy_path, None) if legacy_path else None
+    if remote is not None and (remote.get("rules") or not (saved or legacy)):
+        w, src = remote, "worker"
+    elif saved and saved.get("rules"):
+        w, src = saved, "sicherung"
+    elif legacy:
+        w, src = legacy, "altbestand"
+    else:
+        w, src = {}, "leer"
+    groups = {k: [str(x) for x in v] for k, v in (w.get("store_groups") or w.get("groups") or {}).items()}
+    rules = dedupe_rules(w.get("rules", []), groups)
+    if remote is not None and not remote.get("rules") and rules:     # Worker einmalig befuellen
+        try:
+            _worker_request("PUT", {"rules": rules, "groups": groups})
+            print(f"[watch] {len(rules)} Regeln in den Worker uebernommen.")
+        except Exception as ex:
+            print(f"[watch] Worker konnte nicht befuellt werden: {ex}")
+    return rules, groups, src
 
 
 def find_hits(rules: list[dict], db: dict, events: list[dict], notified: dict,
@@ -148,7 +190,7 @@ def find_hits(rules: list[dict], db: dict, events: list[dict], notified: dict,
         o = db.get(oid)
         if not o or o["status"] != "active":
             continue
-        key = f"{oid}|{o.get('price')}|{why}|{event_ts}"
+        key = nk(f"{oid}|{o.get('price')}|{why}|{event_ts}")
         if key in notified:
             continue
         names, was_sent = [], False
@@ -156,7 +198,7 @@ def find_hits(rules: list[dict], db: dict, events: list[dict], notified: dict,
             name = rule.get("name") or f"Regel {i + 1}"
             if not matches({**rule, "stores": expand_stores(rule, groups)}, o):
                 continue
-            if f"{name}|{oid}|{o.get('price')}" in notified:   # Schluessel der Vorversion
+            if nk(f"{name}|{oid}|{o.get('price')}") in notified:   # Schluessel der Vorversion
                 was_sent = True
             elif name not in names:
                 names.append(name)
@@ -196,14 +238,47 @@ def send_telegram(text: str, token: str, chat_id: str, preview_url: str | None =
         r.read()
 
 
-def queue(hits: list[tuple], notified: dict, ts: str, max_messages: int = 25) -> list[dict]:
-    """Treffer als Nachrichten vormerken. Gesendet wird erst NACH dem erfolgreichen Speichern
-    (send_outbox), damit ein abgebrochener Lauf keine Doppelmeldungen erzeugt."""
+def _product_key(o: dict) -> str:
+    return o.get("article_number") or (fold(o.get("title", "")) + "|" + fold(o.get("product_description", "")))
+
+
+def format_group(rule_name, why, offers: list[dict], max_lines: int = 8) -> str:
+    """Mehrere gleiche Artikel (gleiche Regel, gleicher Anlass) in EINER Nachricht."""
+    if len(offers) == 1:
+        return format_hit(rule_name, why, offers[0])
+    e = html.escape
+    offers = sorted(offers, key=lambda o: (o.get("price") is None, o.get("price") or 0, o.get("store", "")))
+    first = offers[0]
+    lines = [f"<b>{e(WHY.get(why, why))} · {e(rule_name)}</b>",
+             f"<a href=\"{e(first['link'])}\">{e(first['title'])}</a> – {e(first.get('product_description', ''))}",
+             f"<b>{len(offers)}× verfügbar</b>"]
+    for o in offers[:max_lines]:
+        pct = f" (−{o['discount_pct']:.0f} %)" if o.get("discount_pct") is not None else ""
+        cond = o.get("condition") or o.get("reason_discount") or ""
+        lines.append(f"📍 {e(o['store'])} · <a href=\"{e(o['link'])}\"><b>{_fmt_eur(o.get('price'))}</b></a>{pct}"
+                     + (f" · {e(cond)}" if cond else ""))
+    if len(offers) > max_lines:
+        lines.append(f"… und {len(offers) - max_lines} weitere")
+    lines.append(f"<code>Art. {e(first.get('article_number', ''))}</code>")
+    return "\n".join(lines)
+
+
+def queue(hits: list[tuple], notified: dict, ts: str, max_messages: int = 15) -> list[dict]:
+    """Treffer vormerken, gleiche Artikel je Regel/Anlass zu einer Nachricht gebuendelt.
+    Gesendet wird erst NACH dem Veroeffentlichen (send_outbox), damit ein abgebrochener Lauf
+    keine Doppelmeldungen erzeugt."""
+    groups: dict[tuple, dict] = {}
+    for rule_name, why, o, key in hits:
+        g = groups.setdefault((rule_name, why, _product_key(o)),
+                              {"rule": rule_name, "why": why, "offers": [], "keys": []})
+        g["offers"].append(o)
+        g["keys"].append(key)
     msgs = []
-    for rule_name, why, o, key in hits[:max_messages]:
-        msgs.append({"key": key, "text": format_hit(rule_name, why, o), "preview": o.get("image") or None,
-                     "offer_id": o["id"]})
-    rest = len(hits) - max_messages
+    for g in list(groups.values())[:max_messages]:
+        cheapest = min(g["offers"], key=lambda o: (o.get("price") is None, o.get("price") or 0))
+        msgs.append({"key": g["keys"][0], "keys": g["keys"], "text": format_group(g["rule"], g["why"], g["offers"]),
+                     "preview": cheapest.get("image") or None, "offer_id": cheapest["id"]})
+    rest = len(groups) - max_messages
     if rest > 0:
         msgs.append({"key": f"rest|{ts}", "text": f"… und {rest} weitere Treffer. Alle in der Web-App unter „Merkliste“.",
                      "preview": None})
@@ -212,16 +287,15 @@ def queue(hits: list[tuple], notified: dict, ts: str, max_messages: int = 25) ->
     return msgs
 
 
-def send_outbox(path) -> tuple[int, int]:
-    """Vorgemerkte Nachrichten senden. Fehlgeschlagene bleiben fuer den naechsten Lauf liegen."""
-    from .storage import read_json, _dump
-    box = read_json(path, [])
+def send_outbox(state: dict) -> tuple[int, int]:
+    """Vorgemerkte Nachrichten senden (state["outbox"]). Fehlgeschlagene bleiben fuer den naechsten Lauf liegen."""
+    box = state.get("outbox") or []
     if not box:
         return 0, 0
     token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
     if not (token and chat):
         print(f"[watch] {len(box)} Nachrichten, aber TELEGRAM_BOT_TOKEN/CHAT_ID fehlen - verworfen.")
-        _dump(path, [])
+        state["outbox"] = []
         return 0, 0
     left, sent, done = [], 0, set()
     for m in box:
@@ -236,5 +310,5 @@ def send_outbox(path) -> tuple[int, int]:
             m["tries"] = m.get("tries", 0) + 1
             if m["tries"] < 5:
                 left.append(m)
-    _dump(path, left)
+    state["outbox"] = left
     return sent, len(left)
