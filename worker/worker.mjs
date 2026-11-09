@@ -41,7 +41,7 @@ export default {
     const url = new URL(req.url);
     if (req.method === "OPTIONS") {
       return new Response(null, { headers: {
-        "access-control-allow-origin": "*", "access-control-allow-headers": "x-key, content-type",
+        "access-control-allow-origin": "*", "access-control-allow-headers": "x-key, x-confirm-delete, content-type",
         "access-control-allow-methods": "GET, PUT, OPTIONS", "access-control-max-age": "86400" } });
     }
 
@@ -53,10 +53,29 @@ export default {
         const body = await req.json().catch(() => null);
         if (!body || !Array.isArray(body.rules) || body.rules.length > 500) return json({ error: "bad request" }, 400);
         const clean = { rules: body.rules, groups: body.groups && typeof body.groups === "object" ? body.groups : {} };
+        const old = await env.WL.get("watchlist", "json");
+        // Es geht nichts verloren: weniger Regeln nur mit ausdrücklicher (doppelter) Bestätigung durch den Client.
+        if (old && clean.rules.length < old.rules.length && req.headers.get("x-confirm-delete") !== "2") {
+          return json({ error: "Löschen braucht doppelte Bestätigung" }, 409);
+        }
+        // Jeder überschriebene Stand bleibt als Version erhalten (wird nie automatisch gelöscht).
+        if (old && JSON.stringify(old) !== JSON.stringify(clean)) {
+          const id = `v:${new Date().toISOString()}:${Math.random().toString(36).slice(2, 6)}`;
+          await env.WL.put(id, JSON.stringify(old), { metadata: { count: old.rules.length } });
+        }
         await env.WL.put("watchlist", JSON.stringify(clean));
         return json({ ok: true, count: clean.rules.length });
       }
       return json({ error: "method" }, 405);
+    }
+
+    // --- frühere Stände der Merkliste (nur lesen; Wiederherstellen = normales PUT) ---
+    if (url.pathname === "/api/history" && req.method === "GET") {
+      if (!same(req.headers.get("x-key"), env.ACCESS_PASSWORD)) return json({ error: "unauthorized" }, 401);
+      const id = url.searchParams.get("id");
+      if (id) return json((await env.WL.get(id, "json")) || { error: "unbekannt" });
+      const list = await env.WL.list({ prefix: "v:" });
+      return json(list.keys.map((k) => ({ id: k.name, ts: k.name.slice(2, 26), count: k.metadata?.count ?? null })).reverse().slice(0, 200));
     }
 
     // --- Telegram-Webhook: Text an den Bot-Workflow weiterreichen ---

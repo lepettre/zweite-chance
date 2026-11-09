@@ -3,8 +3,11 @@
  meta.bin       Maerkte, letzter Lauf, Abruf-Protokoll          (Web-App)
  current.bin    aktive Angebote                                   (Web-App)
  a-JJJJ-MM.bin  verschwundene Angebote nach Monat                (Web-App)
+ runs.bin       komplettes Abruf-Protokoll                        (Web-App, nur Daten-Seite)
  watchlist.bin  zuletzt verwendete Merkliste (Sicherung)         (Web-App, nur Lesen)
  state.bin      bereits gemeldete Treffer + Telegram-Postausgang (nur Tracker)
+
+Grundsatz: Es wird nichts geloescht. Weder Angebote noch Verlauf noch Protokoll laufen automatisch aus.
 
 site/ ist ein eigener Branch (gh-pages), der bei jedem Lauf ohne Verlauf neu veroeffentlicht wird.
 """
@@ -13,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timedelta
+import csv
 from pathlib import Path
 
 from . import crypto
@@ -23,7 +26,6 @@ ROOT = Path(os.environ.get("TRACKER_ROOT", Path(__file__).resolve().parent.paren
 DATA = Path(os.environ["ZC_DATA"]) if os.environ.get("ZC_DATA") else ROOT / "site" / "d"
 LEGACY = ROOT / "docs" / "data"           # Altbestand (Klartext) - wird einmalig uebernommen
 RAW_OUT = ROOT / "out" / "raw"
-KEEP_RUNS = 400
 
 
 def read_json(path: Path, default):
@@ -74,7 +76,39 @@ def _load_legacy() -> dict:
     for o in db.values():
         o.setdefault("price_history", [[o["first_seen"], o.get("price")]])
         o.setdefault("reappear_count", 0)
+        o.setdefault("log", [])
+    _merge_legacy_events(db)
     return db
+
+
+LEGACY_LOG = {"gone": "gone", "reappeared": "back", "changed": "chg"}
+
+
+def _merge_legacy_events(db: dict) -> None:
+    """Altes Ereignisprotokoll (events/*.csv): verschwunden / wieder da / geaendert wandern in o["log"].
+    'new' und 'price_change' stecken schon in first_seen bzw. price_history."""
+    for p in sorted((LEGACY / "events").glob("*.csv")):
+        with p.open(encoding="utf-8", newline="") as f:
+            for e in csv.DictReader(f):
+                kind, o = LEGACY_LOG.get(e["type"]), db.get(e["id"])
+                if kind and o is not None:
+                    entry = [e["ts"], kind] + ([e["fields"]] if e.get("fields") else [])
+                    if entry not in o["log"]:
+                        o["log"].append(entry)
+    for o in db.values():
+        o["log"].sort(key=lambda x: x[0])
+
+
+def legacy_runs() -> list[dict]:
+    p = LEGACY / "runs.csv"
+    if not p.exists():
+        return []
+    with p.open(encoding="utf-8", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def read_runs() -> list[dict]:
+    return read_bin("runs.bin", None) or legacy_runs()
 
 
 def load_meta_for_legacy() -> dict:
@@ -97,23 +131,28 @@ def load_db() -> dict:
     return db
 
 
-def save_db(db: dict, ts: str, keep_days: int = 30) -> tuple[list[str], str]:
-    """Aktive Angebote + Archiv schreiben. Archiv enthaelt nur die letzten keep_days Tage."""
-    cutoff = (datetime.fromisoformat(ts) - timedelta(days=keep_days)).isoformat()
-    for oid in [i for i, o in db.items() if o["status"] == "gone" and (o.get("gone_at") or "") < cutoff]:
-        del db[oid]
+def _digest(packed: dict) -> str:
+    return hashlib.sha256(json.dumps(packed, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()[:16]
+
+
+def save_db(db: dict, prev_hashes: dict | None = None) -> tuple[list[str], str, dict]:
+    """Aktive Angebote + Archiv (je Monat) schreiben. Es wird nichts geloescht.
+    Unveraenderte Monate bleiben byte-identisch (gut fuer Git-Deduplizierung der Sicherungen)."""
     version = write_bin("current.bin", pack_offers([o for o in db.values() if o["status"] == "active"]))
     months: dict[str, list] = {}
     for o in db.values():
         if o["status"] == "gone":
             months.setdefault(month(o["gone_at"]), []).append(o)
     DATA.mkdir(parents=True, exist_ok=True)
-    for p in DATA.glob("a-*.bin"):            # Monate ohne Eintraege entfernen
-        if p.stem[2:] not in months:
-            p.unlink()
+    hashes = {}
+    for p in DATA.glob("a-*.bin"):             # Monat ohne Eintraege (alle reaktiviert): leeren statt Datei zu loeschen
+        months.setdefault(p.stem[2:], [])
     for m, offers in months.items():
-        write_bin(f"a-{m}.bin", pack_offers(offers))
-    return sorted(months), version
+        packed = pack_offers(offers)
+        hashes[m] = _digest(packed)
+        if (prev_hashes or {}).get(m) != hashes[m] or not (DATA / f"a-{m}.bin").exists():
+            write_bin(f"a-{m}.bin", packed)
+    return sorted(months), version, hashes
 
 
 def write_raw(payload: dict, ts: str) -> Path:

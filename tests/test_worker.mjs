@@ -2,9 +2,10 @@
 import assert from "assert";
 import worker from "../worker/worker.mjs";
 
-const kv = new Map();
+const kv = new Map(), meta = new Map();
 const env = { ACCESS_PASSWORD: "pw", GH_TOKEN: "t", TG_SECRET: "s", GH_REPO: "a/b", TELEGRAM_CHAT_ID: "42",
-  WL: { get: async (k) => (kv.has(k) ? JSON.parse(kv.get(k)) : null), put: async (k, v) => kv.set(k, v) } };
+  WL: { get: async (k) => (kv.has(k) ? JSON.parse(kv.get(k)) : null), put: async (k, v, o) => { kv.set(k, v); if (o?.metadata) meta.set(k, o.metadata); },
+    list: async ({ prefix }) => ({ keys: [...kv.keys()].filter((k) => k.startsWith(prefix)).sort().map((name) => ({ name, metadata: meta.get(name) })) }) } };
 const calls = [];
 globalThis.fetch = async (url, init) => { calls.push({ url, body: JSON.parse(init.body), auth: init.headers.authorization }); return new Response(null, { status: 204 }); };
 const pending = [];
@@ -23,6 +24,20 @@ r = await worker.fetch(req("/api/watchlist", { headers: { "x-key": "pw" } }), en
 assert.strictEqual((await r.json()).rules[0].name, "A");
 r = await worker.fetch(req("/api/watchlist", { method: "PUT", headers: { "x-key": "pw" }, body: "{}" }), env, ctx);
 assert.strictEqual(r.status, 400);
+
+// Löschen: ohne doppelte Bestätigung abgelehnt, mit ihr erlaubt - und der alte Stand bleibt erhalten
+const put = (rules, extra = {}) => worker.fetch(req("/api/watchlist", { method: "PUT", headers: { "x-key": "pw", ...extra }, body: JSON.stringify({ rules }) }), env, ctx);
+await put([{ name: "A" }, { name: "B" }]);
+r = await put([{ name: "A" }]);
+assert.strictEqual(r.status, 409, "weniger Regeln ohne Bestätigung abgelehnt");
+r = await put([{ name: "A" }], { "x-confirm-delete": "2" });
+assert.strictEqual(r.status, 200);
+r = await worker.fetch(req("/api/history", { headers: { "x-key": "pw" } }), env, ctx);
+const hist = await r.json();
+assert.ok(hist.length >= 2, "Versionen vorhanden");
+const restored = await (await worker.fetch(req("/api/history?id=" + encodeURIComponent(hist[0].id), { headers: { "x-key": "pw" } }), env, ctx)).json();
+assert.deepStrictEqual(restored.rules.map((x) => x.name), ["A", "B"], "gelöschte Regel B ist wiederherstellbar");
+r = await worker.fetch(req("/api/history"), env, ctx); assert.strictEqual(r.status, 401);
 
 const tg = (chat, secret = "s") => req("/tg", { method: "POST", headers: { "x-telegram-bot-api-secret-token": secret }, body: JSON.stringify({ message: { chat: { id: chat }, text: "Knivshult Hamburg" } }) });
 await worker.fetch(tg(42, "falsch"), env, ctx);

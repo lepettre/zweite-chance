@@ -12,7 +12,7 @@ from .normalize import content_hash, offer_link, store_slug
 STR_FIELDS = ["id", "offer_number", "store_id", "title", "product_description", "offer_description",
               "article_numbers", "condition", "condition_code", "condition_description",
               "reason_discount", "additional_info", "image", "status", "first_seen", "last_seen",
-              "gone_at", "price_history"]
+              "gone_at", "price_history", "log"]
 NUM_FIELDS = ["price", "original_price", "reappear_count", "missing_runs"]
 FIELDS = STR_FIELDS + NUM_FIELDS
 
@@ -34,7 +34,11 @@ def pack_offers(offers: list[dict]) -> dict:
             if f == "article_numbers":
                 v = ",".join(o.get("article_numbers") or ([o["article_number"]] if o.get("article_number") else []))
             elif f == "price_history":
-                v = json.dumps(o.get("price_history") or [], separators=(",", ":"))
+                ph = o.get("price_history") or []
+                standard = len(ph) == 1 and ph[0][0] == o.get("first_seen") and ph[0][1] == o.get("price")
+                v = "" if standard else json.dumps(ph, separators=(",", ":"))   # Standard: wird beim Laden ergaenzt
+            elif f == "log":
+                v = json.dumps(o["log"], ensure_ascii=False, separators=(",", ":")) if o.get("log") else ""
             elif f == "last_seen":
                 v = o.get("last_seen") or ""
                 if o.get("status") == "active" and not o.get("missing_runs"):
@@ -69,7 +73,8 @@ def unpack_offers(d: dict | None, stores: dict, last_ok: dict | None = None, upd
             "discount_eur": disc, "discount_pct": round(disc / orig * 100, 1) if disc is not None and orig else None,
             "link": offer_link(st.get("slug") or store_slug(st.get("name", sid)), o["offer_number"]),
             "gone_at": o["gone_at"] or None,
-            "price_history": json.loads(o["price_history"] or "[]"),
+            "price_history": json.loads(o["price_history"]) if o["price_history"] else [[o["first_seen"], price]],
+            "log": json.loads(o["log"]) if o["log"] else [],
         })
         o["hash"] = content_hash(o)
         if not o["last_seen"]:

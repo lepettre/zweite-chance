@@ -25,7 +25,7 @@ HELP = ("<b>Fragen</b>\n"
         "<b>Merkliste</b>\n"
         "• <code>/liste</code> – Regeln anzeigen\n"
         "• <code>/merke Knivshult Hamburg</code> – Regel anlegen\n"
-        "• <code>/vergiss 3</code> – Regel löschen")
+        "• <code>/vergiss 3</code> – Regel löschen (mit doppelter Bestätigung)")
 
 
 def text_rest(text: str) -> str:
@@ -150,9 +150,16 @@ def manage(cmd: str, text: str, db: dict, meta: dict) -> list[str]:
         m = re.search(r"\d+", text)
         if not m or not 1 <= int(m.group()) <= len(rules):
             return ["Welche Regel? <code>/vergiss 3</code> – Nummern siehe /liste."]
-        gone = rules.pop(int(m.group()) - 1)
-        watch._worker_request("PUT", {"rules": rules, "groups": w.get("groups") or {}})
-        return [f"🗑 „{html.escape(gone.get('name', ''))}“ gelöscht. Übrig: {len(rules)}."]
+        n = int(m.group())
+        yes = len(re.findall(r"\bja\b", fold(text)))
+        r = rules[n - 1]
+        if yes < 2:                                    # doppelte Bestaetigung
+            return [f"Regel {n} „{html.escape(r.get('name', ''))}“ wirklich löschen?\n"
+                    f"Bestätigung {yes + 1} von 2: <code>/vergiss {n}{' ja' * (yes + 1)}</code>"]
+        rules.pop(n - 1)
+        watch._worker_request("PUT", {"rules": rules, "groups": w.get("groups") or {}}, confirm_delete=True)
+        return [f"🗑 „{html.escape(r.get('name', ''))}“ gelöscht. Übrig: {len(rules)}. "
+                f"Der alte Stand bleibt im Verlauf erhalten (Web-App → Merkliste → Frühere Stände)."]
     # merke
     t = text
     price = re.search(r"(?:bis|unter|max\.?)\s*(\d+(?:[.,]\d+)?)\s*(?:€|euro)?", t, re.I)

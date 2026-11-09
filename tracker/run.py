@@ -32,7 +32,6 @@ def load_settings() -> dict:
     s.setdefault("store_slugs", {})
     s.setdefault("only_stores", [])
     s.setdefault("notify_on_first_run", False)
-    s.setdefault("archive_days", 30)
     s.setdefault("workers", 3)
     s.setdefault("min_gap_minutes", 0)
     return s
@@ -109,8 +108,11 @@ def process(snapshot: dict, settings: dict, t0: float) -> dict:
             errors.append(f"{stores[sid]['name']}: leer trotz Bestand - nicht als Abverkauf gewertet")
         records.extend(recs)
 
+    before = len(db)
     events = merge(db, records, ok, ts)
-    months, version = storage.save_db(db, ts, int(settings["archive_days"]))
+    if len(db) < before:                               # Grundsatz: Bestand schrumpft nie
+        raise SystemExit(f"Abbruch: Bestand waere von {before} auf {len(db)} geschrumpft - nichts gespeichert.")
+    months, version, arch_hashes = storage.save_db(db, meta.get("archive_hash"))
 
     counts = {t: sum(1 for e in events if e["type"] == t)
               for t in ("new", "gone", "reappeared", "price_change", "changed")}
@@ -121,7 +123,8 @@ def process(snapshot: dict, settings: dict, t0: float) -> dict:
     state = storage.read_bin("state.bin", None)
     if state is None:                                  # Uebernahme des Altbestands
         state = {"notified": storage.read_json(storage.ROOT / "state" / "notified.json", {}), "outbox": []}
-    notified, outbox = state.setdefault("notified", {}), state.setdefault("outbox", [])
+    state["notified"] = {watch.nk(k): v for k, v in state.setdefault("notified", {}).items()}   # alte Klartext-Schluessel umwandeln
+    notified, outbox = state["notified"], state.setdefault("outbox", [])
     hits = watch.find_hits(rules, db, events, notified, groups)
     if first_run and not settings["notify_on_first_run"]:
         print(f"[watch] Erster Lauf: {len(hits)} Treffer werden still als bekannt markiert.")
@@ -130,8 +133,6 @@ def process(snapshot: dict, settings: dict, t0: float) -> dict:
     else:
         queued = {m["key"] for m in outbox}
         outbox.extend(m for m in watch.queue(hits, notified, ts) if m["key"] not in queued)
-    cutoff = (datetime.fromisoformat(ts) - timedelta(days=45)).isoformat()
-    state["notified"] = {k: v for k, v in notified.items() if str(v) >= cutoff}
     storage.write_bin("state.bin", state)
     storage.write_bin("watchlist.bin", {"rules": rules, "store_groups": groups})
     print(f"[watch] Merkliste: {len(rules)} Regeln (Quelle: {rules_src}), {len(hits)} Treffer, {len(outbox)} im Postausgang")
@@ -156,24 +157,14 @@ def process(snapshot: dict, settings: dict, t0: float) -> dict:
            "stores_ok": len(ok), "stores_failed": len(stores) - len(ok), "offers_seen": len(records),
            "active": active, **counts, "duration_s": round(time.time() - t0, 1),
            "errors": " | ".join(errors)[:1000]}
-    runs = (meta.get("runs") or storage_legacy_runs())[-(storage.KEEP_RUNS - 1):] + [run]
+    storage.write_bin("runs.bin", storage.read_runs() + [run])
     storage.write_bin("meta.bin", {
-        "updated": ts, "last_run": run, "stores": st_meta, "archive_months": months,
-        "total_offers": len(db), "active": active, "current_version": version, "runs": runs,
+        "updated": ts, "last_run": run, "stores": st_meta, "archive_months": months, "archive_hash": arch_hashes,
+        "total_offers": len(db), "active": active, "current_version": version,
         "worker": os.environ.get("WORKER_URL", "").rstrip("/") or None,
         "hits_this_run": len(hits), "telegram_queued": len(outbox), "schema": 2})
     print(f"[run] fertig: {len(ok)}/{len(stores)} Maerkte ok, {active} aktiv, {counts}, {len(hits)} Treffer")
     return run
-
-
-def storage_legacy_runs() -> list[dict]:
-    """Abruf-Protokoll aus dem Altbestand (runs.csv) uebernehmen, solange noch keins existiert."""
-    import csv
-    p = storage.LEGACY / "runs.csv"
-    if not p.exists():
-        return []
-    with p.open(encoding="utf-8", newline="") as f:
-        return list(csv.DictReader(f))[-100:]
 
 
 def recently_fetched(settings: dict) -> str | None:

@@ -4,7 +4,6 @@
   "only_stores": [],
   "store_slugs": {},
   "notify_on_first_run": false,
-  "archive_days": 30,
   "workers": 3,
   "min_gap_minutes": 40
 }

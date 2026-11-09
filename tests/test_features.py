@@ -52,15 +52,69 @@ class TestFeatures(Base):
         self.assertEqual(len(sent), 1, "vier gleiche Artikel = eine Nachricht")
         self.assertIn("4× verfügbar", sent[0]); self.assertIn("Hannover", sent[0])
 
-    def test_archive_retention(self):
+    def test_nothing_is_ever_deleted(self):
         self.world = {"148": [group("148", "X", "1", 10.0, [offer("a", "1", 5.0), offer("b", "2", 5.0)])]}
         self.tick()
         self.world = {"148": [group("148", "X", "1", 10.0, [offer("b", "2", 5.0)])]}
         self.tick(); rc, db, meta = self.tick()
         self.assertEqual(db["u:a"]["status"], "gone")
-        db["u:a"]["gone_at"] = "2026-05-01T01:00:00+00:00"
-        self.storage.save_db(db, "2026-07-01T00:00:00+00:00", 30)
-        self.assertNotIn("u:a", self.storage.load_db(), "aelter als archive_days wird verworfen")
+        db["u:a"]["gone_at"] = "2020-01-01T00:00:00+00:00"      # sehr alt
+        self.storage.save_db(db)
+        for _ in range(3):
+            rc, db, meta = self.tick()
+        self.assertIn("u:a", db, "auch uralte verschwundene Angebote bleiben")
+        self.assertTrue((self.tmp / "site/d/a-2020-01.bin").exists())
+
+    def test_closed_archive_month_is_byte_identical(self):
+        self.world = {"148": [group("148", "X", "1", 10.0, [offer("a", "1", 5.0), offer("b", "2", 5.0)])]}
+        self.tick()
+        self.world = {"148": [group("148", "X", "1", 10.0, [offer("b", "2", 5.0)])]}
+        self.tick(); self.tick()
+        f = next((self.tmp / "site/d").glob("a-*.bin"))
+        first = f.read_bytes()
+        for _ in range(3):
+            self.tick()
+        self.assertEqual(f.read_bytes(), first, "unveraenderte Monatsdatei wird nicht neu geschrieben")
+
+    def test_shrinking_store_is_refused(self):
+        self.world = {"148": [group("148", "X", "1", 10.0, [offer("a", "1", 5.0)])]}
+        self.tick()
+        db = self.storage.load_db()
+        orig = self.run.merge
+        self.run.merge = lambda d, *a, **k: (d.clear(), [])[1]
+        try:
+            with self.assertRaises(SystemExit):
+                self.tick()
+        finally:
+            self.run.merge = orig
+        self.assertEqual(len(self.storage.load_db()), len(db), "Bestand unveraendert")
+
+    def test_legacy_migration_keeps_events_and_runs(self):
+        leg = self.tmp / "docs/data"
+        (leg / "events").mkdir(parents=True)
+        o = {"id": "u:z", "offer_uuid": "z", "offer_number": "5", "store_id": "148", "store": "Berlin-Lichtenberg", "title": "T",
+             "product_description": "", "offer_description": "", "article_number": "1", "article_numbers": ["1"], "condition": "",
+             "condition_code": "", "condition_description": "", "reason_discount": "", "additional_info": "", "price": 5.0,
+             "original_price": 10.0, "discount_eur": 5.0, "discount_pct": 50.0, "currency": "EUR", "image": "", "link": "x",
+             "first_seen": "2026-05-01T00:00:00+00:00", "gone_at": None, "status": "active", "hash": "h", "reappear_count": 1,
+             "price_history": [["2026-05-01T00:00:00+00:00", 5.0]]}
+        (leg / "current.json").write_text(json.dumps({"offers": [o]}))
+        (leg / "meta.json").write_text(json.dumps({"updated": "2026-05-02T00:00:00+00:00", "stores": [
+            {"id": "148", "name": "Berlin-Lichtenberg", "slug": "berlinlichtenberg", "last_ok": "2026-05-02T00:00:00+00:00"}]}))
+        (leg / "events/2026-05.csv").write_text(
+            "ts,type,id,store_id,article_number,title,price,old_price,new_price,fields\n"
+            "2026-05-01T00:00:00+00:00,new,u:z,148,1,T,5.0,,,\n"
+            "2026-05-01T05:00:00+00:00,gone,u:z,148,1,T,5.0,,,\n"
+            "2026-05-01T09:00:00+00:00,reappeared,u:z,148,1,T,5.0,,,\n"
+            "2026-05-01T10:00:00+00:00,changed,u:z,148,1,T,5.0,,,title\n")
+        (leg / "runs.csv").write_text("ts,source,stores_total\n2026-05-01T00:00:00+00:00,actions,54\n")
+        self.world = {"148": [group("148", "T", "1", 10.0, [offer("z", "5", 5.0, cond="", reason="")], desc="")]}
+        rc, db, meta = self.tick()
+        self.assertEqual([x[1] for x in db["u:z"]["log"]], ["gone", "back", "chg"])
+        self.assertEqual(db["u:z"]["reappear_count"], 1)
+        runs = self.storage.read_runs()
+        self.assertEqual(runs[0]["stores_total"], "54", "altes Protokoll uebernommen"); self.assertEqual(len(runs), 2)
+
 
     def test_min_gap_skips_second_start(self):
         self.world = {"148": [group("148", "X", "1", 10.0, [offer("a", "1", 5.0)])]}
@@ -119,8 +173,10 @@ class TestManage(unittest.TestCase):
         from tracker import bot, watch
         store = {"rules": [], "groups": {}}
 
-        def fake(method, body=None):
+        def fake(method, body=None, confirm_delete=False):
             if method == "PUT":
+                if len(body["rules"]) < len(store["rules"]) and not confirm_delete:
+                    raise RuntimeError("409")
                 store.update(body)
             return dict(store)
         meta = {"stores": [{"id": "1", "name": "Hamburg-Altona"}, {"id": "2", "name": "Kiel"}]}
@@ -129,7 +185,11 @@ class TestManage(unittest.TestCase):
             self.assertEqual(store["rules"][0]["stores"], ["1"]); self.assertEqual(store["rules"][0]["max_price"], 40.0)
             self.assertIn("gibt es schon", bot.answer("/merke knivshult hamburg bis 40", {}, meta)[0])
             self.assertIn("Knivshult", bot.answer("/liste", {}, meta)[0])
-            self.assertIn("gelöscht", bot.answer("/vergiss 1", {}, meta)[0])
+            self.assertIn("Bestätigung 1 von 2", bot.answer("/vergiss 1", {}, meta)[0])
+            self.assertEqual(len(store["rules"]), 1, "nach Schritt 1 nichts gelöscht")
+            self.assertIn("Bestätigung 2 von 2", bot.answer("/vergiss 1 ja", {}, meta)[0])
+            self.assertEqual(len(store["rules"]), 1, "nach Schritt 2 nichts gelöscht")
+            self.assertIn("gelöscht", bot.answer("/vergiss 1 ja ja", {}, meta)[0])
             self.assertEqual(store["rules"], [])
-        with mock.patch.object(watch, "_worker_request", lambda m, b=None: None):
+        with mock.patch.object(watch, "_worker_request", lambda m, b=None, confirm_delete=False: None):
             self.assertIn("nicht eingerichtet", bot.answer("/liste", {}, meta)[0])

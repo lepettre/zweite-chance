@@ -75,14 +75,9 @@ jobs:
           after=$(sha256sum site/d/state.bin 2>/dev/null | cut -d' ' -f1 || true)
           if [ "$before" != "$after" ]; then bash scripts/publish.sh; fi
 
-      - name: Altbestand aus main entfernen (einmalig)
-        run: |
-          if [ -f docs/data/current.json ] && [ -f site/d/meta.bin ] && [ -f site/d/watchlist.bin ]; then
-            git config user.name "bot"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git rm -rq --ignore-unmatch docs/data state config/watchlist.json inbox
-            git commit -q -m "Altbestand entfernt"
-            for i in 1 2 3; do git pull -q --rebase && git push -q && break; sleep 5; done
-          fi
+      - name: Wochensicherung (eigener Branch mit Verlauf, nichts wird gelöscht)
+        continue-on-error: true
+        run: bash scripts/backup.sh
 
       - name: Fehlschlag melden, wenn kein Markt erreichbar war
         if: steps.run.outputs.rc == '2'

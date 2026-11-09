@@ -56,7 +56,8 @@
 
   /* ---------- Datenhaltung ---------- */
   const S = {
-    repo: { meta: null, current: [], archive: {}, archiveLoaded: false, watch: [], runs: null, events: {} },
+    repo: { meta: null, current: [], archive: {}, watch: [], runs: null, history: null },
+    archiveMonth: null,
     local: { db: {}, events: [], runs: [], updated: null, stores: [] },
     source: lsGet(LS.source, "auto"),
     rules: ZC.dedupeRules(lsGet(LS.rules, [])),
@@ -93,8 +94,8 @@
 
   const worker = {
     get url() { return S.repo.meta?.worker || null; },
-    async call(method, body) {
-      const r = await fetch(`${this.url}/api/watchlist`, { method, headers: { "x-key": AUTH.pw, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+    async call(method, body, { path = "/api/watchlist", confirmDelete = false } = {}) {
+      const r = await fetch(`${this.url}${path}`, { method, headers: { "x-key": AUTH.pw, "content-type": "application/json", ...(confirmDelete ? { "x-confirm-delete": "2" } : {}) }, body: body ? JSON.stringify(body) : undefined });
       if (!r.ok) throw new Error(`Worker ${r.status}`);
       return r.json();
     },
@@ -104,7 +105,7 @@
     if (worker.url && AUTH.pw) {
       try {
         const w = await worker.call("GET");
-        S.server = { ok: true, groups: w.groups || {} };
+        S.server = { ok: true, groups: w.groups || {}, dupFix: ZC.dedupeRules(w.rules || []).length < (w.rules || []).length };
         const old = lsGet(LS.rules, []);                       // frühere, nur lokal gespeicherte Regeln einmalig übernehmen
         const merged = ZC.dedupeRules([...(w.rules || []), ...old]);
         S.rules = merged; S.repo.watch = []; resetRules();
@@ -115,10 +116,12 @@
     const saved = await getBin("watchlist.bin").catch((e) => { if (e instanceof AuthError) throw e; return { rules: [] }; });
     S.repo.watch = ZC.dedupeRules((saved.rules || []).map((r, i) => ({ ...r, name: r.name || `Regel ${i + 1}`, _repo: true }))); resetRules();
   }
-  async function persistRules() {
+  // Entfernen nur nach doppelter Bestätigung; der Server behält jeden früheren Stand.
+  const confirmTwice = (what) => confirm(`${what}\n\nBestätigung 1 von 2.`) && confirm(`Wirklich? ${what}\n\nBestätigung 2 von 2 – danach ist es aus der Liste entfernt (früherer Stand bleibt wiederherstellbar).`);
+  async function persistRules(confirmDelete = false) {
     S.rules = ZC.dedupeRules(S.rules); resetRules();
     if (S.server?.ok) {
-      try { await worker.call("PUT", { rules: S.rules.map(({ _localIndex, ...r }) => r), groups: S.server.groups }); }
+      try { await worker.call("PUT", { rules: S.rules.map(({ _localIndex, ...r }) => r), groups: S.server.groups }, { confirmDelete: confirmDelete || S.server.dupFix }); S.server.dupFix = false; }
       catch (e) { toast(`<b>Merkliste nicht gespeichert:</b> ${esc(e.message)}`, 7000); }
     } else lsSet(LS.rules, S.rules);
   }
@@ -131,13 +134,16 @@
     S.repo.current = unpack(await getBin("current.bin", meta.current_version).catch((e) => { if (e instanceof AuthError) throw e; return null; }));
     await loadRules();
   }
-  async function loadArchive() {
-    if (S.repo.archiveLoaded || !hasRepo()) return;
-    const months = S.repo.meta.archive_months || [];
-    const parts = await Promise.all(months.map((m) => getBin(`a-${m}.bin`, S.repo.meta.updated).then(unpack).catch(() => [])));
-    S.repo.archive = Object.fromEntries(months.map((m, i) => [m, parts[i]]));
-    S.repo.archiveLoaded = true;
+  // Archiv: je Monat eine Datei, nur bei Bedarf geladen (Standard: der neueste Monat)
+  const archiveMonths = () => (S.repo.meta?.archive_months || []).slice().sort();
+  async function loadArchive(months) {
+    if (!hasRepo()) return;
+    const want = (months || archiveMonths()).filter((m) => !(m in S.repo.archive));
+    const parts = await Promise.all(want.map((m) => getBin(`a-${m}.bin`, (S.repo.meta.archive_hash || {})[m] || S.repo.meta.updated).then(unpack)));
+    want.forEach((m, i) => { S.repo.archive[m] = parts[i]; });
   }
+  const archiveFullyLoaded = () => archiveMonths().every((m) => m in S.repo.archive);
+
   function activeSource() { if (S.source === "repo" && hasRepo()) return "repo"; if (S.source === "local" && hasLocal()) return "local"; if (S.source === "both" && hasRepo() && hasLocal()) return "both"; return hasRepo() ? (hasLocal() && S.source === "auto" ? "both" : "repo") : hasLocal() ? "local" : "none"; }
   function allOffers(includeArchive) {
     const src = activeSource(); const map = new Map();
@@ -247,11 +253,14 @@
   async function renderList(mode, query) {
     const f = S.filters = parseQuery(query);
     if (!f.sort) f.sort = mode === "archiv" ? "weg" : "neu";
-    if (mode === "archiv" && !S.repo.archiveLoaded && hasRepo()) {
+    if (mode === "archiv" && hasRepo()) {
+      const ms = archiveMonths();
+      if (!S.archiveMonth || (S.archiveMonth !== "alle" && !ms.includes(S.archiveMonth))) S.archiveMonth = ms[ms.length - 1] || "alle";
       view.innerHTML = `<div class="toolbar"><h2>Archiv</h2></div>${'<div class="skeleton"></div>'.repeat(5)}`;
-      await loadArchive();
+      await loadArchive(S.archiveMonth === "alle" ? ms : [S.archiveMonth]);
     }
-    const base = allOffers(mode === "archiv");
+    const inView = (o) => mode !== "archiv" || S.archiveMonth === "alle" || (o.gone_at || "").slice(0, 7) === S.archiveMonth;
+    const base = allOffers(mode === "archiv").filter(inView);
     const scoped = base.filter((o) => mode === "archiv" ? o.status === "gone" : o.status === "active");
     if (activeSource() === "none") return renderOnboarding();
     const st = stores();
@@ -288,6 +297,7 @@
         <section aria-labelledby="list-h">
           <div class="toolbar">
             <h2 id="list-h">${mode === "archiv" ? "Archiv" : "Aktuelle Angebote"} <small id="list-count"></small></h2>
+            ${mode === "archiv" ? `<label class="sr" for="arch-month">Monat</label><select id="arch-month" class="inp" style="width:auto">${archiveMonths().slice().reverse().map((m) => `<option value="${m}" ${S.archiveMonth === m ? "selected" : ""}>${m}</option>`).join("")}<option value="alle" ${S.archiveMonth === "alle" ? "selected" : ""}>Alle Monate (lädt mehr)</option></select>` : ""}
             <div class="toolbar__r">
               <label class="sr" for="sort">Sortierung</label>
               <select id="sort" class="inp" style="width:auto">${Object.entries(SORTS).filter(([k]) => mode === "archiv" || !["weg"].includes(k)).map(([k, [l]]) => `<option value="${k}" ${f.sort === k ? "selected" : ""}>${l}</option>`).join("")}</select>
@@ -343,6 +353,7 @@
     $("#store-find").addEventListener("input", (e) => { const q = ZC.fold(e.target.value); $$("#store-checks .check").forEach((l) => { l.hidden = q && !ZC.fold(l.textContent).includes(q); }); e.stopPropagation(); });
     $$("[data-clear]").forEach((b) => b.addEventListener("click", () => { $$(`input[name=${b.dataset.clear}]`, form).forEach((i) => (i.checked = false)); sync(); }));
     $("#reset").addEventListener("click", reset);
+    $("#arch-month")?.addEventListener("change", (e) => { S.archiveMonth = e.target.value; renderList(mode, query); });
     $("#sort").addEventListener("change", (e) => { S.filters.sort = e.target.value; writeQuery(mode, S.filters); draw(); });
     $$("[data-layout]").forEach((b) => b.addEventListener("click", () => { S.layout = b.dataset.layout; lsSet(LS.layout, S.layout); $$("[data-layout]").forEach((x) => x.setAttribute("aria-pressed", x === b)); draw(); }));
     $("#show-new")?.addEventListener("click", () => { $("input[name=neu]", form).checked = true; sync(); });
@@ -354,7 +365,7 @@
   }
 
   /* ---------- Detail ---------- */
-  const EV_LABEL = { new: "Erstmals gesehen", reappeared: "Wieder aufgetaucht", price_change: "Preis geändert", changed: "Angaben geändert", gone: "Nicht mehr gelistet (zuletzt gesehen)" };
+  const EV_LABEL = { new: "Erstmals gesehen", reappeared: "Wieder aufgetaucht", price_change: "Preis geändert", changed: "Angaben geändert", gone: "Nicht mehr gelistet" };
   function sparkline(ph) {
     const pts = (ph || []).filter((p) => p[1] !== null); if (pts.length < 2) return "";
     const W = 300, H = 60, t0 = +new Date(pts[0][0]), t1 = Math.max(+new Date(), t0 + 1);
@@ -365,7 +376,7 @@
   }
   async function openDetail(id) {
     const all = allOffers(true); let o = all.find((x) => x.id === id);
-    if (!o && !S.repo.archiveLoaded) { await loadArchive(); o = allOffers(true).find((x) => x.id === id); }
+    if (!o && !archiveFullyLoaded()) { await loadArchive(); o = allOffers(true).find((x) => x.id === id); }
     if (!o) { toast("Angebot nicht gefunden."); return; }
     const dlg = $("#detail");
     const siblings = allOffers(true).filter((x) => x.id !== o.id && o.article_number && (x.article_numbers || [x.article_number]).includes(o.article_number))
@@ -430,11 +441,13 @@
     const ph = o.price_history || [];
     let evs = [{ ts: o.first_seen, type: "new" }];
     for (let i = 1; i < ph.length; i++) evs.push({ ts: ph[i][0], type: "price_change", old_price: ph[i - 1][1], new_price: ph[i][1] });
-    if (o.gone_at) evs.push({ ts: o.gone_at, type: "gone" });
+    const LOGTYPE = { gone: "gone", back: "reappeared", chg: "changed" };
+    for (const [ts, k, fields] of o.log || []) evs.push({ ts, type: LOGTYPE[k] || k, fields, detected: true });
+    if (o.gone_at && !(o.log || []).some((l) => l[1] === "gone")) evs.push({ ts: o.gone_at, type: "gone" });
     evs.push(...S.local.events.filter((e) => e.id === o.id));
     const seen = new Set(); evs = evs.filter((e) => { const k = e.ts + e.type; if (seen.has(k)) return false; seen.add(k); return true; }).sort((a, b) => a.ts.localeCompare(b.ts));
     const tl = $("#tl", dlg); if (!tl) return;
-    tl.innerHTML = evs.length ? evs.map((e) => `<li><b>${esc(EV_LABEL[e.type] || e.type)}</b> · ${esc(fmtDT(e.type === "gone" ? o.gone_at || e.ts : e.ts))}${e.type === "price_change" ? ` · ${esc(eur(Number(e.old_price)))} → ${esc(eur(Number(e.new_price)))}` : ""}${e.fields ? ` <span class="muted">(${esc(e.fields)})</span>` : ""}</li>`).join("")
+    tl.innerHTML = evs.length ? evs.map((e) => `<li><b>${esc(EV_LABEL[e.type] || e.type)}</b> · ${esc(fmtDT(e.type === "gone" && !e.detected ? o.gone_at || e.ts : e.ts))}${e.type === "price_change" ? ` · ${esc(eur(Number(e.old_price)))} → ${esc(eur(Number(e.new_price)))}` : ""}${e.fields ? ` <span class="muted">(${esc(e.fields)})</span>` : ""}</li>`).join("")
       : `<li>Erstmals gesehen · ${esc(fmtDT(o.first_seen))}</li>`;
   }
 
@@ -512,7 +525,24 @@
           </form>
         </details>
       </div>
+      ${serverMode ? `<details class="box" id="hist" style="margin-top:20px"><summary><h3 style="display:inline">Frühere Stände</h3></summary><div id="hist-list" class="muted" style="margin-top:8px">lädt …</div></details>` : ""}
       `;
+
+    $("#hist")?.addEventListener("toggle", async (e) => {
+      if (!e.target.open || S.repo.history) return;
+      const box = $("#hist-list");
+      try {
+        S.repo.history = await worker.call("GET", null, { path: "/api/history" });
+        box.innerHTML = S.repo.history.length ? `<ul class="minilist">${S.repo.history.map((h) => `<li><span>${esc(fmtDT(h.ts))} · ${h.count ?? "?"} Regeln</span><button class="btn" data-restore="${esc(h.id)}">Wiederherstellen</button></li>`).join("")}</ul>` : "Noch keine früheren Stände (entstehen bei jeder Änderung).";
+        $$("[data-restore]", box).forEach((b) => b.addEventListener("click", async () => {
+          if (!confirmTwice("Diesen früheren Stand wiederherstellen? Der aktuelle Stand bleibt als Version erhalten.")) return;
+          try {
+            const snap = await worker.call("GET", null, { path: `/api/history?id=${encodeURIComponent(b.dataset.restore)}` });
+            S.rules = ZC.dedupeRules(snap.rules || []); S.repo.history = null; await persistRules(true); updateBadges(); toast("Früherer Stand wiederhergestellt."); renderMerkliste();
+          } catch (err) { toast(`<b>Nicht möglich:</b> ${esc(err.message)}`, 6000); }
+        }));
+      } catch (err) { box.textContent = `Nicht abrufbar: ${err.message}`; }
+    });
 
     const form = $("#rf"), box = $("#rf-box");
     $("#new-rule").addEventListener("click", (e) => { e.preventDefault(); box.open = true; box.scrollIntoView({ block: "start" }); form.elements.namedItem("name").focus(); });
@@ -525,10 +555,13 @@
         .some((x) => !x._edit && ZC.ruleKey(x) === ZC.ruleKey(r));
       if (duplicate) { toast("Diese Suche ist bereits gespeichert."); return; }
       if (idx !== "") { r.enabled = S.rules[idx].enabled; S.rules[idx] = r; } else S.rules.push(r);
-      await persistRules(); toast("Regel gespeichert."); updateBadges();
+      await persistRules(); S.repo.history = null; toast("Regel gespeichert."); updateBadges();
       renderMerkliste();
     });
-    $$("[data-del]").forEach((b) => b.addEventListener("click", async () => { if (!confirm("Regel löschen?")) return; S.rules.splice(+b.dataset.del, 1); await persistRules(); updateBadges(); renderMerkliste(); }));
+    $$("[data-del]").forEach((b) => b.addEventListener("click", async () => {
+      const r = S.rules[+b.dataset.del]; if (!confirmTwice(`Regel „${r.name}“ entfernen?`)) return;
+      S.rules.splice(+b.dataset.del, 1); await persistRules(true); updateBadges(); renderMerkliste();
+    }));
     $$("[data-toggle]").forEach((b) => b.addEventListener("click", async () => { const r = S.rules[+b.dataset.toggle]; r.enabled = r.enabled === false; await persistRules(); updateBadges(); renderMerkliste(query); }));
     $$("[data-edit]").forEach((b) => b.addEventListener("click", () => {
       const r = S.rules[+b.dataset.edit], el = form.elements; el.idx.value = b.dataset.edit; el.namedItem("name").value = r.name;
@@ -561,7 +594,7 @@
   async function renderStatistik(query) {
     if (activeSource() === "none") return renderOnboarding();
     const p = new URLSearchParams(query || ""); const scope = p.get("scope") || "aktiv"; const tage = Number(p.get("tage") || 30);
-    if (!S.repo.archiveLoaded && hasRepo()) { view.innerHTML = `<div class="toolbar"><h2>Statistik</h2></div><div class="skeleton"></div>`; await loadArchive(); }
+    if (hasRepo() && !archiveFullyLoaded()) { view.innerHTML = `<div class="toolbar"><h2>Statistik</h2></div><div class="skeleton"></div>`; await loadArchive(); }
     const every = allOffers(true);
     const set = scope === "aktiv" ? every.filter((o) => o.status === "active") : every;
     const gone = every.filter((o) => o.status === "gone");
@@ -634,7 +667,8 @@
   ];
   async function renderDaten(query) {
     const meta = S.repo.meta;
-    const runs = (meta?.runs || []).slice(-48).reverse();
+    if (hasRepo() && !S.repo.runs) S.repo.runs = await getBin("runs.bin", meta.updated).catch(() => []);
+    const runs = (S.repo.runs || []).slice(-48).reverse();
     const st = meta?.stores || S.local.stores || [];
     const bmSrc = await getText("bookmarklet.src.js").catch(() => "");
     const tracker = location.href.split("#")[0];
@@ -694,7 +728,7 @@
         <p><b>Eindeutigkeit.</b> Jedes Einzelstück hat bei IKEA eine Angebots-UUID; sie ist der Schlüssel. Drei gleiche Regale im selben Markt sind drei Datensätze. Doppelte Einträge innerhalb einer Antwort werden verworfen.</p>
         <p><b>Verschwinden.</b> Ein Angebot gilt erst als „weg“, wenn es in zwei aufeinanderfolgenden <i>erfolgreichen</i> Abrufen seines Markts fehlt. Fällt ein Markt aus oder liefert er unplausibel null Angebote, bleibt sein Bestand unverändert. Taucht ein Angebot wieder auf (etwa nach abgelaufener Reservierung), wird derselbe Datensatz reaktiviert.</p>
         <p><b>Datum.</b> IKEA liefert kein Einstelldatum. Alle Zeitangaben sind Beobachtungen dieses Trackers; die Genauigkeit entspricht dem Abrufintervall (≈ 1 Stunde). Angebote, die schon vor dem ersten Abruf gelistet waren, haben ein zu spätes <code>first_seen</code>.</p>
-        <p><b>Aufbewahrung.</b> Aktive Angebote bleiben bis zum Verschwinden gespeichert; verschwundene Angebote bleiben 30 Tage im Archiv. Alle Dateien liegen verschlüsselt auf dem Server und werden erst in diesem Browser entschlüsselt.</p>
+        <p><b>Aufbewahrung.</b> Nichts wird automatisch gelöscht: aktive und verschwundene Angebote, ihr Verlauf und das Abrufprotokoll bleiben dauerhaft gespeichert (Archiv nach Monaten). Alle Dateien liegen verschlüsselt auf dem Server und werden erst in diesem Browser entschlüsselt.</p>
         <h3 style="margin-top:20px">Felder</h3>
         <table class="tbl"><tbody>${DICT.map(([k, v]) => `<tr><td class="mono" style="white-space:nowrap">${k}</td><td>${v}</td></tr>`).join("")}</tbody></table>
       </section>`;
@@ -800,7 +834,7 @@
     const prev = S.repo.meta?.updated;
     await loadRepo().catch((e) => { if (e instanceof AuthError) { lsSet(LS.key, null); location.reload(); } });
     if (S.repo.meta?.updated && S.repo.meta.updated !== prev) {
-      S.repo.archiveLoaded = false;
+      S.repo.archive = {}; S.repo.runs = null;
       updateBadges(); checkNewHits();
       if (prev) { toast(`Neue Daten (${esc(fmtDT(S.repo.meta.updated))}).`); if (!$("#detail").open && !document.activeElement?.closest?.("form")) route(); }
     } else updateBadges();

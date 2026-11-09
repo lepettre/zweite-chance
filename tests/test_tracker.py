@@ -105,8 +105,11 @@ class TestMerge(Base):
         self.assertEqual(db["u:b"]["status"], "active")
         self.assertEqual(db["u:b"]["reappear_count"], 1)
         self.assertEqual(len(db), 2)
-        self.assertGreaterEqual(len(meta["runs"]), 7, "Abruf-Protokoll in meta")
-        self.assertEqual(meta["runs"][-1]["reappeared"], 1)
+        runs = self.storage.read_runs()
+        self.assertGreaterEqual(len(runs), 7, "komplettes Abruf-Protokoll")
+        self.assertEqual(runs[-1]["reappeared"], 1)
+        kinds = [x[1] for x in db["u:b"]["log"]]
+        self.assertEqual(kinds, ["gone", "back"], "Verlauf am Angebot festgehalten")
 
     def test_duplicates_in_response_and_fallback_key(self):
         o = {"offerNumber": "77", "price": 10}

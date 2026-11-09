@@ -1,0 +1,48 @@
+name: Altbestand entfernen (manuell, doppelte Bestätigung)
+
+on:
+  workflow_dispatch:
+    inputs:
+      bestaetigung_1:
+        description: 'Bestätigung 1: tippe genau  ALTBESTAND ENTFERNEN'
+        required: true
+      bestaetigung_2:
+        description: 'Bestätigung 2: tippe genau  JA ENDGUELTIG'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tracker
+  cancel-in-progress: false
+
+jobs:
+  entfernen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ZC_PASSWORD: ${{ secrets.ZC_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+      B1: ${{ inputs.bestaetigung_1 }}
+      B2: ${{ inputs.bestaetigung_2 }}
+    steps:
+      - name: Bestätigungen prüfen
+        run: |
+          [ "$B1" = "ALTBESTAND ENTFERNEN" ] && [ "$B2" = "JA ENDGUELTIG" ] || { echo "::error::Bestätigungen stimmen nicht - nichts geändert."; exit 1; }
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: bash scripts/fetch_site.sh
+      - name: Ist wirklich alles übernommen?
+        run: python -m tracker.verify
+      - name: Klartext-Altbestand aus main entfernen
+        run: |
+          git config user.name "bot"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -rq --ignore-unmatch docs/data state config/watchlist.json inbox
+          git commit -q -m "Klartext-Altbestand entfernt (nach Prüfung und doppelter Bestätigung)"
+          git push -q
+          echo "Hinweis: Frühere Commits enthalten die Klartextdaten weiterhin in der Git-Historie."

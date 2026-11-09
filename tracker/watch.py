@@ -12,6 +12,13 @@ from .normalize import fold, norm_article
 NOTIFY_TYPES = {"new", "reappeared", "price_drop"}
 
 
+def nk(key: str) -> str:
+    """Kompakter, nicht lesbarer Schluessel fuer 'bereits gemeldet' (Klartext-Schluessel nennen Suchbegriffe)."""
+    import hashlib
+    import re
+    return key if re.fullmatch(r"[0-9a-f]{12}", key) else hashlib.sha1(key.encode()).hexdigest()[:12]
+
+
 def _list(v):
     if v is None:
         return []
@@ -132,12 +139,13 @@ def dedupe_rules(rules: list[dict], groups: dict | None = None) -> list[dict]:
     return out
 
 
-def _worker_request(method: str, body: dict | None = None):
+def _worker_request(method: str, body: dict | None = None, confirm_delete: bool = False):
     url, pw = os.environ.get("WORKER_URL", "").rstrip("/"), os.environ.get("ZC_PASSWORD", "")
     if not (url and pw):
         return None
     req = urllib.request.Request(f"{url}/api/watchlist", method=method, headers={
-        "x-key": pw, "content-type": "application/json", "user-agent": "zc-tracker"},
+        "x-key": pw, "content-type": "application/json", "user-agent": "zc-tracker",
+        **({"x-confirm-delete": "2"} if confirm_delete else {})},
         data=json.dumps(body, ensure_ascii=False).encode() if body is not None else None)
     with urllib.request.urlopen(req, timeout=15) as r:
         return json.loads(r.read() or b"null")
@@ -182,7 +190,7 @@ def find_hits(rules: list[dict], db: dict, events: list[dict], notified: dict,
         o = db.get(oid)
         if not o or o["status"] != "active":
             continue
-        key = f"{oid}|{o.get('price')}|{why}|{event_ts}"
+        key = nk(f"{oid}|{o.get('price')}|{why}|{event_ts}")
         if key in notified:
             continue
         names, was_sent = [], False
@@ -190,7 +198,7 @@ def find_hits(rules: list[dict], db: dict, events: list[dict], notified: dict,
             name = rule.get("name") or f"Regel {i + 1}"
             if not matches({**rule, "stores": expand_stores(rule, groups)}, o):
                 continue
-            if f"{name}|{oid}|{o.get('price')}" in notified:   # Schluessel der Vorversion
+            if nk(f"{name}|{oid}|{o.get('price')}") in notified:   # Schluessel der Vorversion
                 was_sent = True
             elif name not in names:
                 names.append(name)

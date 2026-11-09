@@ -228,7 +228,7 @@
     const stream = new Blob([plain]).stream().pipeThrough(new DecompressionStream("gzip"));
     return JSON.parse(await new Response(stream).text());
   }
-  const STR_FIELDS = ["id", "offer_number", "store_id", "title", "product_description", "offer_description", "article_numbers", "condition", "condition_code", "condition_description", "reason_discount", "additional_info", "image", "status", "first_seen", "last_seen", "gone_at", "price_history"];
+  const STR_FIELDS = ["id", "offer_number", "store_id", "title", "product_description", "offer_description", "article_numbers", "condition", "condition_code", "condition_description", "reason_discount", "additional_info", "image", "status", "first_seen", "last_seen", "gone_at", "price_history", "log"];
   function unpackOffers(d, stores, lastOk, updated) {
     if (!d) return [];
     const T = d.s, ix = Object.fromEntries(d.f.map((f, i) => [f, i])), out = [];
@@ -243,7 +243,8 @@
         store: st.name || o.store_id, currency: "EUR", discount_eur: disc,
         discount_pct: disc !== null && o.original_price ? Math.round(disc / o.original_price * 1000) / 10 : null,
         link: offerLink(st.slug || storeSlug(st.name || o.store_id), o.offer_number), gone_at: o.gone_at || null,
-        price_history: JSON.parse(o.price_history || "[]"),
+        price_history: o.price_history ? JSON.parse(o.price_history) : [[o.first_seen, o.price]],
+        log: o.log ? JSON.parse(o.log) : [],
       });
       if (!o.last_seen) o.last_seen = (lastOk || {})[o.store_id] || updated || o.first_seen;
       out.push(o);
