@@ -487,18 +487,16 @@
 
     const st = stores();
     const serverMode = !!S.server?.ok;
-    const exportJSON = () => JSON.stringify({ rules: ZC.dedupeRules([...S.repo.watch, ...S.rules]).map(({ _repo, _localIndex, ...r }) => r) }, null, 2);
     const wide = window.matchMedia("(min-width: 961px)").matches;
     view.innerHTML = `
       <div class="toolbar"><h2>Merkliste <small>${rules.length} Regeln</small></h2>
         <div class="toolbar__r">
           <label class="switch" title="Benachrichtigt, solange diese Seite geöffnet ist"><input type="checkbox" id="bnotify" ${lsGet(LS.notify, false) ? "checked" : ""}> Browser-Hinweise</label>
-          ${serverMode ? "" : `<button class="btn" id="exp">watchlist.json exportieren</button>`}
           <a class="btn btn--primary" href="#rf-box" id="new-rule">＋ Neue Regel</a>
         </div></div>
       <div class="notice" style="background:#EAF2FA;border-color:#B8D0EA"><span>${serverMode
         ? "<b>Regeln werden zentral gespeichert</b> und lösen Telegram-Nachrichten aus. Änderungen gelten ab dem nächsten Abruf."
-        : "<b>Ohne Server:</b> Gelbe Regeln leben nur in diesem Browser (Markierung in den Listen). Blaue Regeln kommen vom letzten Abruf und lösen Telegram aus."}</span></div>
+        : "<b>Server nicht verbunden:</b> Änderungen gelten nur in diesem Browser und lösen kein Telegram aus. Bitte den Worker einrichten."}</span></div>
       <div class="cols2">
         <section>
           <div class="rules">${rules.length ? rules.map((r, i) => { const n = hitsOf(r).length; const li = r._localIndex ?? -1; return `
@@ -570,7 +568,6 @@
       $$("input[name=stores]", form).forEach((c) => (c.checked = (r.stores || []).map(String).includes(c.value)));
       $("#rf-h").textContent = "Regel bearbeiten"; box.open = true; form.elements.namedItem("name").focus(); box.scrollIntoView({ block: "start" });
     }));
-    $("#exp")?.addEventListener("click", () => { download("watchlist.json", exportJSON(), "application/json"); toast("watchlist.json heruntergeladen.", 6000); });
     $("#bnotify").addEventListener("change", async (e) => {
       if (e.target.checked && "Notification" in window && Notification.permission !== "granted") { const p = await Notification.requestPermission(); if (p !== "granted") { e.target.checked = false; toast("Browser-Benachrichtigungen wurden nicht erlaubt."); return; } }
       lsSet(LS.notify, e.target.checked); if (e.target.checked) markHitsSeen();
