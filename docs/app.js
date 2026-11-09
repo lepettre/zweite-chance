@@ -16,7 +16,9 @@
   const pct = (v) => v === null || v === undefined ? "–" : `${nf0.format(Math.round(v))} %`;
   const dtf = new Intl.DateTimeFormat("de-DE", { timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
   const df = new Intl.DateTimeFormat("de-DE", { timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric" });
-  const dayKey = (ts) => new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }).format(new Date(ts));
+  const dayFmt = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }), dayMemo = new Map();
+  // Berliner Tag; je volle Stunde nur einmal berechnet (Zeitzonen-Versatz ist stundengenau)
+  const dayKey = (ts) => { if (typeof ts !== "string") return dayFmt.format(new Date(ts)); const h = ts.slice(0, 13); let d = dayMemo.get(h); if (!d) dayMemo.set(h, d = dayFmt.format(new Date(ts))); return d; };
   const fmtDT = (ts) => ts ? dtf.format(new Date(ts)) : "–";
   const fmtD = (ts) => ts ? df.format(new Date(ts)) : "–";
   function rel(ts) {
@@ -472,11 +474,13 @@
       ...S.repo.watch.map((r) => ({ ...r, _repo: true })),
       ...S.rules.map((r, i) => ({ ...r, _localIndex: i }))
     ]);
-    const hitsOf = (r) => active.filter((o) => ZC.matches({ ...r, enabled: true }, o));
+    const hitsOf = (r) => { const f = ZC.compileRule({ ...r, enabled: true }); return active.filter(f); };
+    const hitCache = new Map();                            // Trefferzahl je Regel nur einmal berechnen
+    const hitsCached = (i) => { if (!hitCache.has(i)) hitCache.set(i, hitsOf(rules[i])); return hitCache.get(i); };
 
     // Treffer einer Regel: eigene Seite, volle Breite (mobil nicht von Filtern/Formular verdeckt)
     if (sel !== null && rules[sel]) {
-      const hs = hitsOf(rules[sel]).sort(SORTS.neu[1]);
+      const hs = hitsCached(+sel).slice().sort(SORTS.neu[1]);
       view.innerHTML = `
         <div class="toolbar"><div><a class="btn" href="#/merkliste">← Merkliste</a></div></div>
         <div class="toolbar"><h2>${esc(rules[sel].name)} <small>${nf0.format(hs.length)} Treffer</small></h2></div>
@@ -499,7 +503,7 @@
         : "<b>Server nicht verbunden:</b> Änderungen gelten nur in diesem Browser und lösen kein Telegram aus. Bitte den Worker einrichten."}</span></div>
       <div class="cols2">
         <section>
-          <div class="rules">${rules.length ? rules.map((r, i) => { const n = hitsOf(r).length; const li = r._localIndex ?? -1; return `
+          <div class="rules">${rules.length ? rules.map((r, i) => { const n = hitsCached(i).length; const li = r._localIndex ?? -1; return `
             <article class="rule ${r._repo ? "rule--repo" : ""} ${r.enabled === false ? "rule--off" : ""}">
               <div style="min-width:0"><h3>${esc(r.name)} ${r.enabled === false ? `<span class="muted" style="font-weight:400">(pausiert)</span>` : ""}</h3><p>${ruleSummary(r)}</p></div>
               <div class="rule__act"><a class="btn" href="#/merkliste?regel=${i}">${nf0.format(n)} Treffer ›</a>
