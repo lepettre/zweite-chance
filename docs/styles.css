@@ -237,3 +237,43 @@ details.box:not([open])>summary h3::after{content:" ▸"}
   .filters.filters--open .checks{max-height:220px}
   .toolbar{flex-wrap:wrap;gap:8px}
 }
+
+/* Gemerkte Suchen: Chips über der Liste */
+.chips2{display:flex;gap:6px;overflow-x:auto;padding:2px 0 12px;margin:0 0 4px;scrollbar-width:thin;-webkit-overflow-scrolling:touch}
+.chip2{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;border:1px solid var(--line);background:var(--card);color:var(--ink);text-decoration:none;border-radius:999px;padding:5px 11px;font-size:13px;font-weight:500}
+.chip2 small{font:500 11px var(--mono);color:var(--muted)}
+.chip2:hover{border-color:var(--ink-2);color:var(--ink)}
+.chip2--on{background:var(--ink);border-color:var(--ink);color:#fff}.chip2--on small{color:#C9CCD1}
+.chip2--on:hover{color:#fff}
+/* Seitenleiste: gewählte bzw. alle gemerkten Suchen */
+.saved-card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--yellow);border-radius:var(--r);padding:10px 12px;margin:10px 0 4px}
+.saved-card h3{margin:6px 0 0}
+.saved-card__h{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.saved-card__h select{margin-left:auto;width:auto;min-height:30px;padding:2px 6px;font-size:12.5px}
+.saved-card__act{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.saved-list{list-style:none;margin:0 0 8px;padding:0;max-height:52vh;overflow:auto}
+.saved-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:6px;align-items:center;padding:5px 2px;border-bottom:1px solid var(--line-2);font-size:13.5px}
+.saved-row a{color:var(--ink);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.saved-row a:hover{text-decoration:underline}
+.saved-row small{font:500 11.5px var(--mono);color:var(--muted)}.saved-row small b{color:var(--green)}
+.saved-row--on{background:#FFF7C2}.saved-row--off a{color:var(--muted)}
+.iconbtn{border:0;background:none;cursor:pointer;font-size:14px;padding:4px 6px;border-radius:var(--r);color:var(--ink-2)}
+.iconbtn:hover{background:var(--line-2)}
+/* Dialog zum Merken / Bearbeiten */
+.ruledlg{width:min(720px,96vw);padding:18px 20px}
+.ruledlg .rd-checks{max-height:170px;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+.ruledlg fieldset{border:1px solid var(--line);border-radius:var(--r);padding:8px 10px}
+.ruledlg legend{font-size:12.5px;color:var(--muted)}
+@media (max-width:960px){
+  .filters .saved-card{grid-column:1/-1;margin:0}
+  .filters .saved-card--list .saved-list{max-height:none}
+  .filters:not(.filters--open) .saved-card--list{display:none}   /* mobil: Liste der gemerkten Suchen nur im Filterblatt, sonst Chips */
+  .ruledlg{padding:14px}
+}
+.sentlog{list-style:none;margin:0;padding:0;max-height:420px;overflow:auto}
+.sentlog li{border-bottom:1px solid var(--line-2);padding:8px 0;font-size:13.5px}
+.sentlog li div{margin-top:2px}
+.legend .ramp{display:inline-block;width:90px;height:10px;border-radius:2px;background:linear-gradient(90deg,rgba(0,88,163,.12),#0058A3)}
+.tbl th[data-k]{cursor:pointer;user-select:none}
+.tbl th[data-k]:hover{text-decoration:underline}
+.layout>*{min-width:0}

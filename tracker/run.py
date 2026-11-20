@@ -181,8 +181,15 @@ def main(argv=None) -> int:
     ap.add_argument("--ingest", help="Snapshot-Datei (.json/.json.gz) aus dem Lesezeichen-Skript")
     ap.add_argument("--force", action="store_true", help="auch aeltere Snapshots einspielen / Mindestabstand ignorieren")
     ap.add_argument("--send-outbox", action="store_true", help="vorgemerkte Telegram-Nachrichten senden")
+    ap.add_argument("--check-gap", action="store_true", help="nur pruefen, ob ein Abruf faellig ist (Ausgabe skip=true/false)")
     a = ap.parse_args(argv)
     settings = load_settings()
+    if a.check_gap:
+        recent = recently_fetched(settings)
+        print(f"skip={'true' if recent else 'false'}")
+        if recent:
+            print(f"[run] Letzter Abruf {recent} - noch nicht faellig.", file=sys.stderr)
+        return 0
     t0 = time.time()
     if a.send_outbox:
         state = storage.read_bin("state.bin", {}) or {}

@@ -88,3 +88,12 @@ assert.deepStrictEqual(top.map((x) => x.n), [1, 2, 3]);
   await assert.rejects(ZC.openBlob(buf, await ZC.importKey(await ZC.deriveKeyB64("falsch"))), "falsches Passwort");
   console.log("core.js: alle Tests bestanden");
 })().catch((e) => { console.error(e); process.exit(1); });
+
+// gespeicherte Ansicht (notify:false) + min_price
+{
+  const off = { title: "KALLAX", product_description: "Regal", offer_description: "", article_numbers: ["1"], article_number: "1", store_id: "1", store: "Kiel", price: 20, discount_pct: 30 };
+  assert.strictEqual(ZC.compileRule({ keywords: ["kallax"], min_price: 25 })(off), false);
+  assert.strictEqual(ZC.compileRule({ keywords: ["kallax"], min_price: 15 })(off), true);
+  const d = ZC.dedupeRules([{ name: "a", keywords: ["kallax"], notify: false }, { name: "b", keywords: ["kallax"] }]);
+  assert.strictEqual(d.length, 1); assert.notStrictEqual(d[0].notify, false, "Benachrichtigung gewinnt");
+}
