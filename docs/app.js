@@ -97,7 +97,7 @@
 
   const worker = {
     // Adresse kommt aus dem Abruf (GitHub-Secret WORKER_URL); notfalls hier im Browser eingetragen (Daten-Seite)
-    get url() { return (S.repo.meta?.worker || lsGet(LS.workerUrl, "") || "").replace(/\/+$/, "") || null; },
+    get url() { const u = (S.repo.meta?.worker || lsGet(LS.workerUrl, "") || "").trim().replace(/\/+$/, ""); return u ? (/^https?:\/\//i.test(u) ? u : "https://" + u) : null; },
     async call(method, body, { path = "/api/watchlist", confirmDelete = false } = {}) {
       const r = await fetch(`${this.url}${path}`, { method, headers: { "x-key": AUTH.pw, "content-type": "application/json", ...(confirmDelete ? { "x-confirm-delete": "2" } : {}) }, body: body ? JSON.stringify(body) : undefined });
       if (!r.ok) throw new Error(`Worker ${r.status}`);

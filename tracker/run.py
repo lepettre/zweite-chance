@@ -161,7 +161,7 @@ def process(snapshot: dict, settings: dict, t0: float) -> dict:
     storage.write_bin("meta.bin", {
         "updated": ts, "last_run": run, "stores": st_meta, "archive_months": months, "archive_hash": arch_hashes,
         "total_offers": len(db), "active": active, "current_version": version,
-        "worker": os.environ.get("WORKER_URL", "").rstrip("/") or None,
+        "worker": watch.worker_base() or None,
         "hits_this_run": len(hits), "telegram_queued": len(outbox), "schema": 2})
     print(f"[run] fertig: {len(ok)}/{len(stores)} Maerkte ok, {active} aktiv, {counts}, {len(hits)} Treffer")
     return run

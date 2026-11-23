@@ -236,3 +236,12 @@ class TestSentLog(Base):
         self.tick(); self.run.main(["--send-outbox"])
         log = self.storage.read_bin("state.bin")["sent"]
         self.assertEqual(len(log), 1); self.assertIn("KALLAX", log[0]["text"])
+
+
+class TestWorkerUrl(unittest.TestCase):
+    def test_url_without_scheme(self):
+        from tracker.watch import worker_base
+        for raw in ("zc-helper.x.workers.dev", " https://zc-helper.x.workers.dev/ ", "zc-helper.x.workers.dev/"):
+            os.environ["WORKER_URL"] = raw
+            self.assertEqual(worker_base(), "https://zc-helper.x.workers.dev")
+        os.environ.pop("WORKER_URL")
