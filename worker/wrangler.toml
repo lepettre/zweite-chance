@@ -1,6 +1,8 @@
 name = "zc-helper"
 main = "worker.mjs"
 compatibility_date = "2025-01-01"
+# Im Dashboard eingetragene Variablen bei jedem Deploy aus dem Repo behalten
+keep_vars = true
 
 [triggers]
 crons = ["5 * * * *"]

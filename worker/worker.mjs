@@ -80,6 +80,12 @@ export default {
       return json({ error: "method" }, 405);
     }
 
+    // --- Öffentliche Kurz-Diagnose: nur ob Einstellungen vorhanden sind (keine Werte) ---
+    if (url.pathname === "/api/ping") {
+      const cfg = Object.fromEntries(["ACCESS_PASSWORD", "GH_TOKEN", "GH_REPO", "TG_SECRET", "TELEGRAM_CHAT_ID"].map((k) => [k, !!env[k]]));
+      return json({ ok: true, version: 2, config: cfg, kv: !!env.WL });
+    }
+
     // --- Diagnose: Konfiguration + letzte Ergebnisse (für die Daten-Seite der Web-App) ---
     if (url.pathname === "/api/status" && req.method === "GET") {
       if (!same(req.headers.get("x-key"), env.ACCESS_PASSWORD)) return json({ error: "unauthorized" }, 401);
