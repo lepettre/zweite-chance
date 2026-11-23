@@ -193,3 +193,46 @@ class TestManage(unittest.TestCase):
             self.assertEqual(store["rules"], [])
         with mock.patch.object(watch, "_worker_request", lambda m, b=None, confirm_delete=False: None):
             self.assertIn("nicht eingerichtet", bot.answer("/liste", {}, meta)[0])
+
+
+class TestViews(unittest.TestCase):
+    def test_notify_false_and_min_price(self):
+        from tracker.watch import matches, rule_key, dedupe_rules
+        o = {"title": "KALLAX", "product_description": "", "offer_description": "", "article_numbers": ["1"],
+             "article_number": "1", "store_id": "1", "store": "Kiel", "price": 20.0, "discount_pct": 30.0}
+        self.assertFalse(matches({"keywords": ["kallax"], "min_price": 25}, o))
+        self.assertTrue(matches({"keywords": ["kallax"], "min_price": 15}, o))
+        self.assertEqual(rule_key({"keywords": ["x"]}), rule_key({"keywords": ["x"], "min_price": None}),
+                         "alte Schluessel unveraendert")
+        d = dedupe_rules([{"keywords": ["kallax"], "notify": False}, {"keywords": ["kallax"]}])
+        self.assertEqual(len(d), 1); self.assertNotEqual(d[0].get("notify"), False)
+
+
+class TestNotifyFlag(Base):
+    def test_view_without_telegram_sends_nothing(self):
+        import tracker.watch as w
+        sent = []
+        w.send_telegram = lambda text, *a, **k: sent.append(text)
+        os.environ["TELEGRAM_BOT_TOKEN"] = "t"; os.environ["TELEGRAM_CHAT_ID"] = "c"
+        self.addCleanup(lambda: [os.environ.pop(k, None) for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")])
+        (self.tmp / "config" / "watchlist.json").write_text(json.dumps({"rules": [
+            {"name": "nur Ansicht", "keywords": ["kallax"], "notify": False}]}))
+        self.world = {"148": [group("148", "BILLY", "2", 100.0, [offer("d", "4", 10.0)])]}
+        self.tick()
+        self.world["148"].append(group("148", "KALLAX", "1", 100.0, [offer("a", "1", 70.0)]))
+        self.tick(); self.run.main(["--send-outbox"])
+        self.assertEqual(sent, [])
+
+
+class TestSentLog(Base):
+    def test_sent_messages_are_logged(self):
+        import tracker.watch as w
+        w.send_telegram = lambda *a, **k: None
+        os.environ["TELEGRAM_BOT_TOKEN"] = "t"; os.environ["TELEGRAM_CHAT_ID"] = "c"
+        self.addCleanup(lambda: [os.environ.pop(k, None) for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")])
+        self.world = {"148": [group("148", "BILLY", "2", 100.0, [offer("d", "4", 10.0)])]}
+        self.tick()
+        self.world["148"].append(group("148", "KALLAX", "1", 100.0, [offer("a", "1", 70.0)]))
+        self.tick(); self.run.main(["--send-outbox"])
+        log = self.storage.read_bin("state.bin")["sent"]
+        self.assertEqual(len(log), 1); self.assertIn("KALLAX", log[0]["text"])

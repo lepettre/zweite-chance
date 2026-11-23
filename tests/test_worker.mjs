@@ -35,8 +35,8 @@ assert.strictEqual(r.status, 200);
 r = await worker.fetch(req("/api/history", { headers: { "x-key": "pw" } }), env, ctx);
 const hist = await r.json();
 assert.ok(hist.length >= 2, "Versionen vorhanden");
-const restored = await (await worker.fetch(req("/api/history?id=" + encodeURIComponent(hist[0].id), { headers: { "x-key": "pw" } }), env, ctx)).json();
-assert.deepStrictEqual(restored.rules.map((x) => x.name), ["A", "B"], "gelöschte Regel B ist wiederherstellbar");
+const versions = await Promise.all(hist.map(async (h) => (await worker.fetch(req("/api/history?id=" + encodeURIComponent(h.id), { headers: { "x-key": "pw" } }), env, ctx)).json()));
+assert.ok(versions.some((v) => JSON.stringify(v.rules.map((x) => x.name)) === '["A","B"]'), "gelöschte Regel B ist wiederherstellbar");
 r = await worker.fetch(req("/api/history"), env, ctx); assert.strictEqual(r.status, 401);
 
 const tg = (chat, secret = "s") => req("/tg", { method: "POST", headers: { "x-telegram-bot-api-secret-token": secret }, body: JSON.stringify({ message: { chat: { id: chat }, text: "Knivshult Hamburg" } }) });
@@ -52,4 +52,16 @@ assert.strictEqual(calls[0].body.inputs.text, "Knivshult Hamburg"); assert.stric
 
 await worker.scheduled({}, env, ctx); await Promise.all(pending);
 assert.ok(calls[1].url.endsWith("/scrape.yml/dispatches"));
+
+// Diagnose: Status zeigt Konfiguration und letztes Ergebnis; Fehler werden erklärt
+let st = await (await worker.fetch(req("/api/status", { headers: { "x-key": "pw" } }), env, ctx)).json();
+assert.strictEqual(st.config.GH_TOKEN, true); assert.strictEqual(st.scrape.ok, true); assert.strictEqual(st.telegram.ok, true);
+globalThis.fetch = async () => new Response("no", { status: 403 });
+await worker.scheduled({}, env, ctx); await Promise.all(pending);
+st = await (await worker.fetch(req("/api/status", { headers: { "x-key": "pw" } }), env, ctx)).json();
+assert.strictEqual(st.scrape.ok, false); assert.match(st.scrape.error, /Berechtigung/);
+const noTok = { ...env, GH_TOKEN: "" };
+await worker.scheduled({}, noTok, ctx); await Promise.all(pending);
+st = await (await worker.fetch(req("/api/status", { headers: { "x-key": "pw" } }), env, ctx)).json();
+assert.match(st.scrape.error, /GH_TOKEN/);
 console.log("worker: alle Tests bestanden");

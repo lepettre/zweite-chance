@@ -5,5 +5,5 @@
   "store_slugs": {},
   "notify_on_first_run": false,
   "workers": 3,
-  "min_gap_minutes": 40
+  "min_gap_minutes": 50
 }

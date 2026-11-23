@@ -41,11 +41,14 @@ def matches(rule: dict, o: dict) -> bool:
     stores = [fold(str(s)) for s in _list(rule.get("stores")) if s]
     if stores and not any(s == fold(o["store_id"]) or s in fold(o.get("store", "")) for s in stores):
         return False
-    if rule.get("min_discount_pct") is not None:
+    if rule.get("min_discount_pct") not in (None, ""):
         if o.get("discount_pct") is None or o["discount_pct"] < float(rule["min_discount_pct"]):
             return False
-    if rule.get("max_price") is not None:
+    if rule.get("max_price") not in (None, ""):
         if o.get("price") is None or o["price"] > float(rule["max_price"]):
+            return False
+    if rule.get("min_price") not in (None, ""):
+        if o.get("price") is None or o["price"] < float(rule["min_price"]):
             return False
     conds = [fold(c) for c in _list(rule.get("conditions")) if c]
     if conds:
@@ -119,6 +122,8 @@ def rule_key(rule: dict, groups: dict | None = None) -> str:
         str(r.get("max_price") if r.get("max_price") not in ("", None) else ""),
         ",".join(_canon_list(r.get("conditions"), fold)),
     ]
+    if r.get("min_price") not in ("", None):            # neues Feld: nur anhaengen, alte Schluessel bleiben gleich
+        parts.append(f"ab{r['min_price']}")
     return "|".join(parts)
 
 
@@ -133,6 +138,8 @@ def dedupe_rules(rules: list[dict], groups: dict | None = None) -> list[dict]:
             prev = out[seen[k]]
             if prev.get("enabled") is False and r.get("enabled") is not False:
                 prev["enabled"] = True
+            if prev.get("notify") is False and r.get("notify") is not False:
+                prev["notify"] = True
             continue
         seen[k] = len(out)
         out.append(r)
@@ -196,6 +203,8 @@ def find_hits(rules: list[dict], db: dict, events: list[dict], notified: dict,
         names, was_sent = [], False
         for i, rule in enumerate(rules):
             name = rule.get("name") or f"Regel {i + 1}"
+            if rule.get("notify") is False:              # gespeicherte Ansicht ohne Telegram
+                continue
             if not matches({**rule, "stores": expand_stores(rule, groups)}, o):
                 continue
             if nk(f"{name}|{oid}|{o.get('price')}") in notified:   # Schluessel der Vorversion
@@ -287,6 +296,11 @@ def queue(hits: list[tuple], notified: dict, ts: str, max_messages: int = 15) ->
     return msgs
 
 
+def _now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
 def send_outbox(state: dict) -> tuple[int, int]:
     """Vorgemerkte Nachrichten senden (state["outbox"]). Fehlgeschlagene bleiben fuer den naechsten Lauf liegen."""
     box = state.get("outbox") or []
@@ -305,6 +319,8 @@ def send_outbox(state: dict) -> tuple[int, int]:
             send_telegram(m["text"], token, chat, m.get("preview"))
             sent += 1
             done.add(m["key"])
+            # Protokoll: was wurde wann gemeldet (Web-App, Daten-Seite); wird nie gekuerzt
+            state.setdefault("sent", []).append({"ts": _now(), "text": m["text"]})
         except Exception as ex:
             print(f"[watch] Telegram-Fehler: {ex}")
             m["tries"] = m.get("tries", 0) + 1

@@ -144,6 +144,7 @@
       r.min_discount_pct === null || r.min_discount_pct === undefined || r.min_discount_pct === "" ? "" : Number(r.min_discount_pct),
       r.max_price === null || r.max_price === undefined || r.max_price === "" ? "" : Number(r.max_price),
       uniq(r.conditions || [], fold)];
+    if (r.min_price !== null && r.min_price !== undefined && r.min_price !== "") fields.push(`ab${Number(r.min_price)}`);
     return JSON.stringify(fields);
   }
   function dedupeRules(rules) {
@@ -152,7 +153,8 @@
       const rule = cleanRule(input), key = ruleKey(rule);
       if (!indexes.has(key)) { indexes.set(key, out.length); out.push(rule); continue; }
       const i = indexes.get(key);
-      if (out[i].enabled === false && rule.enabled !== false) out[i] = rule;
+      if (out[i].enabled === false && rule.enabled !== false) out[i] = { ...rule, notify: out[i].notify === false && rule.notify === false ? false : true };
+      else if (out[i].notify === false && rule.notify !== false) out[i] = { ...out[i], notify: rule.notify };
     }
     return out;
   }
@@ -181,7 +183,8 @@
     const stores = list(rule.stores).filter(Boolean).map((s) => fold(String(s)));
     const hasMin = rule.min_discount_pct !== null && rule.min_discount_pct !== undefined && rule.min_discount_pct !== "";
     const hasMax = rule.max_price !== null && rule.max_price !== undefined && rule.max_price !== "";
-    const min = hasMin ? Number(rule.min_discount_pct) : 0, max = hasMax ? Number(rule.max_price) : 0;
+    const hasPmin = rule.min_price !== null && rule.min_price !== undefined && rule.min_price !== "";
+    const min = hasMin ? Number(rule.min_discount_pct) : 0, max = hasMax ? Number(rule.max_price) : 0, pmin = hasPmin ? Number(rule.min_price) : 0;
     const conds = list(rule.conditions).filter(Boolean).map(fold);
     return (o) => {
       const hay = o._rh || (o._rh = fold([o.title, o.product_description, o.offer_description].join(" ")));
@@ -197,6 +200,7 @@
       }
       if (hasMin && (o.discount_pct === null || o.discount_pct === undefined || o.discount_pct < min)) return false;
       if (hasMax && (o.price === null || o.price === undefined || o.price > max)) return false;
+      if (hasPmin && (o.price === null || o.price === undefined || o.price < pmin)) return false;
       if (conds.length) {
         const c = o._rc || (o._rc = fold([o.condition, o.condition_description, o.reason_discount, o.additional_info].join(" ")));
         if (!conds.some((x) => c.includes(x))) return false;

@@ -5,7 +5,7 @@
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const view = $("#view");
   const TZ = "Europe/Berlin";
-  const LS = { rules: "zc.rules", lastVisit: "zc.lastVisit", prevVisit: "zc.prevVisit", source: "zc.source", layout: "zc.layout", notify: "zc.notify", seenHits: "zc.seenHits", key: "zc.k", pw: "zc.p" };
+  const LS = { rules: "zc.rules", lastVisit: "zc.lastVisit", prevVisit: "zc.prevVisit", source: "zc.source", layout: "zc.layout", notify: "zc.notify", seenHits: "zc.seenHits", key: "zc.k", pw: "zc.p", savedSort: "zc.ss", workerUrl: "zc.w" };
 
   /* ---------- Formatierung ---------- */
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -66,6 +66,7 @@
     prevVisit: null,
     filters: {},
     layout: lsGet(LS.layout, "list"),
+    savedSort: lsGet(LS.savedSort, "treffer"),
     shown: 120,
   };
 
@@ -95,7 +96,8 @@
   const unpack = (d) => ZC.unpackOffers(d, storeIndex(), Object.fromEntries((S.repo.meta?.stores || []).map((s) => [s.id, s.last_ok])), S.repo.meta?.updated);
 
   const worker = {
-    get url() { return S.repo.meta?.worker || null; },
+    // Adresse kommt aus dem Abruf (GitHub-Secret WORKER_URL); notfalls hier im Browser eingetragen (Daten-Seite)
+    get url() { return (S.repo.meta?.worker || lsGet(LS.workerUrl, "") || "").replace(/\/+$/, "") || null; },
     async call(method, body, { path = "/api/watchlist", confirmDelete = false } = {}) {
       const r = await fetch(`${this.url}${path}`, { method, headers: { "x-key": AUTH.pw, "content-type": "application/json", ...(confirmDelete ? { "x-confirm-delete": "2" } : {}) }, body: body ? JSON.stringify(body) : undefined });
       if (!r.ok) throw new Error(`Worker ${r.status}`);
@@ -109,23 +111,30 @@
         const w = await worker.call("GET");
         S.server = { ok: true, groups: w.groups || {}, dupFix: ZC.dedupeRules(w.rules || []).length < (w.rules || []).length };
         const old = lsGet(LS.rules, []);                       // frühere, nur lokal gespeicherte Regeln einmalig übernehmen
-        const merged = ZC.dedupeRules([...(w.rules || []), ...old]);
-        S.rules = merged; S.repo.watch = []; resetRules();
-        if (old.length) { lsSet(LS.rules, []); if (merged.length !== ZC.dedupeRules(w.rules || []).length) await persistRules(); }
+        let base = w.rules || [], seed = false;
+        if (!base.length) {                                    // Server noch leer: mit der letzten Sicherung befüllen, nichts geht verloren
+          const saved = await getBin("watchlist.bin").catch((e) => { if (e instanceof AuthError) throw e; return { rules: [] }; });
+          base = saved.rules || []; seed = base.length > 0;
+        }
+        const merged = ZC.dedupeRules([...base, ...old]);
+        S.rules = merged.map(withId); S.repo.watch = []; resetRules();
+        if ((old.length || seed) && await persistRules() && old.length) lsSet(LS.rules, []);
         return;
       } catch (e) { console.warn("Merkliste vom Server nicht lesbar", e); }
     }
     const saved = await getBin("watchlist.bin").catch((e) => { if (e instanceof AuthError) throw e; return { rules: [] }; });
-    S.repo.watch = ZC.dedupeRules((saved.rules || []).map((r, i) => ({ ...r, name: r.name || `Regel ${i + 1}`, _repo: true }))); resetRules();
+    S.repo.watch = ZC.dedupeRules((saved.rules || []).map((r, i) => ({ ...r, name: r.name || `Regel ${i + 1}`, _repo: true }))).map(withId);
+    S.rules = S.rules.map(withId); resetRules();
   }
   // Entfernen nur nach doppelter Bestätigung; der Server behält jeden früheren Stand.
   const confirmTwice = (what) => confirm(`${what}\n\nBestätigung 1 von 2.`) && confirm(`Wirklich? ${what}\n\nBestätigung 2 von 2 – danach ist es aus der Liste entfernt (früherer Stand bleibt wiederherstellbar).`);
   async function persistRules(confirmDelete = false) {
     S.rules = ZC.dedupeRules(S.rules); resetRules();
     if (S.server?.ok) {
-      try { await worker.call("PUT", { rules: S.rules.map(({ _localIndex, ...r }) => r), groups: S.server.groups }, { confirmDelete: confirmDelete || S.server.dupFix }); S.server.dupFix = false; }
-      catch (e) { toast(`<b>Merkliste nicht gespeichert:</b> ${esc(e.message)}`, 7000); }
-    } else lsSet(LS.rules, S.rules);
+      try { await worker.call("PUT", { rules: S.rules.map(withId).map(({ _localIndex, _repo, ...r }) => r), groups: S.server.groups }, { confirmDelete: confirmDelete || S.server.dupFix }); S.server.dupFix = false; return true; }
+      catch (e) { toast(`<b>Merkliste nicht gespeichert:</b> ${esc(e.message)}`, 7000); return false; }
+    }
+    lsSet(LS.rules, S.rules); return true;
   }
 
   async function loadRepo() {
@@ -161,10 +170,30 @@
     return [...m.values()].sort((a, b) => a.name.localeCompare(b.name, "de"));
   }
   const updatedAt = () => [S.repo.meta?.updated, S.local.updated].filter(Boolean).sort().pop() || null;
-  const allRules = () => ZC.dedupeRules([...S.repo.watch, ...S.rules]);
-  let rulesMemo = null;                                   // vorbereitete Regeln; bei jeder Änderung verwerfen
-  const resetRules = () => { rulesMemo = null; };
-  const compiledRules = () => rulesMemo || (rulesMemo = allRules().filter((r) => r.enabled !== false).map((r) => ({ r, f: ZC.compileRule(r) })));
+  // Lokal bearbeitete Fassung ersetzt die gleichnamige (gleiche ID) aus der Sicherung
+  const allRules = () => { const own = new Set(S.rules.map((r) => r.id)); return ZC.dedupeRules([...S.repo.watch.filter((r) => !own.has(r.id)), ...S.rules]); };
+  // Stabile Kennung je gemerkter Suche (bleibt beim Bearbeiten erhalten)
+  const hashStr = (t) => { let h = 2166136261; for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
+  const withId = (r) => (r.id ? r : { ...r, id: "r" + hashStr(ZC.ruleKey(r)) });
+  const newId = () => "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+  let rulesMemo = null, savedMemo = null;                 // vorbereitete Regeln; bei jeder Änderung verwerfen
+  const resetRules = () => { rulesMemo = null; savedMemo = null; };
+  // "Merkliste"-Markierung und Telegram: nur aktive Suchen mit Benachrichtigung
+  const compiledRules = () => rulesMemo || (rulesMemo = allRules().filter((r) => r.enabled !== false && r.notify !== false).map((r) => ({ r, f: ZC.compileRule(r) })));
+  // Alle gemerkten Suchen (auch pausierte / ohne Telegram) mit Trefferzahlen
+  function savedSearches() {
+    if (savedMemo) return savedMemo;
+    const act = allOffers(false).filter((o) => o.status === "active");
+    savedMemo = allRules().map((r) => {
+      const f = ZC.compileRule({ ...r, enabled: true });
+      let n = 0, nNew = 0;
+      for (const o of act) if (f(o)) { n++; if (isNew(o)) nNew++; }
+      return { r, f, n, nNew, editable: S.rules.some((x) => x.id === r.id) };
+    });
+    return savedMemo;
+  }
+  const savedById = (id) => savedSearches().find((x) => x.r.id === id);
+  const SAVED_SORT = { treffer: ["Meiste Treffer", (a, b) => b.n - a.n], neu: ["Neue Treffer", (a, b) => b.nNew - a.nNew || b.n - a.n], name: ["Name", (a, b) => (a.r.name || "").localeCompare(b.r.name || "", "de")] };
   const isNew = (o) => S.prevVisit && o.first_seen > S.prevVisit;
   function hitRules(o) { const out = []; for (const { r, f } of compiledRules()) if (f(o)) out.push(r); return out; }
 
@@ -180,8 +209,13 @@
     markt: ["Markt A–Z", (a, b) => (a.store || "").localeCompare(b.store || "", "de") || (a.title || "").localeCompare(b.title || "", "de")],
     titel: ["Produkt A–Z", (a, b) => (a.title || "").localeCompare(b.title || "", "de")],
   };
-  const F_KEYS = ["q", "s", "c", "r", "pmin", "pmax", "dmin", "neu", "hit", "sort", "von", "bis", "art"];
-  function parseQuery(qs) { const p = new URLSearchParams(qs || ""); const f = {}; for (const k of F_KEYS) if (p.get(k)) f[k] = p.get(k); return f; }
+  const F_KEYS = ["m", "q", "s", "c", "r", "pmin", "pmax", "dmin", "neu", "sort", "von", "bis", "art"];
+  function parseQuery(qs) {
+    const p = new URLSearchParams(qs || ""); const f = {};
+    for (const k of F_KEYS) if (p.get(k)) f[k] = p.get(k);
+    if (p.get("hit") && !f.m) f.m = "all";                 // alte Links ("Nur Merklisten-Treffer")
+    return f;
+  }
   function writeQuery(route, f) { const p = new URLSearchParams(); for (const k of F_KEYS) if (f[k]) p.set(k, f[k]); const qs = p.toString(); history.replaceState(null, "", `#/${route}${qs ? "?" + qs : ""}`); }
   const setOf = (v) => new Set((v || "").split("~").filter(Boolean));
 
@@ -190,6 +224,7 @@
     const S_ = setOf(f.s), C_ = setOf(f.c), R_ = setOf(f.r);
     const pmin = f.pmin ? Number(f.pmin) : null, pmax = f.pmax ? Number(f.pmax) : null, dmin = f.dmin ? Number(f.dmin) : null;
     const art = f.art ? ZC.normArticle(f.art) : "";
+    const mf = !f.m ? null : f.m === "all" ? (o) => hitRules(o).length > 0 : (savedById(f.m)?.f || (() => false));
     return list.filter((o) => {
       if (mode === "archiv" && o.status !== "gone") return false;
       if (mode === "aktuell" && o.status !== "active") return false;
@@ -201,7 +236,7 @@
       if (dmin !== null && (o.discount_pct ?? -1) < dmin) return false;
       if (art && !(o.article_numbers || [o.article_number]).includes(art)) return false;
       if (f.neu && !isNew(o)) return false;
-      if (f.hit && !hitRules(o).length) return false;
+      if (mf && !mf(o)) return false;
       if (mode === "archiv") { if (f.von && dayKey(o.gone_at) < f.von) return false; if (f.bis && dayKey(o.gone_at) > f.bis) return false; }
       if (terms.length) {
         const hay = o._hay || (o._hay = ZC.fold([o.title, o.product_description, o.offer_description, o.article_number, ZC.fmtArticle(o.article_number), o.offer_number, o.condition, o.reason_discount, o.additional_info, o.store].join(" ")));
@@ -275,6 +310,7 @@
           <label class="sr" for="f-q">Suche</label>
           <input id="f-q" class="inp search" name="q" type="search" placeholder="Produkt, Artikelnr., Mangel …" value="${esc(f.q || "")}" autocomplete="off">
           <button type="button" class="btn mobile-filter-toggle" id="filter-toggle" aria-expanded="false">Filter</button>
+          ${savedCard(f)}
           <fieldset><legend>Markt</legend>
             <input class="inp" id="store-find" placeholder="Markt suchen" style="min-height:30px;padding:4px 8px;font-size:13px" aria-label="Märkte durchsuchen">
             <div id="store-checks">${checkList("s", counts(scoped, "store_id").sort((a, b) => (nameOf[a[0]] || a[0]).localeCompare(nameOf[b[0]] || b[0], "de")), setOf(f.s), (k) => nameOf[k] || k)}</div>
@@ -290,7 +326,6 @@
           ${mode === "archiv" ? `<fieldset><legend>Verschwunden zwischen</legend><div class="row"><input class="inp" type="date" name="von" value="${esc(f.von || "")}" aria-label="von"><input class="inp" type="date" name="bis" value="${esc(f.bis || "")}" aria-label="bis"></div></fieldset>` : ""}
           <fieldset><legend>Markierungen</legend>
             ${mode === "aktuell" ? `<label class="switch"><input type="checkbox" name="neu" value="1" ${f.neu ? "checked" : ""} ${S.prevVisit ? "" : "disabled"}> Nur neu seit letztem Besuch</label>` : ""}
-            <label class="switch"><input type="checkbox" name="hit" value="1" ${f.hit ? "checked" : ""}> Nur Merklisten-Treffer</label>
             ${f.art ? `<label class="switch"><input type="checkbox" name="art" value="${esc(f.art)}" checked> Artikel ${esc(ZC.fmtArticle(f.art))}</label>` : ""}
           </fieldset>
           <button type="button" class="btn" id="reset" style="width:100%">Alle Filter zurücksetzen</button>
@@ -298,15 +333,17 @@
         </form>
         <section aria-labelledby="list-h">
           <div class="toolbar">
-            <h2 id="list-h">${mode === "archiv" ? "Archiv" : "Aktuelle Angebote"} <small id="list-count"></small></h2>
+            <h2 id="list-h">${mode === "archiv" ? "Archiv" : f.m === "all" ? "Gemerkt" : f.m ? esc(savedById(f.m)?.r.name || "Gemerkte Suche") : "Aktuelle Angebote"} <small id="list-count"></small></h2>
             ${mode === "archiv" ? `<label class="sr" for="arch-month">Monat</label><select id="arch-month" class="inp" style="width:auto">${archiveMonths().slice().reverse().map((m) => `<option value="${m}" ${S.archiveMonth === m ? "selected" : ""}>${m}</option>`).join("")}<option value="alle" ${S.archiveMonth === "alle" ? "selected" : ""}>Alle Monate (lädt mehr)</option></select>` : ""}
             <div class="toolbar__r">
               <label class="sr" for="sort">Sortierung</label>
               <select id="sort" class="inp" style="width:auto">${Object.entries(SORTS).filter(([k]) => mode === "archiv" || !["weg"].includes(k)).map(([k, [l]]) => `<option value="${k}" ${f.sort === k ? "selected" : ""}>${l}</option>`).join("")}</select>
               <div class="seg" role="group" aria-label="Darstellung"><button type="button" data-layout="list" aria-pressed="${S.layout === "list"}">Liste</button><button type="button" data-layout="grid" aria-pressed="${S.layout === "grid"}">Kacheln</button></div>
               <button type="button" class="btn" id="csv" title="Gefilterte Angebote als CSV">⤓ CSV</button>
+              ${mode === "aktuell" ? `<button type="button" class="btn btn--primary" id="save-search" title="Aktuelle Suche und Filter merken">☆ Merken</button>` : ""}
             </div>
           </div>
+          ${mode === "aktuell" ? chipBar(f) : ""}
           ${newCount && !f.neu ? `<div class="notice"><span><b>${nf0.format(newCount)} neue Angebote</b> seit deinem letzten Besuch (${fmtDT(S.prevVisit)}).</span><button class="btn" id="show-new">Nur neue zeigen</button></div>` : ""}
           <div id="results"></div>
         </section>
@@ -315,7 +352,7 @@
     const form = $("#filters");
     let current = [];
     const filterToggle = $("#filter-toggle");
-    const nActive = () => F_KEYS.filter((k) => k !== "sort" && S.filters[k]).length;
+    const nActive = () => F_KEYS.filter((k) => k !== "sort" && k !== "m" && S.filters[k]).length;
     const setOpen = (open) => {
       form.classList.toggle("filters--open", open);
       document.body.classList.toggle("filters-open", open);
@@ -346,10 +383,10 @@
       for (const k of ["q", "pmin", "pmax", "von", "bis"]) { const v = (fd.get(k) || "").toString().trim(); if (v) nf[k] = v; }
       const d = Number(fd.get("dmin") || 0); if (d) nf.dmin = String(d); $("#dmin-v").textContent = `${d} %`;
       for (const k of ["s", "c", "r"]) { const v = fd.getAll(k); if (v.length) nf[k] = v.join("~"); }
-      if (fd.get("neu")) nf.neu = "1"; if (fd.get("hit")) nf.hit = "1"; if (fd.get("art")) nf.art = fd.get("art");
+      if (fd.get("neu")) nf.neu = "1"; if (fd.get("art")) nf.art = fd.get("art"); if (S.filters.m) nf.m = S.filters.m;
       S.filters = nf; S.shown = 120; writeQuery(mode, nf); draw();
     };
-    const reset = () => { S.filters = { sort: S.filters.sort }; writeQuery(mode, S.filters); renderList(mode, `sort=${S.filters.sort}`); };
+    const reset = () => { const keep = { sort: S.filters.sort, ...(S.filters.m ? { m: S.filters.m } : {}) }; S.filters = keep; writeQuery(mode, keep); renderList(mode, new URLSearchParams(keep).toString()); };
     form.addEventListener("input", debounce(sync, 140));
     form.addEventListener("submit", (e) => e.preventDefault());
     $("#store-find").addEventListener("input", (e) => { const q = ZC.fold(e.target.value); $$("#store-checks .check").forEach((l) => { l.hidden = q && !ZC.fold(l.textContent).includes(q); }); e.stopPropagation(); });
@@ -359,6 +396,8 @@
     $("#sort").addEventListener("change", (e) => { S.filters.sort = e.target.value; writeQuery(mode, S.filters); draw(); });
     $$("[data-layout]").forEach((b) => b.addEventListener("click", () => { S.layout = b.dataset.layout; lsSet(LS.layout, S.layout); $$("[data-layout]").forEach((x) => x.setAttribute("aria-pressed", x === b)); draw(); }));
     $("#show-new")?.addEventListener("click", () => { $("input[name=neu]", form).checked = true; sync(); });
+    $("#save-search")?.addEventListener("click", () => openRuleDialog(null, ruleFromFilters(S.filters)));
+    bindSaved(view, mode);
     $("#csv").addEventListener("click", () => {
       const cmp = SORTS[S.filters.sort]?.[1] || SORTS.neu[1];
       download(`zweite-chance_${mode}_${dayKey(Date.now())}.csv`, toCSV(current.slice().sort(cmp), EXPORT_COLS));
@@ -430,7 +469,7 @@
     $$("[data-open]", dlg).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openDetail(a.dataset.open); }));
     $("[data-copy]", dlg)?.addEventListener("click", () => { const clean = Object.fromEntries(Object.entries(o).filter(([k]) => !k.startsWith("_"))); navigator.clipboard?.writeText(JSON.stringify(clean, null, 2)).then(() => toast("JSON kopiert.")); });
     $("[data-watch-art]", dlg)?.addEventListener("click", async () => {
-      const r = { name: `${o.title} ${ZC.fmtArticle(o.article_number)}`, enabled: true, article_numbers: [ZC.fmtArticle(o.article_number)] };
+      const r = { id: newId(), name: `${o.title} ${ZC.fmtArticle(o.article_number)}`, enabled: true, article_numbers: [ZC.fmtArticle(o.article_number)] };
       if (ZC.dedupeRules([...S.repo.watch, ...S.rules]).some((x) => ZC.ruleKey(x) === ZC.ruleKey(r))) {
         toast("Der Artikel steht bereits auf deiner Merkliste.");
       } else {
@@ -462,119 +501,177 @@
     if (r.exclude?.length) p.push(`ohne: ${r.exclude.map(esc).join(", ")}`);
     if (r.stores?.length) p.push(`Märkte: ${r.stores.map((s) => esc(stores().find((x) => x.id === String(s))?.name || s)).join(", ")}`);
     if (r.min_discount_pct) p.push(`ab ${esc(r.min_discount_pct)} % Rabatt`);
+    if (r.min_price) p.push(`ab ${esc(eur(Number(r.min_price)))}`);
     if (r.max_price) p.push(`bis ${esc(eur(Number(r.max_price)))}`);
     if (r.conditions?.length) p.push(`Zustand/Grund: ${r.conditions.map(esc).join(", ")}`);
     return p.join(" · ") || "<span class='muted'>ohne Einschränkung (trifft alles)</span>";
   }
-  function renderMerkliste(query) {
-    if (activeSource() === "none") return renderOnboarding();
-    const active = allOffers(false).filter((o) => o.status === "active");
-    const sel = new URLSearchParams(query || "").get("regel");
-    const rules = ZC.dedupeRules([
-      ...S.repo.watch.map((r) => ({ ...r, _repo: true })),
-      ...S.rules.map((r, i) => ({ ...r, _localIndex: i }))
-    ]);
-    const hitsOf = (r) => { const f = ZC.compileRule({ ...r, enabled: true }); return active.filter(f); };
-    const hitCache = new Map();                            // Trefferzahl je Regel nur einmal berechnen
-    const hitsCached = (i) => { if (!hitCache.has(i)) hitCache.set(i, hitsOf(rules[i])); return hitCache.get(i); };
-
-    // Treffer einer Regel: eigene Seite, volle Breite (mobil nicht von Filtern/Formular verdeckt)
-    if (sel !== null && rules[sel]) {
-      const hs = hitsCached(+sel).slice().sort(SORTS.neu[1]);
-      view.innerHTML = `
-        <div class="toolbar"><div><a class="btn" href="#/merkliste">← Merkliste</a></div></div>
-        <div class="toolbar"><h2>${esc(rules[sel].name)} <small>${nf0.format(hs.length)} Treffer</small></h2></div>
-        <p class="muted" style="margin:0 0 14px">${ruleSummary(rules[sel])}</p>
-        ${hs.length ? `<ul class="offers">${hs.slice(0, 300).map(offerRow).join("")}</ul>${hs.length > 300 ? `<p class="muted">… und ${hs.length - 300} weitere.</p>` : ""}` : `<div class="empty">Derzeit kein passendes Angebot.</div>`}`;
-      return;
+  /* ---------- Gemerkte Suchen auf der Startseite ---------- */
+  // Eine gemerkte Suche = Regel. Mit Telegram (notify) = Merkliste, ohne = gespeicherte Ansicht (Preset).
+  const hrefWith = (f, patch) => {
+    const nf = { ...f, ...patch };
+    for (const k of Object.keys(nf)) if (!nf[k] || k === "sort") delete nf[k];
+    const qs = new URLSearchParams(nf).toString();
+    return `#/aktuell${qs ? "?" + qs : ""}`;
+  };
+  function chipBar(f) {
+    const all = savedSearches();
+    const nHits = allOffers(false).filter((o) => o.status === "active" && hitRules(o).length).length;
+    const top = all.filter((x) => x.r.enabled !== false).sort(SAVED_SORT.treffer[1]).slice(0, 10);
+    const chip = (href, label, on, title = "") => `<a class="chip2 ${on ? "chip2--on" : ""}" href="${href}" ${title ? `title="${esc(title)}"` : ""}>${label}</a>`;
+    const toggle = (k, v) => hrefWith(f, { [k]: f[k] === v ? "" : v });
+    return `<nav class="chips2" aria-label="Schnellauswahl">
+      ${chip("#/aktuell", "Alle", !f.m && !f.neu && !f.dmin && !f.pmax && !f.c)}
+      ${chip(hrefWith(f, { m: f.m === "all" ? "" : "all" }), `⭐ Gemerkt <small>${nf0.format(nHits)}</small>`, f.m === "all", "Treffer aller gemerkten Suchen mit Telegram")}
+      ${S.prevVisit ? chip(toggle("neu", "1"), "Neu seit Besuch", !!f.neu) : ""}
+      ${chip(toggle("dmin", "50"), "≥ 50 %", f.dmin === "50")}
+      ${chip(toggle("pmax", "10"), "bis 10 €", f.pmax === "10")}
+      ${chip(toggle("c", "Wie neu"), "Wie neu", f.c === "Wie neu")}
+      ${top.map((x) => chip(hrefWith(f, { m: f.m === x.r.id ? "" : x.r.id }), `${x.r.notify === false ? "" : "🔔 "}${esc(x.r.name)} <small>${nf0.format(x.n)}</small>`, f.m === x.r.id)).join("")}
+      ${all.length > top.length ? chip("#/aktuell?m=all", `alle ${all.length} gemerkten ›`, false) : ""}
+    </nav>`;
+  }
+  const savedRow = (x, f) => `<li class="saved-row ${x.r.enabled === false ? "saved-row--off" : ""} ${f.m === x.r.id ? "saved-row--on" : ""}">
+      <a href="${hrefWith(f, { m: x.r.id })}">${x.r.notify === false ? "" : "🔔 "}${esc(x.r.name)}</a>
+      <small>${nf0.format(x.n)}${x.nNew ? ` · <b>${nf0.format(x.nNew)} neu</b>` : ""}</small>
+      <button type="button" class="iconbtn" data-edit-saved="${esc(x.r.id)}" aria-label="${esc(x.r.name)} bearbeiten">✎</button></li>`;
+  function savedCard(f) {
+    if (!f.m) return "";
+    const all = savedSearches();
+    if (f.m === "all") {
+      const sorted = all.slice().sort((SAVED_SORT[S.savedSort] || SAVED_SORT.treffer)[1]);
+      return `<div class="saved-card saved-card--list">
+        <div class="saved-card__h"><b>Gemerkte Suchen</b> <small class="muted">${all.length}</small>
+          <select class="inp" id="saved-sort" aria-label="Gemerkte Suchen sortieren">${Object.entries(SAVED_SORT).map(([k, [l]]) => `<option value="${k}" ${S.savedSort === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+        ${all.length ? `<ul class="saved-list">${sorted.map((x) => savedRow(x, f)).join("")}</ul>` : `<p class="muted">Noch nichts gemerkt. Suche oder Filter einstellen, dann „☆ Merken“.</p>`}
+        <button type="button" class="btn" data-new-saved style="width:100%">＋ Neue Suche merken</button>
+      </div>`;
     }
-
-    const st = stores();
-    const serverMode = !!S.server?.ok;
-    const wide = window.matchMedia("(min-width: 961px)").matches;
-    view.innerHTML = `
-      <div class="toolbar"><h2>Merkliste <small>${rules.length} Regeln</small></h2>
-        <div class="toolbar__r">
-          <label class="switch" title="Benachrichtigt, solange diese Seite geöffnet ist"><input type="checkbox" id="bnotify" ${lsGet(LS.notify, false) ? "checked" : ""}> Browser-Hinweise</label>
-          <a class="btn btn--primary" href="#rf-box" id="new-rule">＋ Neue Regel</a>
-        </div></div>
-      <div class="notice" style="background:#EAF2FA;border-color:#B8D0EA"><span>${serverMode
-        ? "<b>Regeln werden zentral gespeichert</b> und lösen Telegram-Nachrichten aus. Änderungen gelten ab dem nächsten Abruf."
-        : "<b>Server nicht verbunden:</b> Änderungen gelten nur in diesem Browser und lösen kein Telegram aus. Bitte den Worker einrichten."}</span></div>
-      <div class="cols2">
-        <section>
-          <div class="rules">${rules.length ? rules.map((r, i) => { const n = hitsCached(i).length; const li = r._localIndex ?? -1; return `
-            <article class="rule ${r._repo ? "rule--repo" : ""} ${r.enabled === false ? "rule--off" : ""}">
-              <div style="min-width:0"><h3>${esc(r.name)} ${r.enabled === false ? `<span class="muted" style="font-weight:400">(pausiert)</span>` : ""}</h3><p>${ruleSummary(r)}</p></div>
-              <div class="rule__act"><a class="btn" href="#/merkliste?regel=${i}">${nf0.format(n)} Treffer ›</a>
-              ${r._repo || li < 0 ? "" : `<button class="btn" data-toggle="${li}" aria-label="Regel ${r.enabled === false ? "aktivieren" : "pausieren"}">${r.enabled === false ? "▶" : "❚❚"}</button><button class="btn" data-edit="${li}" aria-label="Bearbeiten">✎</button><button class="btn" data-del="${li}" aria-label="Löschen">✕</button>`}</div>
-            </article>`; }).join("") : `<div class="empty"><h3>Noch keine Regeln</h3><p>Lege deine erste Suche an – oder im Angebotsdetail „Artikel auf die Merkliste“.</p></div>`}</div>
-        </section>
-        <details class="box" id="rf-box" ${wide ? "open" : ""} aria-labelledby="rf-h">
-          <summary><h3 id="rf-h" style="display:inline">Neue Regel</h3></summary>
-          <form id="rf" class="form">
-            <input type="hidden" name="idx" value="">
-            <label style="grid-column:1/-1">Name<input class="inp" name="name" required placeholder="z. B. Hemnes-Kommode Hamburg"></label>
-            <label>Stichworte (Komma)<input class="inp" name="keywords" placeholder="hemnes kommode, malm"></label>
-            <label>Ausschließen<input class="inp" name="exclude" placeholder="tür, front"></label>
-            <label>Artikelnummern<input class="inp" name="article_numbers" placeholder="802.758.87"></label>
-            <label>Zustand / Grund enthält<input class="inp" name="conditions" placeholder="wie neu, Ausstellungsstück"></label>
-            <label>Mindestrabatt %<input class="inp" name="min_discount_pct" type="number" min="0" max="100"></label>
-            <label>Höchstpreis €<input class="inp" name="max_price" type="number" min="0"></label>
-            <fieldset style="grid-column:1/-1;border:1px solid var(--line);border-radius:var(--r);padding:8px 10px"><legend class="muted" style="font-size:12.5px">Märkte (leer = alle)</legend>
-              <div class="checks" style="max-height:150px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr))">${st.map((s) => `<label class="check"><input type="checkbox" name="stores" value="${esc(s.id)}"><span>${esc(s.name)}</span></label>`).join("")}</div></fieldset>
-            <div style="grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn--primary" type="submit">Regel speichern</button><button class="btn" type="reset">Leeren</button><span class="muted" id="rf-preview" style="align-self:center;font-size:13px"></span></div>
-          </form>
-        </details>
+    const x = savedById(f.m);
+    if (!x) return `<div class="saved-card"><p>Diese gemerkte Suche gibt es nicht (mehr). <a href="#/aktuell?m=all">Alle gemerkten</a></p></div>`;
+    const r = x.r;
+    return `<div class="saved-card">
+      <a href="${hrefWith(f, { m: "all" })}" class="linkbtn">← alle gemerkten</a>
+      <h3>${esc(r.name)}</h3>
+      <p class="muted" style="font-size:13px;margin:4px 0">${ruleSummary(r)}</p>
+      <p style="font-size:13px;margin:4px 0">${r.notify === false ? "🔕 ohne Telegram" : "🔔 Telegram an"}${r.enabled === false ? " · <b>pausiert</b>" : ""} · ${nf0.format(x.n)} Treffer</p>
+      <div class="saved-card__act">
+        <button type="button" class="btn" data-edit-saved="${esc(r.id)}">✎ Bearbeiten</button>
+        <button type="button" class="btn" data-notify-saved="${esc(r.id)}">${r.notify === false ? "🔔 Telegram an" : "🔕 Telegram aus"}</button>
       </div>
-      ${serverMode ? `<details class="box" id="hist" style="margin-top:20px"><summary><h3 style="display:inline">Frühere Stände</h3></summary><div id="hist-list" class="muted" style="margin-top:8px">lädt …</div></details>` : ""}
-      `;
-
-    $("#hist")?.addEventListener("toggle", async (e) => {
+      <p class="muted" style="font-size:12px;margin:6px 0 0">Die Filter darunter grenzen nur die Ansicht ein; die gemerkte Suche bleibt unverändert.</p>
+    </div>`;
+  }
+  // Neue gemerkte Suche aus der aktuellen Ansicht (Suche + Filter; ggf. auf Basis der gewählten Suche)
+  function ruleFromFilters(f) {
+    const nameOf = Object.fromEntries(stores().map((x) => [x.id, x.name]));
+    const base = f.m && f.m !== "all" ? savedById(f.m)?.r : null;
+    const sids = [...setOf(f.s)];
+    const conds = [...setOf(f.c), ...setOf(f.r)].filter((x) => x !== "–");
+    const where = sids.map((i) => nameOf[i] || i).slice(0, 3).join(", ");
+    const r = base ? { ...base } : { keywords: [], exclude: [], article_numbers: [], conditions: [], stores: [] };
+    delete r.id; delete r._repo; delete r._localIndex;
+    if (f.q) r.keywords = [f.q.trim()];
+    if (sids.length) r.stores = sids;
+    if (conds.length) r.conditions = conds;
+    if (f.art) r.article_numbers = [ZC.fmtArticle(f.art)];
+    if (f.dmin) r.min_discount_pct = Number(f.dmin);
+    if (f.pmin) r.min_price = Number(f.pmin);
+    if (f.pmax) r.max_price = Number(f.pmax);
+    r.name = ([base?.name || (f.q || "").trim() || "Meine Suche", where].filter(Boolean).join(" · ")).slice(0, 60);
+    r.enabled = true; if (r.notify === undefined) r.notify = true;
+    return r;
+  }
+  function openRuleDialog(rule, prefill) {
+    let dlg = $("#rule-dlg");
+    if (!dlg) {
+      dlg = document.createElement("dialog"); dlg.id = "rule-dlg"; dlg.className = "ruledlg"; document.body.appendChild(dlg);
+      dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
+    }
+    const r = rule || prefill || {};
+    const sel = new Set((r.stores || []).map(String));
+    const v = (k) => esc(r[k] ?? "");
+    dlg.innerHTML = `<form id="rd" class="form">
+      <h2 style="grid-column:1/-1">${rule ? "Gemerkte Suche bearbeiten" : "Suche merken"}</h2>
+      <label style="grid-column:1/-1">Name<input class="inp" name="name" required maxlength="60" value="${v("name")}"></label>
+      <label>Stichworte (Komma = oder)<input class="inp" name="keywords" value="${esc((r.keywords || []).join(", "))}" placeholder="hemnes kommode, malm"></label>
+      <label>Ausschließen<input class="inp" name="exclude" value="${esc((r.exclude || []).join(", "))}" placeholder="tür, front"></label>
+      <label>Artikelnummern<input class="inp" name="article_numbers" value="${esc((r.article_numbers || []).join(", "))}" placeholder="802.758.87"></label>
+      <label>Zustand / Grund enthält<input class="inp" name="conditions" value="${esc((r.conditions || []).join(", "))}" placeholder="wie neu, Ausstellungsstück"></label>
+      <label>Rabatt ab %<input class="inp" name="min_discount_pct" type="number" min="0" max="100" value="${v("min_discount_pct")}"></label>
+      <label>Preis ab €<input class="inp" name="min_price" type="number" min="0" step="any" value="${v("min_price")}"></label>
+      <label>Preis bis €<input class="inp" name="max_price" type="number" min="0" step="any" value="${v("max_price")}"></label>
+      <fieldset style="grid-column:1/-1" class="rd-stores"><legend>Märkte (keiner gewählt = alle) · <button type="button" class="linkbtn" data-rd-none>Auswahl aufheben</button></legend>
+        <input class="inp" placeholder="Markt suchen" data-rd-find aria-label="Märkte durchsuchen">
+        <div class="checks rd-checks">${stores().map((s) => `<label class="check"><input type="checkbox" name="stores" value="${esc(s.id)}" ${sel.has(s.id) ? "checked" : ""}><span>${esc(s.name)}</span></label>`).join("")}</div></fieldset>
+      <label class="switch" style="grid-column:1/-1"><input type="checkbox" name="notify" ${r.notify === false ? "" : "checked"}> Neue Treffer per Telegram melden (sonst nur gespeicherte Ansicht)</label>
+      <label class="switch" style="grid-column:1/-1"><input type="checkbox" name="enabled" ${r.enabled === false ? "" : "checked"}> Aktiv (sonst pausiert)</label>
+      <p class="muted" id="rd-preview" style="grid-column:1/-1;margin:0"></p>
+      <div style="grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn--primary" type="submit">Speichern</button>
+        <button class="btn" type="button" data-rd-cancel>Abbrechen</button>
+        ${rule ? `<button class="btn" type="button" data-rd-del style="margin-left:auto;color:var(--rust)">Entfernen …</button>` : ""}
+      </div></form>`;
+    const form = $("#rd", dlg);
+    const read = () => {
+      const fd = new FormData(form); const num = (k) => (fd.get(k) === "" || fd.get(k) === null ? null : Number(fd.get(k)));
+      const out = { ...(rule || {}), id: rule?.id || newId(), name: String(fd.get("name") || "").trim(), enabled: !!fd.get("enabled"), notify: !!fd.get("notify"),
+        keywords: splitList(fd.get("keywords")), exclude: splitList(fd.get("exclude")), article_numbers: splitList(fd.get("article_numbers")),
+        conditions: splitList(fd.get("conditions")), stores: fd.getAll("stores"), min_discount_pct: num("min_discount_pct"), min_price: num("min_price"), max_price: num("max_price") };
+      delete out._repo; delete out._localIndex;
+      return out;
+    };
+    const preview = () => { const f = ZC.compileRule({ ...read(), enabled: true }); $("#rd-preview", dlg).textContent = `→ aktuell ${nf0.format(allOffers(false).filter((o) => o.status === "active" && f(o)).length)} Treffer`; };
+    form.addEventListener("input", debounce(preview, 200)); preview();
+    $("[data-rd-find]", dlg).addEventListener("input", (e) => { const q = ZC.fold(e.target.value); $$(".rd-checks .check", dlg).forEach((l) => { l.hidden = q && !ZC.fold(l.textContent).includes(q); }); });
+    $("[data-rd-none]", dlg).addEventListener("click", () => { $$("input[name=stores]", dlg).forEach((c) => (c.checked = false)); preview(); });
+    $("[data-rd-cancel]", dlg).addEventListener("click", () => dlg.close());
+    $("[data-rd-del]", dlg)?.addEventListener("click", async () => {
+      if (!S.rules.some((y) => y.id === rule.id)) { toast("Diese Suche kommt aus der Sicherung und lässt sich nur mit verbundenem Worker entfernen."); return; }
+      if (!confirmTwice(`Gemerkte Suche „${rule.name}“ entfernen?`)) return;
+      S.rules = S.rules.filter((y) => y.id !== rule.id); await persistRules(true); updateBadges();
+      dlg.close(); toast("Entfernt. Der frühere Stand ist unter „Daten“ wiederherstellbar."); location.hash = "#/aktuell?m=all";
+    });
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault(); const x = read();
+      if (!x.name) { toast("Bitte einen Namen eingeben."); return; }
+      if (allRules().some((y) => y.id !== x.id && ZC.ruleKey(y) === ZC.ruleKey(x))) { toast("Eine gemerkte Suche mit genau diesen Kriterien gibt es schon."); return; }
+      const i = S.rules.findIndex((y) => y.id === x.id);
+      if (i >= 0) S.rules[i] = x; else S.rules.push(x);
+      await persistRules(); updateBadges(); dlg.close();
+      toast(S.server?.ok ? `„${esc(x.name)}“ gespeichert.` : `„${esc(x.name)}“ gespeichert (nur in diesem Browser – Worker nicht verbunden).`, 6000);
+      const target = `#/aktuell?m=${encodeURIComponent(x.id)}`;
+      if (location.hash === target) route(); else location.hash = target;
+    });
+    dlg.showModal();
+  }
+  function bindSaved(root) {
+    $("#saved-sort", root)?.addEventListener("change", (e) => { e.stopPropagation(); S.savedSort = e.target.value; lsSet(LS.savedSort, S.savedSort); route(); });
+    $$("[data-edit-saved]", root).forEach((b) => b.addEventListener("click", (e) => { e.preventDefault(); const x = savedById(b.dataset.editSaved); if (x) openRuleDialog(x.r); }));
+    $$("[data-new-saved]", root).forEach((b) => b.addEventListener("click", () => openRuleDialog(null, ruleFromFilters({}))));
+    $$("[data-notify-saved]", root).forEach((b) => b.addEventListener("click", async () => {
+      const x = savedById(b.dataset.notifySaved); if (!x) return;
+      const upd = { ...x.r, notify: x.r.notify === false }; delete upd._repo; delete upd._localIndex;
+      const i = S.rules.findIndex((y) => y.id === upd.id); if (i >= 0) S.rules[i] = upd; else S.rules.push(upd);
+      await persistRules(); updateBadges(); route();
+    }));
+  }
+  // Frühere Stände der Merkliste (Daten-Seite)
+  function bindHistory(root) {
+    $("#hist", root)?.addEventListener("toggle", async (e) => {
       if (!e.target.open || S.repo.history) return;
-      const box = $("#hist-list");
+      const box = $("#hist-list", root);
       try {
         S.repo.history = await worker.call("GET", null, { path: "/api/history" });
-        box.innerHTML = S.repo.history.length ? `<ul class="minilist">${S.repo.history.map((h) => `<li><span>${esc(fmtDT(h.ts))} · ${h.count ?? "?"} Regeln</span><button class="btn" data-restore="${esc(h.id)}">Wiederherstellen</button></li>`).join("")}</ul>` : "Noch keine früheren Stände (entstehen bei jeder Änderung).";
+        box.innerHTML = S.repo.history.length ? `<ul class="minilist">${S.repo.history.map((h) => `<li><span>${esc(fmtDT(h.ts))} · ${h.count ?? "?"} Suchen</span><button class="btn" data-restore="${esc(h.id)}">Wiederherstellen</button></li>`).join("")}</ul>` : "Noch keine früheren Stände (entstehen bei jeder Änderung).";
         $$("[data-restore]", box).forEach((b) => b.addEventListener("click", async () => {
           if (!confirmTwice("Diesen früheren Stand wiederherstellen? Der aktuelle Stand bleibt als Version erhalten.")) return;
           try {
             const snap = await worker.call("GET", null, { path: `/api/history?id=${encodeURIComponent(b.dataset.restore)}` });
-            S.rules = ZC.dedupeRules(snap.rules || []); S.repo.history = null; await persistRules(true); updateBadges(); toast("Früherer Stand wiederhergestellt."); renderMerkliste();
+            S.rules = ZC.dedupeRules(snap.rules || []).map(withId); S.repo.history = null; await persistRules(true); updateBadges(); toast("Früherer Stand wiederhergestellt."); renderDaten();
           } catch (err) { toast(`<b>Nicht möglich:</b> ${esc(err.message)}`, 6000); }
         }));
       } catch (err) { box.textContent = `Nicht abrufbar: ${err.message}`; }
-    });
-
-    const form = $("#rf"), box = $("#rf-box");
-    $("#new-rule").addEventListener("click", (e) => { e.preventDefault(); box.open = true; box.scrollIntoView({ block: "start" }); form.elements.namedItem("name").focus(); });
-    const readForm = () => { const fd = new FormData(form); return { name: fd.get("name").trim(), enabled: true, keywords: splitList(fd.get("keywords")), exclude: splitList(fd.get("exclude")), article_numbers: splitList(fd.get("article_numbers")), conditions: splitList(fd.get("conditions")), stores: fd.getAll("stores"), min_discount_pct: fd.get("min_discount_pct") ? Number(fd.get("min_discount_pct")) : null, max_price: fd.get("max_price") ? Number(fd.get("max_price")) : null }; };
-    form.addEventListener("input", debounce(() => { const r = readForm(); $("#rf-preview").textContent = `→ aktuell ${nf0.format(hitsOf(r).length)} Treffer`; }, 200));
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault(); const r = readForm(); const idx = form.elements.idx.value;
-      const editIndex = idx === "" ? -1 : Number(idx);
-      const duplicate = ZC.dedupeRules([...S.repo.watch, ...S.rules.map((x, i) => i === editIndex ? { ...x, _edit: true } : x)])
-        .some((x) => !x._edit && ZC.ruleKey(x) === ZC.ruleKey(r));
-      if (duplicate) { toast("Diese Suche ist bereits gespeichert."); return; }
-      if (idx !== "") { r.enabled = S.rules[idx].enabled; S.rules[idx] = r; } else S.rules.push(r);
-      await persistRules(); S.repo.history = null; toast("Regel gespeichert."); updateBadges();
-      renderMerkliste();
-    });
-    $$("[data-del]").forEach((b) => b.addEventListener("click", async () => {
-      const r = S.rules[+b.dataset.del]; if (!confirmTwice(`Regel „${r.name}“ entfernen?`)) return;
-      S.rules.splice(+b.dataset.del, 1); await persistRules(true); updateBadges(); renderMerkliste();
-    }));
-    $$("[data-toggle]").forEach((b) => b.addEventListener("click", async () => { const r = S.rules[+b.dataset.toggle]; r.enabled = r.enabled === false; await persistRules(); updateBadges(); renderMerkliste(query); }));
-    $$("[data-edit]").forEach((b) => b.addEventListener("click", () => {
-      const r = S.rules[+b.dataset.edit], el = form.elements; el.idx.value = b.dataset.edit; el.namedItem("name").value = r.name;
-      for (const k of ["keywords", "exclude", "article_numbers", "conditions"]) el[k].value = (r[k] || []).join(", ");
-      el.min_discount_pct.value = r.min_discount_pct ?? ""; el.max_price.value = r.max_price ?? "";
-      $$("input[name=stores]", form).forEach((c) => (c.checked = (r.stores || []).map(String).includes(c.value)));
-      $("#rf-h").textContent = "Regel bearbeiten"; box.open = true; form.elements.namedItem("name").focus(); box.scrollIntoView({ block: "start" });
-    }));
-    $("#bnotify").addEventListener("change", async (e) => {
-      if (e.target.checked && "Notification" in window && Notification.permission !== "granted") { const p = await Notification.requestPermission(); if (p !== "granted") { e.target.checked = false; toast("Browser-Benachrichtigungen wurden nicht erlaubt."); return; } }
-      lsSet(LS.notify, e.target.checked); if (e.target.checked) markHitsSeen();
     });
   }
 
@@ -592,10 +689,120 @@
     labels.forEach((l, i) => { if (i % step === 0) ax += `<text x="${pad + i * bw}" y="${H - 4}" font-size="10" fill="#6B6F76">${l.slice(5).split("-").reverse().join(".")}</text>`; });
     return `<div class="cols"><svg viewBox="0 0 ${W} ${H}" role="img"><text x="0" y="10" font-size="10" fill="#6B6F76">${nf0.format(max)}</text><line x1="${pad}" x2="${W}" y1="${H - 18}" y2="${H - 18}" stroke="#16181D"/>${g}${ax}</svg></div>`;
   }
+  /* --- zusätzliche Auswertungen --- */
+  const fmtDays = (v) => (v == null ? "–" : v < 1 ? `${Math.max(1, Math.round(v * 24))} Std.` : `${nf2.format(Math.round(v * 10) / 10).replace(/,0+$/, "")} T`);
+  // Linie (eine Reihe) mit Hover je Punkt
+  function lineChart(points, { fmt = nf0.format, label = "" } = {}) {
+    if (points.length < 2) return "<p class='muted'>Noch zu wenige Abrufe.</p>";
+    const W = 1000, H = 190, padL = 52, padB = 20;
+    const t0 = +new Date(points[0].t), t1 = +new Date(points[points.length - 1].t) || t0 + 1;
+    const vs = points.map((p) => p.v), lo = Math.min(...vs), hi = Math.max(...vs), sp = hi - lo || 1;
+    const x = (t) => padL + ((+new Date(t) - t0) / (t1 - t0 || 1)) * (W - padL - 6);
+    const y = (v) => 8 + (1 - (v - lo) / sp) * (H - padB - 16);
+    const d = points.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join("");
+    const hits = points.map((p) => `<circle cx="${x(p.t).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="7" fill="transparent"><title>${esc(fmtDT(p.t))}: ${esc(fmt(p.v))}${label}</title></circle>`).join("");
+    return `<div class="cols"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Verlauf von ${esc(fmt(vs[0]))} bis ${esc(fmt(vs[vs.length - 1]))}">
+      <text x="0" y="12" font-size="10" fill="#6B6F76">${esc(fmt(hi))}</text><text x="0" y="${H - padB}" font-size="10" fill="#6B6F76">${esc(fmt(lo))}</text>
+      <line x1="${padL}" x2="${W}" y1="${H - padB + 2}" y2="${H - padB + 2}" stroke="#DFDBD1"/>
+      <text x="${padL}" y="${H - 4}" font-size="10" fill="#6B6F76">${esc(fmtD(points[0].t))}</text><text x="${W - 4}" y="${H - 4}" font-size="10" fill="#6B6F76" text-anchor="end">${esc(fmtD(points[points.length - 1].t))}</text>
+      <path d="${d}" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linejoin="round"/>${hits}</svg></div>`;
+  }
+  // Wochentag × Uhrzeit (Berlin): eine Farbe, hell -> dunkel
+  const hourFmt = new Intl.DateTimeFormat("de-DE", { timeZone: TZ, weekday: "short", hour: "2-digit", hourCycle: "h23" });
+  const WD = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+  function heatmap(grid) {
+    const max = Math.max(1, ...grid.flat()), cw = 24, ch = 18, padL = 26, padT = 14;
+    const shade = (v) => (v ? 0.12 + 0.88 * (v / max) : 0);
+    let g = "";
+    grid.forEach((row, d) => row.forEach((v, h) => { g += `<rect x="${padL + h * cw + 1}" y="${padT + d * ch + 1}" width="${cw - 2}" height="${ch - 2}" rx="2" fill="${v ? "#0058A3" : "#ECE9E2"}" fill-opacity="${v ? shade(v).toFixed(2) : 1}"><title>${WD[d]} ${String(h).padStart(2, "0")}–${String(h + 1).padStart(2, "0")} Uhr: ${nf0.format(v)} neue Angebote</title></rect>`; }));
+    const ax = WD.map((w, d) => `<text x="0" y="${padT + d * ch + 13}" font-size="10" fill="#6B6F76">${w}</text>`).join("") + [0, 6, 12, 18, 23].map((h) => `<text x="${padL + h * cw + 4}" y="10" font-size="10" fill="#6B6F76">${h}</text>`).join("");
+    return `<div class="cols"><svg viewBox="0 0 ${padL + 24 * cw} ${padT + 7 * ch + 2}" role="img" aria-label="Neue Angebote nach Wochentag und Uhrzeit">${ax}${g}</svg></div>
+      <div class="legend"><span>wenige</span><span class="ramp"></span><span>viele (max. ${nf0.format(max)})</span></div>`;
+  }
+  function moreStats(every, gone, nameOf, tables, csvBtn) {
+    const runs = (S.repo.runs || []).filter((r) => r.ts && r.active);
+    const firstRun = runs[0]?.ts || "";
+    const now = Date.now(), d7 = new Date(now - 7 * 864e5).toISOString(), d14 = new Date(now - 14 * 864e5).toISOString(), d30 = new Date(now - 30 * 864e5).toISOString();
+    // 1) Bestand im Verlauf
+    const bestand = runs.map((r) => ({ t: r.ts, v: Number(r.active) }));
+    tables.bestand = bestand.map((p) => ({ zeit: p.t, aktiv: p.v }));
+    // 2) Wann kommen neue Angebote? (ohne den ersten Abruf – da war alles "neu")
+    const grid = Array.from({ length: 7 }, () => Array(24).fill(0));
+    let nObs = 0;
+    for (const o of every) {
+      if (!o.first_seen || o.first_seen <= firstRun) continue;
+      const parts = Object.fromEntries(hourFmt.formatToParts(new Date(o.first_seen)).map((p) => [p.type, p.value]));
+      const d = WD.indexOf(parts.weekday.replace(".", "").slice(0, 2)); const h = Number(parts.hour);
+      if (d >= 0 && h >= 0 && h < 24) { grid[d][h]++; nObs++; }
+    }
+    tables.wann = grid.flatMap((row, d) => row.map((v, h) => ({ wochentag: WD[d], stunde: h, neu: v })));
+    // 3) Preissenkungen
+    const drops = [];
+    for (const o of every) {
+      const ph = (o.price_history || []).filter((p) => p[1] !== null);
+      for (let i = 1; i < ph.length; i++) if (ph[i][1] < ph[i - 1][1]) drops.push({ o, ts: ph[i][0], from: ph[i - 1][1], to: ph[i][1], pct: (1 - ph[i][1] / ph[i - 1][1]) * 100 });
+    }
+    const recentDrops = drops.filter((x) => x.ts >= d14).sort((a, b) => b.pct - a.pct);
+    tables.preissenkungen = recentDrops.map((x) => ({ zeit: x.ts, produkt: x.o.title, markt: x.o.store, von: x.from, auf: x.to, minus_pct: Math.round(x.pct), id: x.o.id }));
+    // 4) Wie schnell weg – nach Rabatthöhe (nur verschwundene, Median Tage)
+    const dwellByDisc = Array.from({ length: 5 }, (_, i) => ({ l: ["unter 20 %", "20–39 %", "40–59 %", "60–79 %", "ab 80 %"][i], a: [] }));
+    for (const o of gone) { if (o.discount_pct == null) continue; const b = o.discount_pct < 20 ? 0 : o.discount_pct < 40 ? 1 : o.discount_pct < 60 ? 2 : o.discount_pct < 80 ? 3 : 4; dwellByDisc[b].a.push(days(o.first_seen, o.gone_at)); }
+    const dwellDisc = dwellByDisc.filter((x) => x.a.length >= 5).map((x) => ({ l: x.l, v: Math.round(median(x.a) * 10) / 10, n: x.a.length }));
+    tables.tempo_rabatt = dwellDisc;
+    // 5) Märkte im Vergleich
+    const per = new Map();
+    for (const o of every) {
+      const k = o.store_id; if (!per.has(k)) per.set(k, { act: [], new7: 0, gone7: 0, dwell: [] });
+      const x = per.get(k);
+      if (o.status === "active") x.act.push(o);
+      if (o.first_seen >= d7 && o.first_seen > firstRun) x.new7++;
+      if (o.status === "gone" && o.gone_at >= d7) x.gone7++;
+      if (o.status === "gone") x.dwell.push(days(o.first_seen, o.gone_at));
+    }
+    const markets = [...per.entries()].map(([id, x]) => ({ markt: nameOf[id] || id, aktiv: x.act.length, median_rabatt: median(x.act.map((o) => o.discount_pct)), neu_pro_tag: Math.round(x.new7 / 7 * 10) / 10, weg_pro_tag: Math.round(x.gone7 / 7 * 10) / 10, verweildauer_tage: x.dwell.length >= 5 ? Math.round(median(x.dwell) * 10) / 10 : null }))
+      .sort((a, b) => b.neu_pro_tag - a.neu_pro_tag);
+    tables.maerkte_vergleich = markets;
+    // 6) Gemerkte Suchen: was ist ein guter Preis?
+    const saved = savedSearches().map((x) => {
+      const all = every.filter((o) => x.f(o)), act = all.filter((o) => o.status === "active"), gn = all.filter((o) => o.status === "gone");
+      const prices = all.map((o) => o.price).filter((v) => v != null);
+      return { suche: x.r.name, aktiv: act.length, guenstigster_aktiv: act.length ? Math.min(...act.map((o) => o.price ?? 1e9)) : null, median_preis: median(prices), tiefster_preis: prices.length ? Math.min(...prices) : null, weg_30_tage: gn.filter((o) => o.gone_at >= d30).length, verweildauer_tage: gn.length >= 3 ? Math.round(median(gn.map((o) => days(o.first_seen, o.gone_at))) * 10) / 10 : null };
+    }).sort((a, b) => b.aktiv - a.aktiv);
+    tables.gemerkt_preise = saved;
+    const num = (v, f = nf0.format) => (v == null || Number.isNaN(v) ? "–" : f(v));
+    const sortTbl = (id) => `data-sorttable="${id}"`;
+    return `
+      <h2 style="margin:36px 0 14px">Mehr Einblick</h2>
+      <div class="charts">
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Bestand im Verlauf</h3><p>Aktive Angebote je Abruf · Punkt antippen/überfahren für Details</p></div>${csvBtn("bestand")}</header>${lineChart(bestand)}</section>
+        <section class="chart"><header><div><h3>Wann kommen neue Angebote?</h3><p>Erstmals gesehen, nach Wochentag und Stunde (Berlin) · ${nf0.format(nObs)} Angebote seit Beobachtungsbeginn${nObs < 500 ? " · noch wenig Daten" : ""}</p></div>${csvBtn("wann")}</header>${heatmap(grid)}
+          <p class="muted" style="font-size:12px;margin:6px 0 0">Genauigkeit = Abrufabstand. Bei unregelmäßigem Takt wirken einzelne Stunden voller, als sie sind.</p></section>
+        <section class="chart"><header><div><h3>Wie schnell ist es weg?</h3><p>Median-Verweildauer nach Rabatthöhe, nur verschwundene Angebote</p></div>${csvBtn("tempo_rabatt")}</header>${dwellDisc.length ? bars(dwellDisc, { fmt: fmtDays, cls: "y" }) : "<p class='muted'>Noch zu wenige abgeschlossene Angebote.</p>"}</section>
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Preissenkungen der letzten 14 Tage</h3><p>${nf0.format(recentDrops.length)} Senkungen · insgesamt ${nf0.format(drops.length)} seit Beobachtungsbeginn · stärkste zuerst</p></div>${csvBtn("preissenkungen")}</header>
+          ${recentDrops.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Produkt</th><th>Markt</th><th class="n">vorher</th><th class="n">jetzt</th><th class="n">−</th><th>wann</th></tr></thead><tbody>${recentDrops.slice(0, 15).map((x) => `<tr data-id="${esc(x.o.id)}" style="cursor:pointer"><td>${esc(x.o.title)} <span class="muted">${esc(x.o.product_description)}</span></td><td>${esc(x.o.store)}</td><td class="n">${esc(eur(x.from))}</td><td class="n"><b>${esc(eur(x.to))}</b></td><td class="n">${nf0.format(Math.round(x.pct))} %</td><td>${esc(rel(x.ts))}</td></tr>`).join("")}</tbody></table></div>` : "<p class='muted'>Keine Preissenkungen im Zeitraum.</p>"}</section>
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Märkte im Vergleich</h3><p>Neu und weg je Tag (letzte 7 Tage) · Spaltenkopf antippen zum Sortieren</p></div>${csvBtn("maerkte_vergleich")}</header>
+          <div class="tblwrap"><table class="tbl" ${sortTbl("m")}><thead><tr><th data-k="0">Markt</th><th class="n" data-k="1">aktiv</th><th class="n" data-k="2">Median-Rabatt</th><th class="n" data-k="3">neu/Tag</th><th class="n" data-k="4">weg/Tag</th><th class="n" data-k="5">Verweildauer</th></tr></thead><tbody>
+          ${markets.map((m) => `<tr><td>${esc(m.markt)}</td><td class="n" data-v="${m.aktiv}">${nf0.format(m.aktiv)}</td><td class="n" data-v="${m.median_rabatt ?? -1}">${num(m.median_rabatt, pct)}</td><td class="n" data-v="${m.neu_pro_tag}">${num(m.neu_pro_tag, nf2.format)}</td><td class="n" data-v="${m.weg_pro_tag}">${num(m.weg_pro_tag, nf2.format)}</td><td class="n" data-v="${m.verweildauer_tage ?? -1}">${num(m.verweildauer_tage, fmtDays)}</td></tr>`).join("")}</tbody></table></div></section>
+        ${saved.length ? `<section class="chart" style="grid-column:1/-1"><header><div><h3>Gemerkte Suchen: Was ist ein guter Preis?</h3><p>Aktuell und über den ganzen Beobachtungszeitraum</p></div>${csvBtn("gemerkt_preise")}</header>
+          <div class="tblwrap"><table class="tbl" ${sortTbl("g")}><thead><tr><th data-k="0">Suche</th><th class="n" data-k="1">aktiv</th><th class="n" data-k="2">günstigster jetzt</th><th class="n" data-k="3">Median-Preis</th><th class="n" data-k="4">Tiefstpreis</th><th class="n" data-k="5">weg in 30 T</th><th class="n" data-k="6">Verweildauer</th></tr></thead><tbody>
+          ${saved.map((x) => `<tr><td>${esc(x.suche)}</td><td class="n" data-v="${x.aktiv}">${nf0.format(x.aktiv)}</td><td class="n" data-v="${x.guenstigster_aktiv ?? -1}">${num(x.guenstigster_aktiv, eur)}</td><td class="n" data-v="${x.median_preis ?? -1}">${num(x.median_preis, eur)}</td><td class="n" data-v="${x.tiefster_preis ?? -1}">${num(x.tiefster_preis, eur)}</td><td class="n" data-v="${x.weg_30_tage}">${nf0.format(x.weg_30_tage)}</td><td class="n" data-v="${x.verweildauer_tage ?? -1}">${num(x.verweildauer_tage, fmtDays)}</td></tr>`).join("")}</tbody></table></div></section>` : ""}
+      </div>`;
+  }
+  // Tabellen per Klick auf den Spaltenkopf sortieren
+  function bindSortTables(root) {
+    $$("[data-sorttable]", root).forEach((tbl) => $$("th[data-k]", tbl).forEach((th) => th.addEventListener("click", () => {
+      const k = +th.dataset.k, desc = th.dataset.dir !== "desc"; th.dataset.dir = desc ? "desc" : "asc";
+      const rows = $$("tbody tr", tbl);
+      const val = (tr) => { const td = tr.children[k]; return td.dataset.v !== undefined ? Number(td.dataset.v) : td.textContent; };
+      rows.sort((a, b) => { const x = val(a), y = val(b); const c = typeof x === "number" ? x - y : String(x).localeCompare(String(y), "de"); return desc ? -c : c; });
+      rows.forEach((tr) => tr.parentNode.appendChild(tr));
+    })));
+  }
   async function renderStatistik(query) {
     if (activeSource() === "none") return renderOnboarding();
     const p = new URLSearchParams(query || ""); const scope = p.get("scope") || "aktiv"; const tage = Number(p.get("tage") || 30);
     if (hasRepo() && !archiveFullyLoaded()) { view.innerHTML = `<div class="toolbar"><h2>Statistik</h2></div><div class="skeleton"></div>`; await loadArchive(); }
+    if (hasRepo() && !S.repo.runs) S.repo.runs = await getBin("runs.bin", S.repo.meta.updated).catch(() => []);
     const every = allOffers(true);
     const set = scope === "aktiv" ? every.filter((o) => o.status === "active") : every;
     const gone = every.filter((o) => o.status === "gone");
@@ -609,7 +816,7 @@
     const byCond = agg(set, (o) => o.condition);
     const byTitle = agg(set, (o) => o.title).slice(0, 15);
     const buckets = Array.from({ length: 10 }, (_, i) => ({ l: `${i * 10}–${i * 10 + 9} %`, v: 0 })); set.forEach((o) => { if (o.discount_pct != null) buckets[Math.min(9, Math.max(0, Math.floor(o.discount_pct / 10)))].v++; });
-    const dwellBy = (keyFn) => { const m = new Map(); gone.forEach((o) => { const k = keyFn(o) || "–"; (m.get(k) || m.set(k, []).get(k)).push(days(o.first_seen, o.gone_at)); }); return [...m.entries()].filter(([, a]) => a.length >= 5).map(([l, a]) => ({ l, v: Math.round(median(a) * 10) / 10, n: a.length })).sort((a, b) => a.v - b.v).slice(0, 15); };
+    const dwellBy = (keyFn) => { const m = new Map(); gone.forEach((o) => { const k = keyFn(o) || "–"; (m.get(k) || m.set(k, []).get(k)).push(days(o.first_seen, o.gone_at)); }); return [...m.entries()].filter(([, a]) => a.length >= 5).map(([l, a]) => ({ l, v: Math.round(median(a) * 100) / 100, n: a.length })).sort((a, b) => a.v - b.v).slice(0, 15); };
     const dwellCond = dwellBy((o) => o.condition), dwellStore = dwellBy((o) => nameOf[o.store_id] || o.store);
     const dayList = []; for (let d = new Date(since); d <= new Date(now); d = new Date(+d + 864e5)) dayList.push(dayKey(d));
     const nNew = Object.fromEntries(dayList.map((d) => [d, 0])), nGone = { ...Object.fromEntries(dayList.map((d) => [d, 0])) };
@@ -642,11 +849,13 @@
         <section class="chart"><header><div><h3>Zustand</h3></div>${csvBtn("zustand")}</header>${bars(byCond, { cls: "bl" })}</section>
         <section class="chart"><header><div><h3>Rabatthöhe</h3><p>Verteilung gegenüber Neupreis</p></div>${csvBtn("rabatt")}</header>${bars(buckets, { cls: "y" })}</section>
         <section class="chart"><header><div><h3>Häufigste Produkte</h3><p>nach Produktname, Top 15</p></div>${csvBtn("produkte")}</header>${bars(byTitle)}</section>
-        <section class="chart"><header><div><h3>Verweildauer nach Zustand</h3><p>Median in Tagen, nur verschwundene</p></div>${csvBtn("verweil_zustand")}</header>${dwellCond.length ? bars(dwellCond, { fmt: (v) => nf0.format(v) + " T", cls: "bl" }) : "<p class='muted'>Noch zu wenige abgeschlossene Angebote.</p>"}</section>
-        <section class="chart"><header><div><h3>Verweildauer nach Markt</h3><p>Median in Tagen – kurz = schnell vergriffen</p></div>${csvBtn("verweil_markt")}</header>${dwellStore.length ? bars(dwellStore, { fmt: (v) => nf0.format(v) + " T" }) : "<p class='muted'>Noch zu wenige abgeschlossene Angebote.</p>"}</section>
-      </div>`;
+        <section class="chart"><header><div><h3>Verweildauer nach Zustand</h3><p>Median in Tagen, nur verschwundene</p></div>${csvBtn("verweil_zustand")}</header>${dwellCond.length ? bars(dwellCond, { fmt: fmtDays, cls: "bl" }) : "<p class='muted'>Noch zu wenige abgeschlossene Angebote.</p>"}</section>
+        <section class="chart"><header><div><h3>Verweildauer nach Markt</h3><p>Median in Tagen – kurz = schnell vergriffen</p></div>${csvBtn("verweil_markt")}</header>${dwellStore.length ? bars(dwellStore, { fmt: fmtDays }) : "<p class='muted'>Noch zu wenige abgeschlossene Angebote.</p>"}</section>
+      </div>
+      ${moreStats(every, gone, nameOf, tables, csvBtn)}`;
     $$("[data-scope]").forEach((b) => b.addEventListener("click", () => { location.hash = `#/statistik?scope=${b.dataset.scope}&tage=${tage}`; }));
     $("#tage").addEventListener("change", (e) => { location.hash = `#/statistik?scope=${scope}&tage=${e.target.value}`; });
+    bindSortTables(view);
     $$("[data-csv]").forEach((b) => b.addEventListener("click", () => { const t = tables[b.dataset.csv]; download(`statistik_${b.dataset.csv}_${dayKey(Date.now())}.csv`, toCSV(t, Object.keys(t[0] || { l: 0, v: 0 }))); }));
   }
 
@@ -666,6 +875,58 @@
     ["reappear_count", "Wie oft das Angebot nach dem Verschwinden wieder auftauchte (z. B. abgelaufene Reservierung)."],
     ["price_history", "Liste [Zeitpunkt, Preis] bei jeder Preisänderung."],
   ];
+  // Wie regelmäßig wurde zuletzt abgerufen? (Lücken sofort sichtbar)
+  function taktHtml() {
+    const runs = (S.repo.runs || []).map((r) => r.ts).filter(Boolean).sort();
+    if (runs.length < 2) return `<p class="muted">Noch zu wenige Abrufe.</p>`;
+    const last = runs.slice(-25), gaps = [];
+    for (let i = 1; i < last.length; i++) gaps.push((new Date(last[i]) - new Date(last[i - 1])) / 36e5);
+    const day = runs.filter((t) => Date.now() - new Date(t) < 864e5).length;
+    const fmtH = (h) => (h < 1.5 ? `${Math.round(h * 60)} Min.` : `${nf0.format(Math.round(h * 10) / 10)} Std.`);
+    const ok = median(gaps) <= 1.3 && Math.max(...gaps) <= 3;
+    return `<p style="margin:0 0 6px"><span class="dot ${ok ? "" : "dot--warn"}"></span>${ok ? "Regelmäßig" : "Unregelmäßig"}: ${day} Abrufe in den letzten 24 Std.</p>
+      <table class="tbl"><tbody><tr><td>Typischer Abstand</td><td>${fmtH(median(gaps))}</td></tr><tr><td>Längste Lücke (letzte 24 Abrufe)</td><td>${fmtH(Math.max(...gaps))}</td></tr><tr><td>Letzter Abruf</td><td>${esc(rel(runs[runs.length - 1]))}</td></tr></tbody></table>
+      ${columns([gaps.map((g) => Math.round(g * 10) / 10)], last.slice(1).map((t) => dayKey(t)), ["#0058A3"])}<p class="muted" style="font-size:12px;margin:2px 0 0">Abstand zwischen den letzten Abrufen in Stunden.</p>`;
+  }
+  async function fillWorkerDiag() {
+    const box = $("#diag-worker"); if (!box) return;
+    const head = "<h3>Worker (Takt, Telegram-Bot, Merkliste)</h3>";
+    const manual = `<form id="wurl" class="row" style="margin-top:8px"><input class="inp" name="u" placeholder="https://zc-helper….workers.dev" value="${esc(lsGet(LS.workerUrl, "") || "")}"><button class="btn" type="submit">Verbinden</button></form>`;
+    const bindForm = () => $("#wurl", box)?.addEventListener("submit", (e) => { e.preventDefault(); lsSet(LS.workerUrl, new FormData(e.target).get("u").trim()); toast("Gespeichert – lade neu …"); setTimeout(() => location.reload(), 600); });
+    if (!worker.url) {
+      box.innerHTML = `${head}<p><span class="dot dot--bad"></span><b>Nicht verbunden.</b> Im GitHub-Repo fehlt das Secret <code>WORKER_URL</code>. Bis dahin: Adresse hier eintragen (gilt nur für diesen Browser).</p>${manual}`;
+      return bindForm();
+    }
+    let st;
+    try { st = await worker.call("GET", null, { path: "/api/status" }); }
+    catch (e) { box.innerHTML = `${head}<p><span class="dot dot--bad"></span>Worker unter <code>${esc(worker.url)}</code> nicht erreichbar oder Passwort passt nicht (<code>ACCESS_PASSWORD</code> = dein Passwort?): ${esc(e.message)}</p>${manual}`; return bindForm(); }
+    const row = (label, x, okText) => `<tr><td>${label}</td><td>${!x ? `<span class="muted">noch nie</span>` : x.ok ? `<span class="dot"></span>${okText} · ${esc(rel(x.ts))}` : `<span class="dot dot--bad"></span><b>${esc(x.error || "Fehler")}</b> · ${esc(rel(x.ts))}`}</td></tr>`;
+    const missing = Object.entries(st.config || {}).filter(([, v]) => !v).map(([k]) => k);
+    box.innerHTML = `${head}
+      ${missing.length ? `<p><span class="dot dot--bad"></span>Im Worker fehlen: <b>${missing.map(esc).join(", ")}</b></p>` : `<p><span class="dot"></span>Alle Einstellungen im Worker vorhanden${S.repo.meta?.worker ? "" : " · <b>GitHub-Secret WORKER_URL fehlt noch</b> (Merkliste erreicht den Abruf sonst nicht)"}.</p>`}
+      <table class="tbl"><tbody>
+        ${row("Stündlicher Auslöser", st.scrape, "ausgelöst")}
+        ${row("Telegram-Nachricht empfangen", st.telegram, "angenommen")}
+        ${row("Telegram-Bot ausgelöst", st.bot, "ausgelöst")}
+        <tr><td>Merkliste</td><td>${S.server?.ok ? `<span class="dot"></span>zentral gespeichert (${S.rules.length} Suchen)` : `<span class="dot dot--bad"></span>nicht erreichbar`}</td></tr>
+      </tbody></table>
+      <p style="margin-top:10px"><button class="btn" id="run-now">Jetzt abrufen</button> <span class="muted" style="font-size:12.5px">startet einen Abruf (dauert ca. 3 Min.)</span></p>`;
+    $("#run-now", box).addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      try { await worker.call("POST", {}, { path: "/api/run" }); toast("Abruf gestartet. In ca. 3 Minuten neu laden."); }
+      catch (err) { toast(`<b>Nicht gestartet:</b> ${esc(err.message)} – Details siehe „Stündlicher Auslöser“.`, 8000); fillWorkerDiag(); }
+    });
+  }
+  async function fillSentLog() {
+    const box = $("#diag-sent"); if (!box) return;
+    const state = await getBin("state.bin", S.repo.meta?.updated).catch(() => null);
+    const sent = (state?.sent || []).slice(-15).reverse();
+    const queued = state?.outbox?.length || 0;
+    box.classList.remove("muted");
+    box.innerHTML = (sent.length ? `<ul class="sentlog">${sent.map((m) => `<li><span class="muted mono">${esc(fmtDT(m.ts))}</span><div>${m.text.replace(/<(?!\/?(b|code|a)( href="[^"]*")?>)[^>]*>/g, "").replace(/\n/g, "<br>")}</div></li>`).join("")}</ul>`
+      : `<p class="muted">Seit Einführung des Protokolls noch nichts gemeldet. Gemeldet wird, wenn ein Angebot zu einer gemerkten Suche mit 🔔 neu erscheint, wieder auftaucht oder billiger wird.</p>`)
+      + (queued ? `<p class="muted">${queued} Nachricht(en) warten auf den nächsten Versand.</p>` : "");
+  }
   async function renderDaten(query) {
     const meta = S.repo.meta;
     if (hasRepo() && !S.repo.runs) S.repo.runs = await getBin("runs.bin", meta.updated).catch(() => []);
@@ -703,6 +964,16 @@
         </section>
       </div>
 
+      <div class="cols2" style="margin-top:28px">
+        <section class="box" id="diag-takt"><h3>Abruf-Takt</h3>${taktHtml()}</section>
+        <section class="box" id="diag-worker"><h3>Worker (Takt, Telegram-Bot, Merkliste)</h3><p class="muted">prüfe …</p></section>
+      </div>
+      <div class="cols2" style="margin-top:28px">
+        <section class="box"><h3>Zuletzt per Telegram gemeldet</h3><div id="diag-sent" class="muted">lädt …</div></section>
+        <section class="box"><h3>Merkliste: frühere Stände</h3>
+          ${S.server?.ok ? `<details id="hist"><summary>Anzeigen</summary><div id="hist-list" class="muted" style="margin-top:8px">lädt …</div></details>` : `<p class="muted">Erst verfügbar, wenn der Worker verbunden ist.</p>`}</section>
+      </div>
+
       <section class="box" style="margin-top:28px" id="import">
         <h3>Selbst abrufen (Lesezeichen) – falls GitHub gesperrt ist oder du sofort aktuelle Daten willst</h3>
         <ol class="prose" style="padding-left:20px">
@@ -734,6 +1005,7 @@
         <table class="tbl"><tbody>${DICT.map(([k, v]) => `<tr><td class="mono" style="white-space:nowrap">${k}</td><td>${v}</td></tr>`).join("")}</tbody></table>
       </section>`;
 
+    bindHistory(view); fillWorkerDiag(); fillSentLog();
     $("#logout").addEventListener("click", () => { lsSet(LS.key, null); lsSet(LS.pw, null); location.reload(); });
     $("#src").addEventListener("change", (e) => { S.source = e.target.value; lsSet(LS.source, S.source); updateBadges(); renderDaten(); });
     const drop = $("#drop"), file = $("#file");
@@ -819,10 +1091,12 @@
     document.body.classList.remove("filters-open");
     const h = location.hash.replace(/^#\/?/, "") || "aktuell";
     const [name, query] = h.split("?");
-    const tab = ["aktuell", "archiv", "merkliste", "statistik", "daten"].includes(name) ? name : "aktuell";
+    if (name === "merkliste") { const rg = new URLSearchParams(query || "").get("regel"); location.replace(`#/aktuell?m=${rg !== null && savedSearches()[rg] ? savedSearches()[rg].r.id : "all"}`); return; }
+    const tab0 = ["aktuell", "archiv", "statistik", "daten"].includes(name) ? name : "aktuell";
+    const tab = tab0 === "aktuell" && /(^|&)m=/.test(query || "") ? "gemerkt" : tab0;
     $$(".tabs a").forEach((a) => a.dataset.tab === tab ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current"));
     S.shown = 120;
-    const r = { aktuell: () => renderList("aktuell", query), archiv: () => renderList("archiv", query), merkliste: () => renderMerkliste(query), statistik: () => renderStatistik(query), daten: () => renderDaten(query) }[tab];
+    const r = { aktuell: () => renderList("aktuell", query), gemerkt: () => renderList("aktuell", query), archiv: () => renderList("archiv", query), statistik: () => renderStatistik(query), daten: () => renderDaten(query) }[tab];
     Promise.resolve(r()).catch((e) => { console.error(e); view.innerHTML = `<div class="empty"><h3>Fehler beim Anzeigen</h3><p>${esc(e.message || e)}</p></div>`; });
   }
   window.addEventListener("hashchange", () => { if ($("#detail").open) $("#detail").close(); route(); });
@@ -835,7 +1109,7 @@
     const prev = S.repo.meta?.updated;
     await loadRepo().catch((e) => { if (e instanceof AuthError) { lsSet(LS.key, null); location.reload(); } });
     if (S.repo.meta?.updated && S.repo.meta.updated !== prev) {
-      S.repo.archive = {}; S.repo.runs = null;
+      S.repo.archive = {}; S.repo.runs = null; resetRules();
       updateBadges(); checkNewHits();
       if (prev) { toast(`Neue Daten (${esc(fmtDT(S.repo.meta.updated))}).`); if (!$("#detail").open && !document.activeElement?.closest?.("form")) route(); }
     } else updateBadges();

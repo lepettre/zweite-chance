@@ -2,7 +2,8 @@ name: Abruf
 
 on:
   schedule:
-    - cron: "23 * * * *"        # Reserve; der Cloudflare-Worker löst um :05 aus (zuverlässiger). Doppelstarts überspringt der Tracker.
+    - cron: "*/15 * * * *"      # GitHub lässt einzelne Starts aus; alle 15 Min. anklopfen ergibt verlässlich ~stündlich.
+                                # Ist der letzte Abruf jünger als min_gap_minutes (config/settings.json), endet der Lauf nach Sekunden.
   workflow_dispatch:
     inputs:
       force:
@@ -35,10 +36,6 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
       - name: Abhängigkeiten
         run: python -m pip install -r requirements.txt
 
@@ -46,16 +43,29 @@ jobs:
         run: |
           [ -n "$ZC_PASSWORD" ] || { echo "::error::Secret ZC_PASSWORD fehlt (Settings > Secrets and variables > Actions)."; exit 1; }
 
+      - name: Letzten Stand holen
+        run: bash scripts/fetch_site.sh
+
+      - name: Fällig?
+        id: gap
+        run: |
+          if [ "${{ inputs.force }}" = "true" ]; then echo "skip=false" >> "$GITHUB_OUTPUT"; else python -m tracker.run --check-gap >> "$GITHUB_OUTPUT"; fi
+          cat "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        if: steps.gap.outputs.skip != 'true'
+        with:
+          node-version: "22"
+
       - name: Tests
+        if: steps.gap.outputs.skip != 'true'
         run: |
           python -m unittest discover -s tests -t . -q
           node tests/test_core.js
           node tests/test_worker.mjs
 
-      - name: Letzten Stand holen
-        run: bash scripts/fetch_site.sh
-
       - name: Abruf aller Märkte
+        if: steps.gap.outputs.skip != 'true'
         id: run
         run: |
           set +e
@@ -66,9 +76,11 @@ jobs:
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then exit "$rc"; fi
 
       - name: Veröffentlichen
+        if: steps.gap.outputs.skip != 'true'
         run: bash scripts/publish.sh
 
       - name: Telegram senden
+        if: steps.gap.outputs.skip != 'true'
         run: |
           before=$(sha256sum site/d/state.bin 2>/dev/null | cut -d' ' -f1 || true)
           python -m tracker.run --send-outbox
@@ -76,6 +88,7 @@ jobs:
           if [ "$before" != "$after" ]; then bash scripts/publish.sh; fi
 
       - name: Wochensicherung (eigener Branch mit Verlauf, nichts wird gelöscht)
+        if: steps.gap.outputs.skip != 'true'
         continue-on-error: true
         run: bash scripts/backup.sh
 
