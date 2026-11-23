@@ -146,8 +146,16 @@ def dedupe_rules(rules: list[dict], groups: dict | None = None) -> list[dict]:
     return out
 
 
+def worker_base() -> str:
+    """WORKER_URL tolerant lesen: Leerzeichen, Schraegstrich am Ende und fehlendes https:// sind egal."""
+    url = os.environ.get("WORKER_URL", "").strip().rstrip("/")
+    if url and not url.lower().startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
+
+
 def _worker_request(method: str, body: dict | None = None, confirm_delete: bool = False):
-    url, pw = os.environ.get("WORKER_URL", "").rstrip("/"), os.environ.get("ZC_PASSWORD", "")
+    url, pw = worker_base(), os.environ.get("ZC_PASSWORD", "")
     if not (url and pw):
         return None
     req = urllib.request.Request(f"{url}/api/watchlist", method=method, headers={
