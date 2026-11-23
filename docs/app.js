@@ -899,7 +899,19 @@
     }
     let st;
     try { st = await worker.call("GET", null, { path: "/api/status" }); }
-    catch (e) { box.innerHTML = `${head}<p><span class="dot dot--bad"></span>Worker unter <code>${esc(worker.url)}</code> nicht erreichbar oder Passwort passt nicht (<code>ACCESS_PASSWORD</code> = dein Passwort?): ${esc(e.message)}</p>${manual}`; return bindForm(); }
+    catch (e) {
+      // Ohne Passwort abfragbar: welche Einstellungen kommen im Worker an?
+      const ping = await fetch(`${worker.url}/api/ping`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      const missing = ping?.config ? Object.entries(ping.config).filter(([, v]) => !v).map(([k]) => k) : null;
+      const why = !ping ? "Der Worker antwortet nicht (Adresse falsch oder noch alte Worker-Version ohne Diagnose)."
+        : missing.includes("ACCESS_PASSWORD") ? "Im Worker ist <b>ACCESS_PASSWORD nicht gesetzt</b> (oder als normale Variable statt als Secret angelegt und beim letzten Deploy verloren gegangen)."
+        : /401/.test(e.message) ? "ACCESS_PASSWORD ist gesetzt, stimmt aber nicht mit dem Passwort überein, mit dem du dich hier angemeldet hast."
+        : esc(e.message);
+      box.innerHTML = `${head}<p><span class="dot dot--bad"></span>${why}</p>
+        ${missing?.length ? `<p>Im Worker fehlen außerdem: <b>${missing.filter((k) => k !== "ACCESS_PASSWORD").map(esc).join(", ") || "nichts"}</b></p>` : ""}
+        <p class="muted" style="font-size:12.5px">Adresse: <code>${esc(worker.url)}</code>${ping ? ` · Worker-Version ${esc(String(ping.version))}` : ""}</p>${manual}`;
+      return bindForm();
+    }
     const row = (label, x, okText) => `<tr><td>${label}</td><td>${!x ? `<span class="muted">noch nie</span>` : x.ok ? `<span class="dot"></span>${okText} · ${esc(rel(x.ts))}` : `<span class="dot dot--bad"></span><b>${esc(x.error || "Fehler")}</b> · ${esc(rel(x.ts))}`}</td></tr>`;
     const missing = Object.entries(st.config || {}).filter(([, v]) => !v).map(([k]) => k);
     box.innerHTML = `${head}

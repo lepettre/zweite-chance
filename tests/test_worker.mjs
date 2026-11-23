@@ -65,3 +65,9 @@ await worker.scheduled({}, noTok, ctx); await Promise.all(pending);
 st = await (await worker.fetch(req("/api/status", { headers: { "x-key": "pw" } }), env, ctx)).json();
 assert.match(st.scrape.error, /GH_TOKEN/);
 console.log("worker: alle Tests bestanden");
+{
+  const r2 = await worker.fetch(new Request("https://w.example/api/ping"), { ...env, ACCESS_PASSWORD: "" }, { waitUntil() {} });
+  const pj = await r2.json();
+  if (pj.config.ACCESS_PASSWORD !== false || pj.config.GH_TOKEN !== true || JSON.stringify(pj).includes('"t"')) throw new Error("ping");
+  console.log("worker: ping ok");
+}
