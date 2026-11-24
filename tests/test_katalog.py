@@ -172,3 +172,59 @@ class TestSortiment(unittest.TestCase):
         self.assertEqual(sum(1 for s in d["stores"] if s.get("day")), 1)
         self.s.main(["--stores", "1"])
         self.assertEqual(sum(1 for s in self.store.read_bin("range.bin")["stores"] if s.get("day")), 2, "zweiter Lauf nimmt den anderen Markt")
+
+
+class TestDetails(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        os.environ["TRACKER_ROOT"] = str(self.tmp); os.environ["KATALOG_DATA"] = str(self.tmp / "k"); os.environ["ZC_PASSWORD"] = "pw"
+        import importlib
+        import katalog.store, katalog.details
+        importlib.reload(katalog.store); importlib.reload(katalog.details)
+        self.d, self.store, self.api = katalog.details, katalog.store, katalog.api
+        self.api.pause = lambda: None
+        from katalog import model
+        db = {}
+        model.merge(db, sample_items(), "2026-11-01", True)
+        self.store.save_db(db)
+        self.page = (FIX / "pip_sample.html").read_text(encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp); os.environ.pop("KATALOG_DATA", None)
+
+    def test_parse_page(self):
+        r = self.d.parse_page(self.page)
+        self.assertEqual(r["designer"], "Gillis Lundgren"); self.assertIn("BILLY", r["desc"])
+        self.assertEqual(r["material"], "Holz (inkl. Verbundmaterial)"); self.assertEqual((r["w"], r["h"], r["d"]), ("80 cm", "202 cm", "28 cm"))
+        self.assertTrue(r["imgs"].count("|") >= 1)
+
+    def test_pack_roundtrip_and_pick(self):
+        rows = {"a": {**self.d.parse_page(self.page), "day": "2026-11-01", "ok": "1"}, "b": {"day": "2026-01-01", "ok": "1"}}
+        self.assertEqual(self.d.unpack(self.d.pack(rows))["a"]["designer"], "Gillis Lundgren")
+        db = self.store.load_db()
+        have = {k: {"day": "2026-11-20"} for k in list(db)[:2]}
+        todo = self.d.pick(db, have, 10, 180, "2026-11-24")
+        self.assertEqual(set(todo), set(db) - set(have), "erst Artikel ohne Details")
+        old = {k: {"day": "2026-01-01"} for k in db}
+        self.assertEqual(len(self.d.pick(db, old, 2, 180, "2026-11-24")), 2, "danach veraltete")
+
+    def test_run_budget_and_missing_page(self):
+        calls = []
+
+        def fake(url, **kw):
+            calls.append(url)
+            if "knivshult" in url:
+                raise FileNotFoundError(url)
+            return self.page.encode()
+        self.api.get = fake
+        self.assertEqual(self.d.main(["--limit", "3"]), 0)
+        have = self.d.unpack(self.store.read_bin("details.bin"))
+        self.assertEqual(len(have), 3); self.assertEqual(len(calls), 3)
+        self.assertTrue(any(r["designer"] == "Gillis Lundgren" for r in have.values()))
+
+
+class TestFacets(unittest.TestCase):
+    def test_facets(self):
+        from katalog import details
+        f = details.facets({"a": {"designer": "X"}, "b": {"designer": ""}, "c": {"designer": "X"}, "d": {"designer": "Y"}})
+        self.assertEqual(f["designer"], {"X": ["a", "c"], "Y": ["d"]}); self.assertEqual(f["n"], 4)

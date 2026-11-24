@@ -1,0 +1,53 @@
+name: Details
+
+on:
+  schedule:
+    - cron: "10 4 * * *"        # täglich; holt nur das Tageskontingent (neue Artikel zuerst, dann veraltete)
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "So viele Artikel (Designer, Beschreibung, Material, Bilder) holen"
+        default: "1500"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: katalog
+  cancel-in-progress: false
+
+jobs:
+  details:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      ZC_PASSWORD: ${{ secrets.ZC_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+      LIMIT: ${{ inputs.limit }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Passwort vorhanden?
+        run: '[ -n "$ZC_PASSWORD" ] || { echo "::error::Secret ZC_PASSWORD fehlt."; exit 1; }'
+      - name: Tests
+        run: python -m unittest tests.test_katalog -q
+      - name: Letzten Stand holen
+        run: bash scripts/fetch_site.sh
+      - name: Details holen
+        id: run
+        run: |
+          set +e; python -m katalog.details --limit "${LIMIT:-1500}"; rc=$?; set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then exit "$rc"; fi
+      - name: Veröffentlichen
+        if: steps.run.outputs.rc == '0'
+        run: bash scripts/publish.sh k details.bin facets.bin
+      - name: Fehlschlag melden (gesperrt)
+        if: steps.run.outputs.rc == '2'
+        run: |
+          echo "::error::IKEA hat den Abruf gesperrt (HTTP 403/429)."
+          exit 1
