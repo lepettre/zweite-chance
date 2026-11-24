@@ -277,3 +277,9 @@ details.box:not([open])>summary h3::after{content:" ▸"}
 .tbl th[data-k]{cursor:pointer;user-select:none}
 .tbl th[data-k]:hover{text-decoration:underline}
 .layout>*{min-width:0}
+/* Produkt- und Markt-Statistik */
+.prodhead{display:flex;gap:16px;align-items:flex-start;margin:0 0 18px}
+.prodhead img{width:110px;height:110px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:var(--r)}
+.bars .l a{color:var(--ink)}
+@media (max-width:760px){.prodhead img{width:72px;height:72px}}
+.cols svg{max-height:280px}
