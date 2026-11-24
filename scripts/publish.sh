@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Veröffentlicht docs/ (App) + Daten als verlaufsloser Branch gh-pages.
 #   publish.sh            -> Fundgrube-Lauf: besitzt d/ (k/ wird frisch vom Server übernommen)
+#   publish.sh none       -> nur App-Dateien (docs/) erneuern, Daten unverändert vom Server
 #   publish.sh k a b ...  -> Katalog-/Sortiment-Lauf: besitzt nur die Dateien a, b ... in k/ (alles andere wird frisch übernommen)
 # Langlaufende Jobs überschreiben so nie die Daten, die ein anderer Job inzwischen veröffentlicht hat.
 set -euo pipefail
@@ -16,7 +17,9 @@ cp -r docs/icons out/pub/icons
 touch out/pub/.nojekyll
 [ -d "$fresh/d" ] && cp -r "$fresh/d" out/pub/d
 [ -d "$fresh/k" ] && cp -r "$fresh/k" out/pub/k
-if [ "$OWN" = d ]; then
+if [ "$OWN" = none ]; then
+  :   # nur die App-Dateien erneuern, alle Daten bleiben wie auf dem Server
+elif [ "$OWN" = d ]; then
   rm -rf out/pub/d && cp -r site/d out/pub/d
 else
   mkdir -p out/pub/k

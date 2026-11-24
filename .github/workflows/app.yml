@@ -1,0 +1,25 @@
+name: App veröffentlichen
+
+on:
+  push:
+    branches: [main]
+    paths: ["docs/**", "scripts/publish.sh"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-app
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: App-Dateien veröffentlichen (Daten bleiben unverändert)
+        run: bash scripts/publish.sh none
