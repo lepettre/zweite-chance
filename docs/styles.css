@@ -304,3 +304,5 @@ details.box:not([open])>summary h3::after{content:" ▸"}
 .gallery{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 .gallery img{width:84px;height:84px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:var(--r)}
 .thumb{width:44px;height:44px;object-fit:contain;background:#fff;border-radius:3px;vertical-align:middle;margin-right:8px}
+.morefilters{flex:1 1 100%}.morefilters>summary{cursor:pointer;font-size:13.5px;color:var(--muted,#666);padding:4px 0}
+.morefilters>.pg-ctl{margin-top:6px}

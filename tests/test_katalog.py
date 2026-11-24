@@ -103,18 +103,36 @@ class TestRun(unittest.TestCase):
     def test_gaps_and_fill(self):
         self.run.main([])
         db = self.store.load_db()
-        in_map = {"90584658": "x-90584658", "70600664": "knivshult-schublade-hoch-dunkelgrau-70600664", "s11112222": "set-s11112222"}
+        in_map = {"90584658": "x-90584658", "70600664": "knivshult-schublade-hoch-dunkelgrau-70600664", "s11112222": "set-s11112222", "s33334444": "kaputt-s33334444"}
         g = self.run.gaps(db, in_map)
-        self.assertEqual(g["only_sitemap"], 2); self.assertGreaterEqual(g["only_list"], 3)
-        self.api.fetch_product_json = lambda a: {"name": "KNIVSHULT", "typeName": "Schublade hoch", "priceNumeral": 89, "mainImage": {"url": "https://www.ikea.com/de/de/images/products/k.jpg"}}
+        self.assertEqual(g["only_sitemap"], 3); self.assertGreaterEqual(g["only_list"], 3)
+
+        def fake(art):
+            if art == "s33334444":
+                raise FileNotFoundError(art)
+            return {"name": "KNIVSHULT", "typeName": "Schublade hoch", "priceNumeral": 89, "pipUrl": f"https://www.ikea.com/de/de/p/knivshult-{art}/",
+                    "mainImage": {"url": "https://www.ikea.com/de/de/images/products/k.jpg"}}
+        self.api.fetch_product_json = fake
         n = self.run.fill(db, g["only_sitemap_ids"], in_map, "2026-11-02", 5)
-        self.assertEqual(n, 2)
+        self.assertEqual(n, 3)
         self.assertEqual(db["70600664"]["price"], 89); self.assertEqual(db["70600664"]["status"], "active")
-        self.assertEqual(db["s11112222"]["status"], "stub")
+        self.assertEqual(db["s11112222"]["status"], "active", "auch Sets werden nachgeladen")
+        self.assertEqual(db["s11112222"]["slug"], "knivshult-s11112222")
+        self.assertEqual(db["s33334444"]["status"], "stub", "nicht ladbar: Platzhalter, wird nicht jeden Tag neu versucht")
+        self.assertEqual(self.run.fill(db, g["only_sitemap_ids"], in_map, "2026-11-03", 5), 0)
 
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_daily_fill_uses_saved_gaps(self):
+        self.run.main([])
+        in_map = {"70600664": "a-70600664", "s11112222": "b-s11112222"}
+        self.run.sitemap_ids = lambda: in_map
+        self.api.fetch_product_json = lambda art: {"name": "X", "typeName": "t", "priceNumeral": 5, "pipUrl": f"https://www.ikea.com/de/de/p/x-{art}/", "mainImage": {"url": ""}}
+        self.run.main(["--sitemap"])                       # speichert alle Luecken
+        self.assertEqual(set(self.store.read_bin("gaps.bin")["map"]), set(in_map))
+        self.run.main(["--fill", "1"])                     # ohne Sitemap: aus gespeicherten Luecken
+        db = self.store.load_db()
+        self.assertEqual(sum(1 for i in in_map if i in db), 1)
+        self.run.main(["--fill", "5"])
+        self.assertEqual(sum(1 for i in in_map if i in self.store.load_db()), 2)
 
 
 class TestSortiment(unittest.TestCase):
@@ -226,5 +244,7 @@ class TestDetails(unittest.TestCase):
 class TestFacets(unittest.TestCase):
     def test_facets(self):
         from katalog import details
-        f = details.facets({"a": {"designer": "X"}, "b": {"designer": ""}, "c": {"designer": "X"}, "d": {"designer": "Y"}})
+        f = details.facets({"a": {"designer": "X", "material": "Holz (inkl. Verbundmaterial)"}, "b": {"designer": "", "material": "holz, Metall"},
+                            "c": {"designer": "X", "material": "Stahl"}, "d": {"designer": "Y"}})
         self.assertEqual(f["designer"], {"X": ["a", "c"], "Y": ["d"]}); self.assertEqual(f["n"], 4)
+        self.assertEqual(f["material"]["Holz"], ["a", "b"]); self.assertEqual(f["material"]["Stahl"], ["c"])
