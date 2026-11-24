@@ -296,3 +296,11 @@ details.box:not([open])>summary h3::after{content:" ▸"}
 .pg-ctl .inp{width:auto;flex:1 1 180px}.pg-ctl select.inp{flex:0 1 auto}
 .mbar{display:inline-block;width:110px;height:10px;background:var(--line-2);border-radius:2px;vertical-align:middle;overflow:hidden}
 .mbar i{display:block;height:100%;background:var(--blue)}
+/* Katalog: zweites Bild beim Überfahren, Bildergalerie */
+.kimg{position:relative}
+.kimg img{width:100%;aspect-ratio:1;object-fit:contain;height:auto;background:#fff;border-radius:var(--r)}
+.kimg__alt{position:absolute;inset:0;opacity:0;transition:opacity .15s}
+.kimg:hover .kimg__alt[src]{opacity:1}
+.gallery{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.gallery img{width:84px;height:84px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:var(--r)}
+.thumb{width:44px;height:44px;object-fit:contain;background:#fff;border-radius:3px;vertical-align:middle;margin-right:8px}

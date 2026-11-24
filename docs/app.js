@@ -925,11 +925,12 @@
   // Gegenstück zu katalog/model.py: pack/unpack
   function unpackK(d) {
     if (!d) return [];
-    const T = d.s, ix = Object.fromEntries(d.f.map((f, i) => [f, i])), STR = ["id", "no", "type", "name", "kind", "measure", "slug", "img", "cat", "vfrom", "vto", "tag", "first_seen", "last_seen", "status", "ph", "log"], out = [];
+    const T = d.s, ix = Object.fromEntries(d.f.map((f, i) => [f, i])), STR = ["id", "no", "type", "name", "kind", "measure", "slug", "img", "cat", "vfrom", "vto", "tag", "first_seen", "last_seen", "status", "ph", "log", "col", "ctx"], out = [];
     for (const row of d.r) {
       const o = {};
-      for (const f of STR) o[f] = T[row[ix[f]]];
-      for (const f of ["price", "prev", "last", "online", "missing"]) o[f] = row[ix[f]];
+      for (const f of STR) o[f] = ix[f] === undefined ? "" : T[row[ix[f]]];       // ältere Dateien kennen neuere Spalten nicht
+      for (const f of ["price", "prev", "last", "online", "missing", "rating", "rcount"]) o[f] = ix[f] === undefined ? 0 : row[ix[f]];
+      o.top = (o.cat || "").split(" › ")[0] || "–"; o.sub = (o.cat || "").split(" › ")[1] || "";
       o.ph = o.ph ? JSON.parse(o.ph) : [[o.first_seen, o.price]];
       o.log = o.log ? JSON.parse(o.log) : [];
       const vs = o.ph.map((p) => p[1]).filter((v) => v != null);
@@ -969,46 +970,79 @@
   const K_SORT = {
     chg: ["Letzte Preisänderung", (a, b) => (b.chg?.date || "").localeCompare(a.chg?.date || "")],
     senk: ["Größte Senkung (%)", (a, b) => a.chgPct - b.chgPct],
+    rating: ["Beste Bewertung", (a, b) => (b.rating || 0) - (a.rating || 0) || b.rcount - a.rcount],
+    rcount: ["Meiste Bewertungen", (a, b) => b.rcount - a.rcount],
     teuer: ["Preis absteigend", (a, b) => b.price - a.price],
     guenstig: ["Preis aufsteigend", (a, b) => a.price - b.price],
     neu: ["Neueste Artikel", (a, b) => (b.first_seen || "").localeCompare(a.first_seen || "")],
     name: ["Name A–Z", (a, b) => a.name.localeCompare(b.name, "de")],
   };
+  async function loadFacets() {                              // Designer -> Artikel (klein), optional
+    if (S.facets !== undefined) return S.facets;
+    try { const d = await getK("facets.bin"); const by = new Map(); for (const [name, ids] of Object.entries(d.designer || {})) for (const id of ids) by.set(id, name); S.facets = { designers: Object.keys(d.designer || {}).sort((x, y) => x.localeCompare(y, "de")), by, n: d.n }; }
+    catch (e) { if (e instanceof AuthError) throw e; S.facets = null; }
+    return S.facets;
+  }
+  async function loadDetails() {                             // lange Texte, nur auf der Artikelseite
+    if (S.details !== undefined) return S.details;
+    try {
+      const d = await getK("details.bin"); const T = d.s, ix = Object.fromEntries(d.f.map((f, i) => [f, i])), m = new Map();
+      for (const row of d.r) m.set(row[0], Object.fromEntries(d.f.slice(1).map((f) => [f, T[row[ix[f]]]])));
+      S.details = m;
+    } catch (e) { if (e instanceof AuthError) throw e; S.details = null; }
+    return S.details;
+  }
+  const stars = (o) => (o.rcount ? `<span title="${nf2.format(o.rating)} von 5 (${o.rcount} Bewertungen)">★ ${nf2.format(o.rating)} <small class="muted">(${nf0.format(o.rcount)})</small></span>` : "");
   function kCard(o, fund) {
     const down = o.chg && o.chg.to < o.chg.from, up = o.chg && o.chg.to > o.chg.from, recent = o.chg && o.chg.date >= daysAgoIso(7);
     return `<li class="card pcard"><a class="pcard__a" href="#/artikel?id=${esc(o.id)}">
-      ${kImg(o)}
+      <div class="kimg">${o.img ? `<img class="offer__img" src="${K_IMG}${esc(o.img)}?f=xs" alt="" loading="lazy" decoding="async">` : `<div class="offer__img offer__img--none">▢</div>`}${o.ctx ? `<img class="kimg__alt" data-src="${K_IMG}${esc(o.ctx)}?f=xs" alt="" decoding="async">` : ""}</div>
       <div class="offer__t" style="font-size:14.5px">${esc(o.name)} ${o.status === "gone" ? `<span class="badge badge--gone">weg</span>` : ""}${o.last && o.status === "active" ? ` <span class="badge badge--new" style="background:var(--rust)">letzte Chance</span>` : ""}</div>
       <div class="offer__d" style="white-space:normal;font-size:13px">${esc([o.kind, o.measure].filter(Boolean).join(", "))}</div>
       <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:8px;margin-top:auto"><div><div class="price">${esc(eur(o.price))}</div>${o.prev ? `<div class="was">${esc(eur(o.prev))}</div>` : ""}</div>
         ${recent && (down || up) ? `<span class="tag" style="${down ? "" : "background:#F3D5CE"}">${down ? "▼" : "▲"} ${nf0.format(Math.abs(Math.round(o.chgPct)))} %</span>` : ""}</div>
+      <div class="muted" style="font-size:12.5px">${esc(o.top)}${o.col ? ` · ${esc(o.col)}` : ""} ${stars(o)}</div>
       <div class="muted" style="font-size:12.5px">${o.chg ? `Preis seit ${esc(fmtD(o.chg.date))}` : `seit ${esc(fmtD(o.first_seen))} gelistet`}${fund ? ` · <b>${nf0.format(fund)}× Fundgrube</b>` : ""}</div></a></li>`;
   }
+  document.addEventListener("mouseover", (e) => { const c = e.target.closest?.(".kimg"); const a = c?.querySelector(".kimg__alt"); if (a && !a.src && a.dataset.src) a.src = a.dataset.src; });
   async function renderKatalog(query) {
     view.innerHTML = `<div class="toolbar"><h2>Katalog</h2></div><div class="skeleton"></div>`;
     const kat = await loadKatalog();
     if (!kat.meta) { view.innerHTML = `<div class="empty"><h3>Noch keine Katalogdaten</h3><p>Der erste Katalog-Lauf steht noch aus (Actions → Katalog).</p></div>`; return; }
+    const F = await loadFacets();
     const p = new URLSearchParams(query || ""); const q = p.get("q") || "", fk = K_FILTERS[p.get("f")] ? p.get("f") : "alle", sk = K_SORT[p.get("sort")] ? p.get("sort") : "chg";
+    const cat = p.get("cat") || "", sub = p.get("sub") || "", col = p.get("col") || "", des = p.get("des") || "", pmin = p.get("pmin") ? Number(p.get("pmin")) : null, pmax = p.get("pmax") ? Number(p.get("pmax")) : null;
     const ctx = { d7: daysAgoIso(7), first: kat.first, fund: fundCount() };
     const terms = ZC.fold(q).split(/\s+/).filter(Boolean);
     const cnt = Object.fromEntries(Object.entries(K_FILTERS).map(([k, [, f]]) => [k, kat.items.filter((o) => f(o, ctx)).length]));
-    const base = kat.items.filter((o) => K_FILTERS[fk][1](o, ctx) && (!terms.length || terms.every((t) => (o._h || (o._h = ZC.fold(`${o.name} ${o.kind} ${o.measure} ${o.no} ${ZC.fmtArticle(o.no)} ${o.cat}`))).includes(t))));
+    const tops = [...kat.items.reduce((m, o) => m.set(o.top, (m.get(o.top) || 0) + 1), new Map())].sort((a, b) => b[1] - a[1]);
+    const subs = cat ? [...kat.items.filter((o) => o.top === cat).reduce((m, o) => m.set(o.sub, (m.get(o.sub) || 0) + 1), new Map())].filter(([k]) => k).sort((a, b) => b[1] - a[1]) : [];
+    const cols = [...kat.items.reduce((m, o) => { for (const c of (o.col || "").split(", ").filter(Boolean)) m.set(c, (m.get(c) || 0) + 1); return m; }, new Map())].sort((a, b) => b[1] - a[1]).slice(0, 40);
+    const base = kat.items.filter((o) => K_FILTERS[fk][1](o, ctx) && (!cat || o.top === cat) && (!sub || o.sub === sub) && (!col || (o.col || "").split(", ").includes(col)) && (!des || F?.by.get(o.id) === des)
+      && (pmin == null || o.price >= pmin) && (pmax == null || o.price <= pmax)
+      && (!terms.length || terms.every((t) => (o._h || (o._h = ZC.fold(`${o.name} ${o.kind} ${o.measure} ${o.no} ${ZC.fmtArticle(o.no)} ${o.cat} ${o.col}`))).includes(t))));
     base.sort(K_SORT[sk][1]);
     let shown = 120;
     const act = kat.items.filter((o) => o.status === "active").length, m = kat.meta;
-    view.innerHTML = `<div class="toolbar"><h2>Katalog <small>${nf0.format(act)} Artikel im Sortiment · Stand ${esc(rel(m.updated))}</small></h2>
-        <div class="toolbar__r"><input class="inp" id="k-q" type="search" placeholder="Name, Artikelnr., Kategorie …" value="${esc(q)}" style="width:min(320px,60vw)">
-        <select class="inp" id="k-sort" style="width:auto">${Object.entries(K_SORT).map(([k, [l]]) => `<option value="${k}" ${k === sk ? "selected" : ""}>${l}</option>`).join("")}</select></div></div>
-      <nav class="chips2">${Object.entries(K_FILTERS).map(([k, [l]]) => `<a class="chip2 ${k === fk ? "chip2--on" : ""}" href="#/katalog?${new URLSearchParams({ ...(q ? { q } : {}), f: k, sort: sk })}">${l} <small>${nf0.format(cnt[k])}</small></a>`).join("")}</nav>
+    const link = (patch) => `#/katalog?${new URLSearchParams(Object.fromEntries(Object.entries({ q, f: fk, sort: sk, cat, sub, col, des, pmin: p.get("pmin") || "", pmax: p.get("pmax") || "", ...patch }).filter(([, v]) => v)))}`;
+    const sel = (id, label, opts, cur) => `<select class="inp" id="${id}" aria-label="${label}"><option value="">${label}</option>${opts.map(([v, n]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(v)}${n != null ? ` (${nf0.format(n)})` : ""}</option>`).join("")}</select>`;
+    view.innerHTML = `<div class="toolbar"><h2>Katalog <small>${nf0.format(act)} Artikel im Sortiment · Stand ${esc(rel(m.updated))}</small></h2></div>
+      <div class="pg-ctl"><input class="inp" id="k-q" type="search" placeholder="Name, Artikelnr., Kategorie, Farbe …" value="${esc(q)}">
+        ${sel("k-cat", "alle Kategorien", tops, cat)}${cat && subs.length ? sel("k-sub", "alle Unterkategorien", subs, sub) : ""}${sel("k-col", "alle Farben", cols, col)}
+        ${F?.designers.length ? sel("k-des", "alle Designer", F.designers.map((d) => [d, null]), des) : ""}
+        <input class="inp" id="k-pmin" type="number" min="0" placeholder="Preis ab €" value="${p.get("pmin") || ""}" style="max-width:110px"><input class="inp" id="k-pmax" type="number" min="0" placeholder="bis €" value="${p.get("pmax") || ""}" style="max-width:100px">
+        <select class="inp" id="k-sort" aria-label="Sortierung">${Object.entries(K_SORT).map(([k, [l]]) => `<option value="${k}" ${k === sk ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+      <nav class="chips2">${Object.entries(K_FILTERS).map(([k, [l]]) => `<a class="chip2 ${k === fk ? "chip2--on" : ""}" href="${link({ f: k })}">${l} <small>${nf0.format(cnt[k])}</small></a>`).join("")}</nav>
       <p class="muted" id="k-count" style="margin:0 0 10px"></p><ul class="grid" id="k-list"></ul><div class="more" id="k-more"></div>`;
     const draw = () => {
-      $("#k-count").textContent = `${nf0.format(base.length)} Treffer`;
+      $("#k-count").textContent = `${nf0.format(base.length)} Treffer${F ? "" : " (Designer-Filter folgt, sobald die Details geladen sind)"}`;
       $("#k-list").innerHTML = base.slice(0, shown).map((o) => kCard(o, ctx.fund.get(o.no) || 0)).join("") || `<li class="muted">Nichts gefunden.</li>`;
       $("#k-more").innerHTML = base.length > shown ? `<button class="btn">${nf0.format(Math.min(120, base.length - shown))} weitere (${nf0.format(base.length - shown)} übrig)</button>` : "";
       $("#k-more button")?.addEventListener("click", () => { shown += 120; draw(); });
     };
-    const go = () => { location.hash = `#/katalog?${new URLSearchParams({ ...($("#k-q").value.trim() ? { q: $("#k-q").value.trim() } : {}), f: fk, sort: $("#k-sort").value })}`; };
-    $("#k-q").addEventListener("change", go); $("#k-sort").addEventListener("change", go);
+    const go = (patch = {}) => { location.hash = link({ q: $("#k-q").value.trim(), cat: $("#k-cat").value, sub: $("#k-sub")?.value || "", col: $("#k-col").value, des: $("#k-des")?.value || "", pmin: $("#k-pmin").value, pmax: $("#k-pmax").value, sort: $("#k-sort").value, ...patch }); };
+    for (const id of ["#k-q", "#k-col", "#k-des", "#k-sub", "#k-sort", "#k-pmin", "#k-pmax"]) $(id)?.addEventListener("change", () => go());
+    $("#k-cat").addEventListener("change", () => go({ sub: "" }));
     draw();
   }
   async function renderArtikel(query) {
@@ -1027,7 +1061,9 @@
     view.innerHTML = `${backK}
       <div class="prodhead">${o.img ? `<img src="${K_IMG}${esc(o.img)}?f=s" alt="" loading="lazy">` : ""}
         <div><h2>${esc(o.name)}</h2><p class="muted" style="margin:2px 0">${esc([o.kind, o.measure].filter(Boolean).join(", "))}</p>
-        <p class="mono" style="margin:0">Art. ${esc(ZC.fmtArticle(o.no))}${o.type === "SPR" ? " · Set/Kombination" : ""} · ${esc(o.cat)}</p>
+        <p class="mono" style="margin:0">Art. ${esc(ZC.fmtArticle(o.no))}${o.type === "SPR" ? " · Set/Kombination" : ""} · <a href="#/katalog?cat=${encodeURIComponent(o.top)}${o.sub ? `&sub=${encodeURIComponent(o.sub)}` : ""}">${esc(o.cat)}</a></p>
+        <p style="margin:6px 0 0">${stars(o)}${o.col ? ` · Farbe: ${esc(o.col)}` : ""}<span id="art-designer"></span></p>
+        <p id="art-desc" class="muted" style="margin:8px 0 0;max-width:62ch"></p><div id="art-gallery" class="gallery"></div>
         <p style="margin:8px 0 0;display:flex;gap:8px;flex-wrap:wrap"><a class="btn btn--blue" href="${esc(kUrl(o))}" target="_blank" rel="noopener">Bei IKEA ansehen ↗</a>
           ${fund.length ? `<a class="btn" href="${prodHref(o.no)}">Fundgrube-Statistik</a>` : ""}</p></div></div>
       <div class="kpis">
@@ -1045,10 +1081,20 @@
         <section class="chart" id="art-sortiment" style="grid-column:1/-1"><p class="muted">Sortiment je Markt wird geladen …</p></section>
         ${fund.length ? `<section class="chart"><header><div><h3>In der Fundgrube</h3><p>${nf0.format(fundAct.length)} jetzt · Zeile antippen = Details</p></div></header>${offerTable(fund.slice(0, 30))}</section>` : ""}
       </div>`;
-    bindSortTables(view); fillArtikelSortiment(o);
+    bindSortTables(view); fillArtikelSortiment(o); fillArtikelDetails(o);
   }
+  async function fillArtikelDetails(o) {
+    const D = await loadDetails(), r = D?.get(o.id);
+    const imgs = [...new Set([o.img, o.ctx, ...((r?.imgs || "").split("|"))].filter(Boolean))];
+    const g = $("#art-gallery"); if (g) g.innerHTML = imgs.slice(0, 8).map((f) => `<a href="${K_IMG}${esc(f)}?f=xl" target="_blank" rel="noopener"><img src="${K_IMG}${esc(f)}?f=xs" alt="" loading="lazy"></a>`).join("");
+    if (!r) { const d = $("#art-desc"); if (d) d.textContent = D ? "Beschreibung wird in den nächsten Tagen nachgeladen." : ""; return; }
+    if (r.designer && $("#art-designer")) $("#art-designer").innerHTML = ` · Designer: <a href="#/katalog?des=${encodeURIComponent(r.designer)}"><b>${esc(r.designer)}</b></a>`;
+    if ($("#art-desc")) $("#art-desc").innerHTML = `${esc(r.desc)}${r.material ? `<br><b>Material:</b> ${esc(r.material)}` : ""}${r.w || r.h || r.d ? `<br><b>Maße:</b> ${esc([r.w && `Breite ${r.w}`, r.h && `Höhe ${r.h}`, r.d && `Tiefe ${r.d}`].filter(Boolean).join(" · "))}` : ""}`;
+  }
+  const kat0 = () => S.kat || { items: [] };
   async function fillKatalogDiag() {
     const box = $("#diag-katalog"); if (!box) return;
+    loadFacets().then((F) => { const c = $("#diag-details"); if (c) c.innerHTML = F ? `${nf0.format(F.n)} von ${nf0.format(kat0().items.length)} Artikeln · ${nf0.format(F.designers.length)} Designer` : "noch nicht geholt (Actions → Details, läuft danach täglich)"; }).catch(() => {});
     loadRange().then((R) => { const c = $("#diag-range"); if (c) c.innerHTML = R ? `${R.st.length} Märkte × ${nf0.format(R.N)} Artikel · Stand ${esc(rel(R.updated))}` : "noch keine Messung (Actions → Sortiment)"; }).catch(() => {});
     const kat = await loadKatalog().catch(() => null);
     if (!kat?.meta) { box.innerHTML += `<p class="muted">Noch keine Katalogdaten. Erster Lauf: Actions → Katalog.</p>`; return; }
@@ -1058,6 +1104,7 @@
       <tr><td>Artikel</td><td>${nf0.format(r.active)} im Sortiment · ${nf0.format(r.total)} erfasst</td></tr>
       <tr><td>Letzter Lauf</td><td>${nf0.format(r.new)} neu · ${nf0.format(r.price_change)} Preisänderungen · ${nf0.format(r.gone)} ausgelistet · ${nf0.format(r.last_chance)} neue „Letzte Chance“</td></tr>
       <tr><td>Sortiment je Markt</td><td id="diag-range">…</td></tr>
+      <tr><td>Details (Designer, Beschreibung, Bilder)</td><td id="diag-details">…</td></tr>
       ${g ? `<tr><td>Lücken (${esc(fmtD(g.day))})</td><td>${nf0.format(g.only_sitemap)} nur in der Sitemap · ${nf0.format(g.only_list)} nur in den Listen · Sitemap gesamt ${nf0.format(g.sitemap)}</td></tr>` : ""}</tbody></table>`;
   }
 
@@ -1076,106 +1123,178 @@
     return S.rng;
   }
   const RARE = 3, COMMON = 0.8, MIN_KNOWN = 10;
-  function storeStats(R, s) {
-    if (s._st) return s._st;
-    let inr = 0, excl = 0, miss = 0, stock = 0;
+  const itemAt = (R, i) => R.kat.byId.get(R.ids[i]);
+  function storeStats(R, s, mask) {
+    if (!mask && s._st) return s._st;
+    let inr = 0, excl = 0, miss = 0, stock = 0, n = 0;
     for (let i = 0; i < s.n; i++) {
+      if (mask && !mask[i]) continue;
+      n++;
       if (bitAt(s.r, i)) { inr++; if (R.known[i] >= MIN_KNOWN && R.cnt[i] <= RARE) excl++; if (bitAt(s.k, i)) stock++; }
       else if (R.known[i] >= MIN_KNOWN && R.cnt[i] / R.known[i] >= COMMON) miss++;
     }
-    return (s._st = { inr, n: s.n, share: s.n ? inr / s.n : 0, excl, miss, stock });
+    const out = { inr, n, share: n ? inr / n : 0, excl, miss, stock };
+    if (!mask) s._st = out;
+    return out;
   }
   const storeNamesAt = (R, i, want = 1) => R.st.filter((s) => i < s.n && bitAt(s.r, i) === want).map((s) => s.name);
-  function artRows(R, list, { limit = 100, showWo = true } = {}) {
-    const rows = list.slice(0, limit).map((i) => {
-      const o = R.kat.byId.get(R.ids[i]); if (!o) return "";
-      const wo = showWo ? storeNamesAt(R, i) : [];
-      return `<tr><td><a href="#/artikel?id=${esc(o.id)}"><b>${esc(o.name)}</b></a> <span class="muted">${esc([o.kind, o.measure].filter(Boolean).join(", "))}</span></td>
+  const catTop = (o) => o?.top || "–";
+
+  /* Gemeinsame Filterleiste für alle Artikel-Listen dieser Seite */
+  const DF_SORT = {
+    selten: ["Seltenste zuerst", (R) => (a, b) => R.cnt[a] - R.cnt[b]],
+    verbreitet: ["Verbreitetste zuerst", (R) => (a, b) => R.cnt[b] / (R.known[b] || 1) - R.cnt[a] / (R.known[a] || 1)],
+    guenstig: ["Preis aufsteigend", (R) => (a, b) => (itemAt(R, a)?.price ?? 0) - (itemAt(R, b)?.price ?? 0)],
+    teuer: ["Preis absteigend", (R) => (a, b) => (itemAt(R, b)?.price ?? 0) - (itemAt(R, a)?.price ?? 0)],
+    name: ["Name A–Z", (R) => (a, b) => (itemAt(R, a)?.name || "").localeCompare(itemAt(R, b)?.name || "", "de")],
+    kat: ["Kategorie", (R) => (a, b) => (itemAt(R, a)?.cat || "").localeCompare(itemAt(R, b)?.cat || "", "de")],
+    bewertung: ["Beste Bewertung", (R) => (a, b) => (itemAt(R, b)?.rating || 0) - (itemAt(R, a)?.rating || 0)],
+  };
+  function dfBar(id, R, F, sort = "selten") {
+    const tops = [...R.kat.items.reduce((m, o) => m.set(o.top, (m.get(o.top) || 0) + 1), new Map())].sort((a, b) => a[0].localeCompare(b[0], "de"));
+    return `<div class="pg-ctl" data-df="${id}"><input class="inp" data-f="q" placeholder="Artikel suchen"><select class="inp" data-f="cat"><option value="">alle Kategorien</option>${tops.map(([c, n]) => `<option>${esc(c)}</option>`).join("")}</select>
+      <select class="inp" data-f="sub" hidden><option value="">alle Unterkategorien</option></select>
+      ${F?.designers.length ? `<select class="inp" data-f="des"><option value="">alle Designer</option>${F.designers.map((d) => `<option>${esc(d)}</option>`).join("")}</select>` : ""}
+      <input class="inp" data-f="pmin" type="number" min="0" placeholder="Preis ab €" style="max-width:105px"><input class="inp" data-f="pmax" type="number" min="0" placeholder="bis €" style="max-width:95px">
+      <select class="inp" data-f="sort">${Object.entries(DF_SORT).map(([k, [l]]) => `<option value="${k}" ${k === sort ? "selected" : ""}>${l}</option>`).join("")}</select></div>`;
+  }
+  const dfRead = (id) => { const g = (f) => $(`[data-df="${id}"] [data-f="${f}"]`)?.value || ""; return { q: ZC.fold(g("q")).trim(), cat: g("cat"), sub: g("sub"), des: g("des"), pmin: g("pmin") === "" ? null : +g("pmin"), pmax: g("pmax") === "" ? null : +g("pmax"), sort: g("sort") || "selten" }; };
+  function dfWire(id, R, redraw) {
+    const root = $(`[data-df="${id}"]`);
+    root.addEventListener("input", debounce((e) => { if (e.target.dataset.f !== "cat") redraw(); }, 200));
+    root.addEventListener("change", (e) => {
+      if (e.target.dataset.f === "cat") {
+        const sub = $('[data-f="sub"]', root), subs = [...R.kat.items.filter((o) => o.top === e.target.value).reduce((m, o) => (o.sub ? m.set(o.sub, 1) : m), new Map()).keys()].sort((a, b) => a.localeCompare(b, "de"));
+        sub.hidden = !subs.length; sub.innerHTML = `<option value="">alle Unterkategorien</option>${subs.map((c) => `<option>${esc(c)}</option>`).join("")}`;
+      }
+      redraw();
+    });
+  }
+  const dfApply = (R, F, list, f) => list.filter((i) => {
+    const o = itemAt(R, i); if (!o) return false;
+    return (!f.cat || o.top === f.cat) && (!f.sub || o.sub === f.sub) && (!f.des || F?.by.get(o.id) === f.des) && (f.pmin == null || o.price >= f.pmin) && (f.pmax == null || o.price <= f.pmax)
+      && (!f.q || (o._sh || (o._sh = ZC.fold(`${o.name} ${o.kind} ${o.measure} ${o.no} ${o.col}`))).includes(f.q));
+  }).sort(DF_SORT[f.sort][1](R));
+  function listRows(R, F, list, { showWo = true, shown = 100 } = {}) {
+    const rows = list.slice(0, shown).map((i) => {
+      const o = itemAt(R, i), wo = showWo ? storeNamesAt(R, i) : [];
+      return `<tr><td><a href="#/artikel?id=${esc(o.id)}">${o.img ? `<img class="thumb" src="${K_IMG}${esc(o.img)}?f=xxs" alt="" loading="lazy">` : ""}<b>${esc(o.name)}</b></a> <span class="muted">${esc([o.kind, o.measure].filter(Boolean).join(", "))}</span>${F?.by.get(o.id) ? ` <span class="muted">· ${esc(F.by.get(o.id))}</span>` : ""}</td>
         <td class="mono">${esc(ZC.fmtArticle(o.no))}</td><td class="muted" style="font-size:12.5px">${esc(o.cat.split(" › ").slice(0, 2).join(" › "))}</td>
         <td class="n" data-v="${o.price}">${esc(eur(o.price))}</td><td class="n" data-v="${R.cnt[i]}">${R.cnt[i]}/${R.known[i]}</td>
         ${showWo ? `<td style="font-size:12.5px">${esc(wo.length <= 8 ? wo.join(", ") : wo.slice(0, 8).join(", ") + ` … +${wo.length - 8}`)}</td>` : ""}</tr>`;
     }).join("");
-    return `<div class="tblwrap"><table class="tbl" data-sorttable="s"><thead><tr><th data-k="0">Artikel</th><th data-k="1">Art.-Nr.</th><th data-k="2">Kategorie</th><th class="n" data-k="3">Preis</th><th class="n" data-k="4">Märkte</th>${showWo ? '<th>Wo</th>' : ""}</tr></thead><tbody>${rows}</tbody></table></div>
-      ${list.length > limit ? `<p class="muted" style="font-size:12.5px">${nf0.format(limit)} von ${nf0.format(list.length)} gezeigt – mit Suchfeld oder Kategorie eingrenzen.</p>` : ""}`;
+    return `<div class="tblwrap"><table class="tbl" data-sorttable="s"><thead><tr><th data-k="0">Artikel</th><th data-k="1">Art.-Nr.</th><th data-k="2">Kategorie</th><th class="n" data-k="3">Preis</th><th class="n" data-k="4">Märkte</th>${showWo ? "<th>Wo</th>" : ""}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+  /* Liste in einen Kasten zeichnen: filtern, sortieren, "mehr" */
+  function mountList(boxId, barId, R, F, getBase, opts = {}) {
+    const box = $(`#${boxId}`); let shown = 100;
+    const draw = () => {
+      const list = dfApply(R, F, getBase(), dfRead(barId));
+      box.innerHTML = `<p class="muted" style="margin:4px 0">${nf0.format(list.length)} Artikel</p>${listRows(R, F, list, { ...opts, shown })}${list.length > shown ? `<p><button class="btn" data-more>${nf0.format(Math.min(100, list.length - shown))} weitere (${nf0.format(list.length - shown)} übrig)</button></p>` : ""}`;
+      $("[data-more]", box)?.addEventListener("click", () => { shown += 100; draw(); }); bindSortTables(box);
+    };
+    dfWire(barId, R, () => { shown = 100; draw(); }); draw(); return draw;
   }
   const noRange = `<div class="empty"><h3>Noch keine Sortimentsdaten</h3><p>Die Messung läuft wöchentlich (Actions → Sortiment). Beim ersten Mal dauert sie etwa 20–60 Minuten.</p></div>`;
-  const catTop = (o) => (o.cat || "–").split(" › ")[0] || "–";
+  const diffIdx = (A, B, N) => { const onlyA = [], onlyB = []; let both = 0; for (let i = 0; i < Math.min(A.n, B.n, N); i++) { const a = bitAt(A.r, i), b = bitAt(B.r, i); if (a && b) both++; else if (a) onlyA.push(i); else if (b) onlyB.push(i); } return { onlyA, onlyB, both }; };
 
   async function renderSortiment(query) {
     view.innerHTML = `<div class="toolbar"><h2>Sortiment je Markt</h2></div><div class="skeleton"></div>`;
     const R = await loadRange();
     if (!R) { view.innerHTML = `<div class="toolbar"><h2>Sortiment je Markt</h2></div>${noRange}`; return; }
+    const F = await loadFacets();
     const p = new URLSearchParams(query || ""); const sid = p.get("markt");
-    if (sid && R.byId[sid]) return renderSortimentMarkt(R, R.byId[sid], p);
-    const rows = R.st.map((s) => ({ s, t: storeStats(R, s) })).sort((a, b) => b.t.share - a.t.share);
-    const shares = rows.map((r) => r.t.share), measured = R.st.filter((s) => s.n === R.N).length;
+    if (sid && R.byId[sid]) return renderSortimentMarkt(R, F, R.byId[sid]);
+    const tops = [...R.kat.items.reduce((m, o) => m.set(o.top, (m.get(o.top) || 0) + 1), new Map())].sort((a, b) => a[0].localeCompare(b[0], "de"));
     const rare = []; for (let i = 0; i < R.N; i++) if (R.known[i] >= MIN_KNOWN && R.cnt[i] >= 1 && R.cnt[i] <= RARE) rare.push(i);
     const almostAll = R.cnt.reduce((a, c, i) => a + (R.known[i] >= MIN_KNOWN && c / R.known[i] >= 0.9 ? 1 : 0), 0);
-    const maxRare = Math.max(1, ...rows.map((r) => r.t.share)); const opt = (sel) => rows.map((r) => `<option value="${esc(r.s.id)}" ${r.s.id === sel ? "selected" : ""}>${esc(r.s.name)}</option>`).join("");
-    const cats = [...new Set(rare.map((i) => catTop(R.kat.byId.get(R.ids[i]) || { cat: "" })))].sort((a, b) => a.localeCompare(b, "de"));
-    view.innerHTML = `<div class="toolbar"><h2>Sortiment je Markt <small>${R.ids.length.toLocaleString("de-DE")} Artikel · Stand ${esc(rel(R.updated))}</small></h2></div>
+    const base = R.st.map((s) => storeStats(R, s)), shares = base.map((t) => t.share), measured = R.st.filter((s) => s.n === R.N).length;
+    const opt = (sel) => R.st.slice().sort((a, b) => a.name.localeCompare(b.name, "de")).map((s) => `<option value="${esc(s.id)}" ${s.id === sel ? "selected" : ""}>${esc(s.name)}</option>`).join("");
+    const byShare = R.st.slice().sort((a, b) => storeStats(R, b).share - storeStats(R, a).share);
+    view.innerHTML = `<div class="toolbar"><h2>Sortiment je Markt <small>${nf0.format(R.N)} Artikel · Stand ${esc(rel(R.updated))}</small></h2></div>
       <div class="kpis">${kpi(`${R.st.length} / 55`, "Märkte gemessen")}${kpi(nf0.format(R.N), "Artikel gemessen")}
         ${kpi(`${pct(Math.min(...shares) * 100)} – ${pct(Math.max(...shares) * 100)}`, "Anteil am Gesamtsortiment je Markt")}
         ${kpi(nf0.format(rare.length), `Artikel in höchstens ${RARE} Märkten`)}${kpi(nf0.format(almostAll), "Artikel in fast allen Märkten (≥ 90 %)")}</div>
-      <p class="muted" style="font-size:12.5px;margin:-8px 0 18px">„Im Sortiment“ heißt: Der Markt führt den Artikel (laut IKEA-Verfügbarkeitsabfrage), unabhängig davon, ob er gerade vorrätig ist. ${measured < R.st.length ? `Bei ${R.st.length - measured} Märkten ist die Messung älter als der letzte Artikelstand.` : ""}</p>
+      <p class="muted" style="font-size:12.5px;margin:-8px 0 18px">„Im Sortiment“ heißt: Der Markt führt den Artikel (laut IKEA-Verfügbarkeitsabfrage), unabhängig vom aktuellen Bestand.${measured < R.st.length ? ` Bei ${R.st.length - measured} Märkten ist die Messung älter als der letzte Artikelstand.` : ""} Die Messung läuft wöchentlich.</p>
       <div class="charts">
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Welcher Markt führt wie viel vom Gesamtsortiment?</h3><p>Anteil der gemessenen Artikel · Markt antippen für Details, Lücken und Vergleich</p></div></header>
-          <div class="tblwrap"><table class="tbl" data-sorttable="m"><thead><tr><th data-k="0">Markt</th><th class="n" data-k="1">im Sortiment</th><th data-k="2">Anteil</th><th class="n" data-k="3">nur in ≤ ${RARE} Märkten</th><th class="n" data-k="4">fehlt (sonst ≥ 80 %)</th><th class="n" data-k="5">vorrätig</th><th data-k="6">gemessen</th></tr></thead><tbody>
-          ${rows.map(({ s, t }) => `<tr><td><a href="#/sortiment?markt=${esc(s.id)}"><b>${esc(s.name)}</b></a></td><td class="n" data-v="${t.inr}">${nf0.format(t.inr)}</td>
-            <td data-v="${t.share}"><span class="mbar"><i style="width:${(t.share / maxRare) * 100}%"></i></span> ${nf2.format(t.share * 100)} %</td>
-            <td class="n" data-v="${t.excl}">${nf0.format(t.excl)}</td><td class="n" data-v="${t.miss}">${nf0.format(t.miss)}</td><td class="n" data-v="${t.stock}">${nf0.format(t.stock)}</td><td data-v="${s.day || ""}">${esc(fmtD(s.day))}</td></tr>`).join("")}</tbody></table></div></section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Nur in wenigen Märkten</h3><p>Artikel, die höchstens ${RARE} Märkte führen · mit Name der Märkte</p></div></header>
-          <div class="pg-ctl"><input class="inp" id="sr-q" placeholder="Artikel suchen"><select class="inp" id="sr-cat"><option value="">alle Kategorien</option>${cats.map((c) => `<option>${esc(c)}</option>`).join("")}</select>
-          <select class="inp" id="sr-max">${[1, 2, 3].map((n) => `<option value="${n}" ${n === RARE ? "selected" : ""}>höchstens ${n} ${n === 1 ? "Markt" : "Märkte"}</option>`).join("")}</select></div>
-          <div id="sr-list"></div></section>
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Welcher Markt führt wie viel?</h3><p>Anteil der gemessenen Artikel · optional nur eine Kategorie · Spaltenkopf = sortieren · Markt antippen für Details</p></div></header>
+          <div class="pg-ctl"><select class="inp" id="rk-cat"><option value="">alle Kategorien</option>${tops.map(([c, n]) => `<option value="${esc(c)}">${esc(c)} (${nf0.format(n)})</option>`).join("")}</select></div><div id="rk-box"></div></section>
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Nur in wenigen Märkten</h3><p>Artikel, die höchstens ${RARE} Märkte führen · mit Namen der Märkte</p></div></header>
+          ${dfBar("rare", R, F)}<div class="pg-ctl"><select class="inp" id="rare-max">${[1, 2, 3, 5, 10].map((n) => `<option value="${n}" ${n === RARE ? "selected" : ""}>in höchstens ${n} ${n === 1 ? "Markt" : "Märkten"}</option>`).join("")}</select></div><div id="rare-box"></div></section>
         <section class="chart" style="grid-column:1/-1"><header><div><h3>Zwei Märkte vergleichen</h3><p>Was führt der eine, aber nicht der andere?</p></div></header>
-          <div class="pg-ctl"><select class="inp" id="cmp-a">${opt(rows[0]?.s.id)}</select><span>gegen</span><select class="inp" id="cmp-b">${opt(rows[rows.length - 1]?.s.id)}</select></div><div id="cmp-out"></div></section>
+          <div class="pg-ctl"><select class="inp" id="cmp-a">${opt(byShare[0]?.id)}</select><span>gegen</span><select class="inp" id="cmp-b">${opt(byShare[byShare.length - 1]?.id)}</select></div>${dfBar("cmp", R, F, "kat")}
+          <div id="cmp-kpi"></div><h4 style="margin:10px 0 4px" id="cmp-ha"></h4><div id="cmp-a-box"></div><h4 style="margin:14px 0 4px" id="cmp-hb"></h4><div id="cmp-b-box"></div></section>
       </div>`;
-    const drawRare = () => {
-      const q = ZC.fold($("#sr-q").value).trim(), c = $("#sr-cat").value, mx = +$("#sr-max").value;
-      const list = []; for (let i = 0; i < R.N; i++) { if (R.known[i] < MIN_KNOWN || R.cnt[i] < 1 || R.cnt[i] > mx) continue; const o = R.kat.byId.get(R.ids[i]); if (!o) continue; if (c && catTop(o) !== c) continue; if (q && !ZC.fold(`${o.name} ${o.kind} ${o.no}`).includes(q)) continue; list.push(i); }
-      $("#sr-list").innerHTML = `<p class="muted" style="margin:4px 0">${nf0.format(list.length)} Artikel</p>` + artRows(R, list); bindSortTables($("#sr-list"));
+    // Rangliste (ggf. nur eine Kategorie)
+    const drawRank = () => {
+      const c = $("#rk-cat").value, mask = c ? Uint8Array.from({ length: R.N }, (_, i) => (itemAt(R, i)?.top === c ? 1 : 0)) : null;
+      const rows = R.st.map((s) => ({ s, t: storeStats(R, s, mask) })).sort((a, b) => b.t.share - a.t.share), mx = Math.max(0.0001, ...rows.map((r) => r.t.share));
+      $("#rk-box").innerHTML = `<div class="tblwrap"><table class="tbl" data-sorttable="m"><thead><tr><th data-k="0">Markt</th><th class="n" data-k="1">im Sortiment</th><th data-k="2">Anteil</th><th class="n" data-k="3">nur in ≤ ${RARE} Märkten</th><th class="n" data-k="4">fehlt (sonst ≥ 80 %)</th><th class="n" data-k="5">vorrätig</th><th data-k="6">gemessen</th></tr></thead><tbody>
+        ${rows.map(({ s, t }) => `<tr><td><a href="#/sortiment?markt=${esc(s.id)}"><b>${esc(s.name)}</b></a></td><td class="n" data-v="${t.inr}">${nf0.format(t.inr)} <span class="muted">/ ${nf0.format(t.n)}</span></td>
+          <td data-v="${t.share}"><span class="mbar"><i style="width:${(t.share / mx) * 100}%"></i></span> ${nf2.format(t.share * 100)} %</td>
+          <td class="n" data-v="${t.excl}">${nf0.format(t.excl)}</td><td class="n" data-v="${t.miss}">${nf0.format(t.miss)}</td><td class="n" data-v="${t.stock}">${nf0.format(t.stock)}</td><td data-v="${s.day || ""}">${esc(fmtD(s.day))}</td></tr>`).join("")}</tbody></table></div>`; bindSortTables($("#rk-box"));
     };
-    const drawCmp = () => {
-      const A = R.byId[$("#cmp-a").value], B = R.byId[$("#cmp-b").value], onlyA = [], onlyB = []; let both = 0;
-      for (let i = 0; i < Math.min(A.n, B.n); i++) { const a = bitAt(A.r, i), b = bitAt(B.r, i); if (a && b) both++; else if (a) onlyA.push(i); else if (b) onlyB.push(i); }
-      $("#cmp-out").innerHTML = `<div class="kpis">${kpi(nf0.format(both), "in beiden")}${kpi(nf0.format(onlyA.length), `nur ${esc(A.name)}`)}${kpi(nf0.format(onlyB.length), `nur ${esc(B.name)}`)}</div>
-        <h4 style="margin:10px 0 4px">Nur ${esc(A.name)}</h4>${artRows(R, onlyA, { showWo: false, limit: 40 })}<h4 style="margin:14px 0 4px">Nur ${esc(B.name)}</h4>${artRows(R, onlyB, { showWo: false, limit: 40 })}`; bindSortTables($("#cmp-out"));
+    $("#rk-cat").addEventListener("change", drawRank); drawRank();
+    // Seltene Artikel
+    mountList("rare-box", "rare", R, F, () => { const mx = +$("#rare-max").value, out = []; for (let i = 0; i < R.N; i++) if (R.known[i] >= MIN_KNOWN && R.cnt[i] >= 1 && R.cnt[i] <= mx) out.push(i); return out; });
+    $("#rare-max").addEventListener("change", () => $('[data-df="rare"]').dispatchEvent(new Event("change")));
+    // Vergleich
+    let diff = null;
+    const base2 = (side) => () => (diff ? diff[side] : []);
+    const redrawA = mountList("cmp-a-box", "cmp", R, F, base2("onlyA"), { showWo: false });
+    const boxB = mountListAlt("cmp-b-box", "cmp", R, F, base2("onlyB"));
+    const compute = () => {
+      const A = R.byId[$("#cmp-a").value], B = R.byId[$("#cmp-b").value]; diff = diffIdx(A, B, R.N);
+      $("#cmp-kpi").innerHTML = `<div class="kpis">${kpi(nf0.format(diff.both), "in beiden")}${kpi(nf0.format(diff.onlyA.length), `nur ${esc(A.name)}`)}${kpi(nf0.format(diff.onlyB.length), `nur ${esc(B.name)}`)}</div>`;
+      $("#cmp-ha").textContent = `Nur ${A.name}`; $("#cmp-hb").textContent = `Nur ${B.name}`; redrawA(); boxB();
     };
-    ["#sr-q"].forEach((s) => $(s).addEventListener("input", debounce(drawRare, 200))); ["#sr-cat", "#sr-max"].forEach((s) => $(s).addEventListener("change", drawRare));
-    ["#cmp-a", "#cmp-b"].forEach((s) => $(s).addEventListener("change", drawCmp));
-    drawRare(); drawCmp(); bindSortTables(view);
+    ["#cmp-a", "#cmp-b"].forEach((x) => $(x).addEventListener("change", compute)); compute(); bindSortTables(view);
+  }
+  // zweite Liste teilt die Filterleiste mit der ersten (ohne zweite Verdrahtung der Leiste)
+  function mountListAlt(boxId, barId, R, F, getBase) {
+    const box = $(`#${boxId}`); let shown = 100;
+    const draw = () => {
+      const list = dfApply(R, F, getBase(), dfRead(barId));
+      box.innerHTML = `<p class="muted" style="margin:4px 0">${nf0.format(list.length)} Artikel</p>${listRows(R, F, list, { showWo: false, shown })}${list.length > shown ? `<p><button class="btn" data-more>${nf0.format(Math.min(100, list.length - shown))} weitere (${nf0.format(list.length - shown)} übrig)</button></p>` : ""}`;
+      $("[data-more]", box)?.addEventListener("click", () => { shown += 100; draw(); }); bindSortTables(box);
+    };
+    $(`[data-df="${barId}"]`).addEventListener("change", () => { shown = 100; draw(); });
+    $(`[data-df="${barId}"]`).addEventListener("input", debounce(() => { shown = 100; draw(); }, 200));
+    return draw;
   }
 
-  function renderSortimentMarkt(R, s, p) {
+  function renderSortimentMarkt(R, F, s) {
     const t = storeStats(R, s), back = `<p style="margin:0 0 10px"><a href="#/sortiment" class="linkbtn">← alle Märkte</a></p>`;
     const mine = [], gaps = [];
     for (let i = 0; i < s.n; i++) {
       if (R.known[i] < MIN_KNOWN) continue;
       if (bitAt(s.r, i)) { if (R.cnt[i] <= RARE) mine.push(i); } else if (R.cnt[i] / R.known[i] >= COMMON) gaps.push(i);
     }
-    gaps.sort((a, b) => R.cnt[b] - R.cnt[a]);
     const cats = new Map();
-    for (let i = 0; i < s.n; i++) { const o = R.kat.byId.get(R.ids[i]); if (!o) continue; const c = catTop(o), x = cats.get(c) || { all: 0, here: 0 }; x.all++; if (bitAt(s.r, i)) x.here++; cats.set(c, x); }
+    for (let i = 0; i < s.n; i++) { const o = itemAt(R, i); if (!o) continue; const c = catTop(o), x = cats.get(c) || { all: 0, here: 0 }; x.all++; if (bitAt(s.r, i)) x.here++; cats.set(c, x); }
     const catRows = [...cats.entries()].map(([c, x]) => ({ c, ...x, share: x.here / x.all })).filter((x) => x.all >= 20).sort((a, b) => a.share - b.share);
     const avg = R.st.reduce((a, o) => a + storeStats(R, o).share, 0) / R.st.length;
-    const opts = R.st.filter((o) => o.id !== s.id).map((o) => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join("");
+    const opts = R.st.filter((o) => o.id !== s.id).sort((a, b) => a.name.localeCompare(b.name, "de")).map((o) => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join("");
     view.innerHTML = `${back}<div class="toolbar"><h2>${esc(s.name)} <small>Sortiment · gemessen ${esc(fmtD(s.day))}</small></h2><div class="toolbar__r"><a class="btn" href="${marktHref(s.id)}">Fundgrube dieses Markts</a></div></div>
       <div class="kpis">${kpi(nf0.format(t.inr), "Artikel im Sortiment")}${kpi(`${nf2.format(t.share * 100)} %`, `Anteil (Ø aller Märkte ${nf2.format(avg * 100)} %)`)}
         ${kpi(nf0.format(mine.length), `nur hier oder in ≤ ${RARE} Märkten`)}${kpi(nf0.format(gaps.length), "fehlen, obwohl ≥ 80 % der Märkte sie führen")}${kpi(nf0.format(t.stock), "bei der Messung vorrätig")}</div>
       <div class="charts">
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Nur hier (oder in ≤ ${RARE} Märkten)</h3><p>Was es sonst kaum gibt</p></div></header>${artRows(R, mine)}</section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Lücken: fehlt hier, gibt es fast überall</h3><p>Sortiert nach Verbreitung</p></div></header>${artRows(R, gaps, { showWo: false })}</section>
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Nur hier (oder in ≤ ${RARE} Märkten)</h3><p>Was es sonst kaum gibt</p></div></header>${dfBar("mine", R, F)}<div id="mine-box"></div></section>
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Lücken: fehlt hier, gibt es fast überall</h3><p>Standard: Verbreitetste zuerst</p></div></header>${dfBar("gaps", R, F, "verbreitet")}<div id="gaps-box"></div></section>
         <section class="chart"><header><div><h3>Anteil je Kategorie</h3><p>Schwächste zuerst · nur Kategorien mit ≥ 20 Artikeln</p></div></header>${bars(catRows.map((x) => ({ l: `${x.c} (${x.here}/${x.all})`, v: Math.round(x.share * 100) })).slice(0, 25), { fmt: (v) => v + " %", cls: "bl", max: 100 })}</section>
-        <section class="chart"><header><div><h3>Mit anderem Markt vergleichen</h3></div></header><div class="pg-ctl"><select class="inp" id="vs">${opts}</select></div><div id="vs-out" class="muted">Markt wählen …</div></section>
+        <section class="chart"><header><div><h3>Mit anderem Markt vergleichen</h3></div></header><div class="pg-ctl"><select class="inp" id="vs"><option value="">Markt wählen …</option>${opts}</select></div><div id="vs-kpi"></div><h4 id="vs-ha"></h4><div id="vs-a"></div><h4 id="vs-hb"></h4><div id="vs-b"></div></section>
       </div>`;
-    bindSortTables(view);
+    mountList("mine-box", "mine", R, F, () => mine); mountList("gaps-box", "gaps", R, F, () => gaps, { showWo: false });
+    let diff = null; const vsA = $("#vs-a"), vsB = $("#vs-b");
+    const draw = (box, list) => { box.innerHTML = `<p class="muted" style="margin:4px 0">${nf0.format(list.length)} Artikel</p>${listRows(R, F, list, { showWo: false, shown: 60 })}`; bindSortTables(box); };
     $("#vs").addEventListener("change", () => {
-      const B = R.byId[$("#vs").value], onlyA = [], onlyB = []; let both = 0;
-      for (let i = 0; i < Math.min(s.n, B.n); i++) { const a = bitAt(s.r, i), b = bitAt(B.r, i); if (a && b) both++; else if (a) onlyA.push(i); else if (b) onlyB.push(i); }
-      $("#vs-out").innerHTML = `<div class="kpis">${kpi(nf0.format(both), "in beiden")}${kpi(nf0.format(onlyA.length), `nur ${esc(s.name)}`)}${kpi(nf0.format(onlyB.length), `nur ${esc(B.name)}`)}</div><h4>Nur ${esc(s.name)}</h4>${artRows(R, onlyA, { showWo: false, limit: 30 })}<h4>Nur ${esc(B.name)}</h4>${artRows(R, onlyB, { showWo: false, limit: 30 })}`; bindSortTables($("#vs-out"));
+      const B = R.byId[$("#vs").value]; if (!B) return; diff = diffIdx(s, B, R.N);
+      $("#vs-kpi").innerHTML = `<div class="kpis">${kpi(nf0.format(diff.both), "in beiden")}${kpi(nf0.format(diff.onlyA.length), `nur ${esc(s.name)}`)}${kpi(nf0.format(diff.onlyB.length), `nur ${esc(B.name)}`)}</div>`;
+      $("#vs-ha").textContent = `Nur ${s.name}`; $("#vs-hb").textContent = `Nur ${B.name}`;
+      draw(vsA, dfApply(R, F, diff.onlyA, { ...dfDefault, sort: "kat" })); draw(vsB, dfApply(R, F, diff.onlyB, { ...dfDefault, sort: "kat" }));
     });
   }
+  const dfDefault = { q: "", cat: "", sub: "", des: "", pmin: null, pmax: null };
   async function fillArtikelSortiment(o) {
     const box = $("#art-sortiment"); if (!box) return;
     const R = await loadRange(); const i = R?.idx.get(o.id);
@@ -1664,7 +1783,7 @@
     const prev = S.repo.meta?.updated;
     await loadRepo().catch((e) => { if (e instanceof AuthError) { lsSet(LS.key, null); location.reload(); } });
     if (S.repo.meta?.updated && S.repo.meta.updated !== prev) {
-      S.repo.archive = {}; S.repo.runs = null; S.kat = null; S.rng = undefined; resetRules();
+      S.repo.archive = {}; S.repo.runs = null; S.kat = null; S.rng = undefined; S.facets = undefined; S.details = undefined; resetRules();
       updateBadges(); checkNewHits();
       if (prev) { toast(`Neue Daten (${esc(fmtDT(S.repo.meta.updated))}).`); if (!$("#detail").open && !document.activeElement?.closest?.("form")) route(); }
     } else updateBadges();
