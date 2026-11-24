@@ -192,7 +192,7 @@ code{font-family:var(--mono);font-size:.88em;background:var(--line-2);padding:1p
 @media (max-width:960px){
   main{padding:16px}
   .layout{gap:12px}
-  .filters{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:0;margin:0 0 12px;max-height:none!important;overflow:visible}
+  .filters{position:static;top:auto;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:0;margin:0 0 12px;max-height:none!important;overflow:visible}
   .filters .search{grid-column:1;min-width:0}
   .mobile-filter-toggle{display:inline-flex;grid-column:2;white-space:nowrap;min-height:42px}
   .filters fieldset,.filters #reset{display:none}
