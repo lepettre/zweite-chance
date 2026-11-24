@@ -30,11 +30,12 @@ def pause() -> None:
     time.sleep(random.uniform(*PAUSE))
 
 
-def _open(url: str, timeout: int = 60) -> tuple[int, bytes]:
+def _open(url: str, timeout: int = 60, headers: dict | None = None) -> tuple[int, bytes]:
+    h = {**HEADERS, **(headers or {})}
     if _cffi is not None:
-        r = _cffi.get(url, headers=HEADERS, timeout=timeout, impersonate="chrome124")
+        r = _cffi.get(url, headers=h, timeout=timeout, impersonate="chrome124")
         return r.status_code, r.content
-    req = urllib.request.Request(url, headers=HEADERS)
+    req = urllib.request.Request(url, headers=h)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read()
@@ -45,11 +46,11 @@ def _open(url: str, timeout: int = 60) -> tuple[int, bytes]:
         return e.code, e.read()
 
 
-def get(url: str, retries: int = 3, timeout: int = 60) -> bytes:
+def get(url: str, retries: int = 3, timeout: int = 60, headers: dict | None = None) -> bytes:
     last: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            status, body = _open(url, timeout)
+            status, body = _open(url, timeout, headers)
             if status == 200:
                 return body
             if status in (403, 429):
@@ -67,6 +68,24 @@ def get(url: str, retries: int = 3, timeout: int = 60) -> bytes:
 
 def get_json(url: str, **kw):
     return json.loads(get(url, **kw))
+
+
+# Verfuegbarkeit je Markt (Sortiment "inRange" + Bestand). Oeffentlicher Client-Schluessel der IKEA-Webseite.
+AVAIL = "https://api.salesitem.ingka.com/availabilities/sto"
+AVAIL_HEADERS = {"X-Client-ID": "b6c117e5-ae61-4ef5-b4cc-e0b1e37f0631", "accept": "application/json;version=2"}
+AVAIL_MAX = 50
+
+
+def stores() -> list[dict]:
+    raw = get_json(f"{BASE}/de/de/meta-data/informera/stores-detailed.json")
+    return [{"id": s["id"], "name": s.get("displayName") or s.get("name", s["id"]), "lat": float(s["lat"]), "lng": float(s["lng"])}
+            for s in raw if not s.get("hideStore") and s.get("cashAndCarry")]
+
+
+def availabilities(store_id: str, item_nos: list[str]) -> list[dict]:
+    assert 0 < len(item_nos) <= AVAIL_MAX
+    d = get_json(f"{AVAIL}/{store_id}?itemNos={','.join(item_nos)}", headers=AVAIL_HEADERS, timeout=40)
+    return d.get("availabilities") or []
 
 
 def category_ids() -> list[str]:

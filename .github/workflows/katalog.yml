@@ -20,7 +20,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: tracker
+  group: katalog
   cancel-in-progress: false
 
 jobs:
@@ -58,7 +58,7 @@ jobs:
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then exit "$rc"; fi
       - name: Veröffentlichen
         if: steps.run.outputs.rc == '0'
-        run: bash scripts/publish.sh
+        run: bash scripts/publish.sh k items.bin meta.bin
       - name: Wochensicherung
         continue-on-error: true
         if: steps.run.outputs.rc == '0'

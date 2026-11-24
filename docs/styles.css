@@ -294,3 +294,5 @@ details.box:not([open])>summary h3::after{content:" ▸"}
 .pcard__a:hover{color:var(--ink)}
 .pg-ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 6px}
 .pg-ctl .inp{width:auto;flex:1 1 180px}.pg-ctl select.inp{flex:0 1 auto}
+.mbar{display:inline-block;width:110px;height:10px;background:var(--line-2);border-radius:2px;vertical-align:middle;overflow:hidden}
+.mbar i{display:block;height:100%;background:var(--blue)}
