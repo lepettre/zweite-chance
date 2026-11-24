@@ -283,3 +283,14 @@ details.box:not([open])>summary h3::after{content:" ▸"}
 .bars .l a{color:var(--ink)}
 @media (max-width:760px){.prodhead img{width:72px;height:72px}}
 .cols svg{max-height:280px}
+/* Märkte-Übersicht und Produkt-Galerie */
+.mgrid{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:12px}
+.mcard{display:flex;gap:12px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:10px;text-decoration:none;color:var(--ink);height:100%}
+.mcard:hover{border-color:var(--ink-2);color:var(--ink)}
+.mcard__img{width:64px;height:64px;object-fit:contain;flex:0 0 64px;background:#fff;border-radius:var(--r)}
+.mcard__b{display:flex;flex-direction:column;gap:2px;font-size:13.5px;min-width:0}
+.mcard__b b{font-size:15.5px}
+.pcard{padding:0}.pcard__a{display:flex;flex-direction:column;gap:6px;padding:12px;height:100%;color:var(--ink);text-decoration:none}
+.pcard__a:hover{color:var(--ink)}
+.pg-ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 6px}
+.pg-ctl .inp{width:auto;flex:1 1 180px}.pg-ctl select.inp{flex:0 1 auto}
