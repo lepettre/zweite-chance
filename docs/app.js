@@ -93,7 +93,13 @@
     catch (e) { throw new AuthError("Passwort stimmt nicht"); }
   }
   const storeIndex = () => Object.fromEntries((S.repo.meta?.stores || []).map((s) => [s.id, s]));
-  const unpack = (d) => ZC.unpackOffers(d, storeIndex(), Object.fromEntries((S.repo.meta?.stores || []).map((s) => [s.id, s.last_ok])), S.repo.meta?.updated);
+  // Der große Erst-Import: alle Angebote, die beim allerersten Abruf schon da waren, tragen denselben Zeitstempel.
+  // Er sagt nichts darüber, wann sie eingestellt wurden - deshalb wird er in "neu"-Zahlen, Verweildauern und Datumsanzeigen ausgeblendet.
+  const findBase = (list) => { const m = new Map(); for (const o of list) m.set(o.first_seen, (m.get(o.first_seen) || 0) + 1); let best = null; for (const [k, n] of m) if (n >= 1000 && n >= list.length * 0.05 && (!best || k < best)) best = k; return best; };
+  const markBase = (list) => { for (const o of list) o.base = !!S.baseTs && o.first_seen === S.baseTs; return list; };
+  const unpack = (d) => markBase(ZC.unpackOffers(d, storeIndex(), Object.fromEntries((S.repo.meta?.stores || []).map((s) => [s.id, s.last_ok])), S.repo.meta?.updated));
+  const dwellOf = (o) => (o.base ? null : days(o.first_seen, o.gone_at));
+  const sinceTxt = (o, withDate) => (o.base ? "seit Beginn der Erfassung" : withDate ? `seit ${fmtD(o.first_seen)}` : `seit ${rel(o.first_seen)}`);
 
   const worker = {
     // Adresse kommt aus dem Abruf (GitHub-Secret WORKER_URL); notfalls hier im Browser eingetragen (Daten-Seite)
@@ -142,7 +148,8 @@
     try { meta = await getBin("meta.bin"); }
     catch (e) { if (e instanceof AuthError) throw e; S.repo.meta = null; return; }
     S.repo.meta = meta;
-    S.repo.current = unpack(await getBin("current.bin", meta.current_version).catch((e) => { if (e instanceof AuthError) throw e; return null; }));
+    const cur = ZC.unpackOffers(await getBin("current.bin", meta.current_version).catch((e) => { if (e instanceof AuthError) throw e; return null; }), storeIndex(), Object.fromEntries((meta.stores || []).map((s) => [s.id, s.last_ok])), meta.updated);
+    S.baseTs = findBase(cur); S.repo.current = markBase(cur);
     await loadRules();
   }
   // Archiv: je Monat eine Datei, nur bei Bedarf geladen (Standard: der neueste Monat)
@@ -194,18 +201,18 @@
   }
   const savedById = (id) => savedSearches().find((x) => x.r.id === id);
   const SAVED_SORT = { treffer: ["Meiste Treffer", (a, b) => b.n - a.n], neu: ["Neue Treffer", (a, b) => b.nNew - a.nNew || b.n - a.n], name: ["Name", (a, b) => (a.r.name || "").localeCompare(b.r.name || "", "de")] };
-  const isNew = (o) => S.prevVisit && o.first_seen > S.prevVisit;
+  const isNew = (o) => S.prevVisit && !o.base && o.first_seen > S.prevVisit;
   function hitRules(o) { const out = []; for (const { r, f } of compiledRules()) if (f(o)) out.push(r); return out; }
 
   /* ---------- Filter ---------- */
   const SORTS = {
-    neu: ["Neueste zuerst", (a, b) => (b.first_seen || "").localeCompare(a.first_seen || "")],
+    neu: ["Neueste zuerst", (a, b) => (b.base ? "" : b.first_seen || "").localeCompare(a.base ? "" : a.first_seen || "")],
     rabattpct: ["Höchster Rabatt (%)", (a, b) => (b.discount_pct ?? -1) - (a.discount_pct ?? -1)],
     rabatteur: ["Höchster Rabatt (€)", (a, b) => (b.discount_eur ?? -1) - (a.discount_eur ?? -1)],
     preis: ["Preis aufsteigend", (a, b) => (a.price ?? 1e9) - (b.price ?? 1e9)],
     preisab: ["Preis absteigend", (a, b) => (b.price ?? -1) - (a.price ?? -1)],
     weg: ["Zuletzt verschwunden", (a, b) => (b.gone_at || b.last_seen || "").localeCompare(a.gone_at || a.last_seen || "")],
-    dauer: ["Längste Verweildauer", (a, b) => (days(b.first_seen, b.gone_at || b.last_seen) ?? 0) - (days(a.first_seen, a.gone_at || a.last_seen) ?? 0)],
+    dauer: ["Längste Verweildauer", (a, b) => (b.base ? -1 : days(b.first_seen, b.gone_at || b.last_seen) ?? 0) - (a.base ? -1 : days(a.first_seen, a.gone_at || a.last_seen) ?? 0)],
     markt: ["Markt A–Z", (a, b) => (a.store || "").localeCompare(b.store || "", "de") || (a.title || "").localeCompare(b.title || "", "de")],
     titel: ["Produkt A–Z", (a, b) => (a.title || "").localeCompare(b.title || "", "de")],
   };
@@ -260,7 +267,7 @@
     return b;
   }
   function offerRow(o) {
-    const life = o.status === "gone" ? `weg seit ${fmtD(o.gone_at)} · ${dur(days(o.first_seen, o.gone_at))} gelistet` : `seit ${rel(o.first_seen)}`;
+    const life = o.status === "gone" ? `weg seit ${fmtD(o.gone_at)}${o.base ? "" : ` · ${dur(days(o.first_seen, o.gone_at))} gelistet`}` : sinceTxt(o);
     return `<li class="offer" tabindex="0" role="button" data-id="${esc(o.id)}" aria-label="${esc(o.title)} – ${esc(eur(o.price))}, ${esc(o.store)}">
       ${img(o)}
       <div style="min-width:0">
@@ -277,7 +284,7 @@
       <div class="offer__t" style="font-size:14.5px">${esc(o.title)} ${badges(o)}</div>
       <div class="offer__d" style="white-space:normal;font-size:13px">${esc(o.product_description)}</div>
       <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:auto"><div><div class="price">${esc(eur(o.price))}</div><div class="was">${esc(eur(o.original_price))}</div></div>${o.discount_pct != null ? `<span class="tag">−${esc(pct(o.discount_pct))}</span>` : ""}</div>
-      <div class="muted" style="font-size:12.5px">${esc(o.store)} · ${o.status === "gone" ? "weg " + fmtD(o.gone_at) : rel(o.first_seen)}</div></li>`;
+      <div class="muted" style="font-size:12.5px">${esc(o.store)} · ${o.status === "gone" ? "weg " + fmtD(o.gone_at) : o.base ? "seit Beginn der Erfassung" : rel(o.first_seen)}</div></li>`;
   }
   const EXPORT_COLS = ["id", "offer_uuid", "offer_number", "status", "store_id", "store", "title", "product_description", "offer_description", "article_number", "condition", "condition_description", "reason_discount", "additional_info", "price", "original_price", "discount_eur", "discount_pct", "first_seen", "last_seen", "gone_at", "reappear_count", "link"];
 
@@ -423,7 +430,7 @@
     const siblings = allOffers(true).filter((x) => x.id !== o.id && o.article_number && (x.article_numbers || [x.article_number]).includes(o.article_number))
       .sort((a, b) => (a.status === b.status ? (a.price ?? 0) - (b.price ?? 0) : a.status === "active" ? -1 : 1));
     const hits = hitRules(o);
-    const listed = days(o.first_seen, o.gone_at || o.last_seen);
+    const listed = o.base ? null : days(o.first_seen, o.gone_at || o.last_seen);
     dlg.innerHTML = `<button class="dlg__close" aria-label="Schließen" data-close>×</button>
       <div class="dlg">
         <div class="dlg__img">${o.image ? `<img src="${esc(o.image)}?f=m" alt="${esc(o.title)}">` : `<span class="muted">kein Bild</span>`}</div>
@@ -447,7 +454,7 @@
             <dt>Artikelnummer</dt><dd class="mono">${esc(ZC.fmtArticle(o.article_number) || "–")}${(o.article_numbers || []).length > 1 ? ` <span class="muted">(+${o.article_numbers.length - 1} weitere: ${esc(o.article_numbers.slice(1).map(ZC.fmtArticle).join(", "))})</span>` : ""}</dd>
             <dt>Angebotsnummer</dt><dd class="mono">${esc(o.offer_number || "–")}</dd>
             <dt>Tracker-ID</dt><dd class="mono">${esc(o.id)}</dd>
-            <dt>Erstmals gesehen</dt><dd>${esc(fmtDT(o.first_seen))}</dd>
+            <dt>Erstmals gesehen</dt><dd>${o.base ? "schon beim Start der Erfassung im Angebot (Einstelldatum unbekannt)" : esc(fmtDT(o.first_seen))}</dd>
             <dt>Zuletzt gesehen</dt><dd>${esc(fmtDT(o.last_seen))}${o.status === "gone" ? ` · <b>nicht mehr gelistet</b>` : ""}</dd>
             <dt>Gelistet</dt><dd>${esc(dur(listed))}${o.reappear_count ? ` · ${o.reappear_count}× wieder aufgetaucht` : ""}${o.missing_runs ? ` · im letzten Abruf nicht gelistet` : ""}</dd>
             ${hits.length ? `<dt>Merkliste</dt><dd>${hits.map((r) => esc(r.name)).join(", ")}</dd>` : ""}
@@ -480,7 +487,7 @@
     });
     // Verlauf aus dem Angebot selbst (Preisverlauf, erstes/letztes Sehen) + lokale Importe
     const ph = o.price_history || [];
-    let evs = [{ ts: o.first_seen, type: "new" }];
+    let evs = o.base ? [] : [{ ts: o.first_seen, type: "new" }];
     for (let i = 1; i < ph.length; i++) evs.push({ ts: ph[i][0], type: "price_change", old_price: ph[i - 1][1], new_price: ph[i][1] });
     const LOGTYPE = { gone: "gone", back: "reappeared", chg: "changed" };
     for (const [ts, k, fields] of o.log || []) evs.push({ ts, type: LOGTYPE[k] || k, fields, detected: true });
@@ -489,7 +496,7 @@
     const seen = new Set(); evs = evs.filter((e) => { const k = e.ts + e.type; if (seen.has(k)) return false; seen.add(k); return true; }).sort((a, b) => a.ts.localeCompare(b.ts));
     const tl = $("#tl", dlg); if (!tl) return;
     tl.innerHTML = evs.length ? evs.map((e) => `<li><b>${esc(EV_LABEL[e.type] || e.type)}</b> · ${esc(fmtDT(e.type === "gone" && !e.detected ? o.gone_at || e.ts : e.ts))}${e.type === "price_change" ? ` · ${esc(eur(Number(e.old_price)))} → ${esc(eur(Number(e.new_price)))}` : ""}${e.fields ? ` <span class="muted">(${esc(e.fields)})</span>` : ""}</li>`).join("")
-      : `<li>Erstmals gesehen · ${esc(fmtDT(o.first_seen))}</li>`;
+      : `<li>${o.base ? "Beim Start der Erfassung schon im Angebot" : `Erstmals gesehen · ${esc(fmtDT(o.first_seen))}`}</li>`;
   }
 
   /* ---------- Merkliste ---------- */
@@ -730,7 +737,7 @@
     const grid = Array.from({ length: 7 }, () => Array(24).fill(0));
     let nObs = 0;
     for (const o of every) {
-      if (!o.first_seen || o.first_seen <= firstRun) continue;
+      if (!o.first_seen || o.first_seen <= firstRun || o.base) continue;
       const parts = Object.fromEntries(hourFmt.formatToParts(new Date(o.first_seen)).map((p) => [p.type, p.value]));
       const d = WD.indexOf(parts.weekday.replace(".", "").slice(0, 2)); const h = Number(parts.hour);
       if (d >= 0 && h >= 0 && h < 24) { grid[d][h]++; nObs++; }
@@ -746,7 +753,7 @@
     tables.preissenkungen = recentDrops.map((x) => ({ zeit: x.ts, produkt: x.o.title, markt: x.o.store, von: x.from, auf: x.to, minus_pct: Math.round(x.pct), id: x.o.id }));
     // 4) Wie schnell weg – nach Rabatthöhe (nur verschwundene, Median Tage)
     const dwellByDisc = Array.from({ length: 5 }, (_, i) => ({ l: ["unter 20 %", "20–39 %", "40–59 %", "60–79 %", "ab 80 %"][i], a: [] }));
-    for (const o of gone) { if (o.discount_pct == null) continue; const b = o.discount_pct < 20 ? 0 : o.discount_pct < 40 ? 1 : o.discount_pct < 60 ? 2 : o.discount_pct < 80 ? 3 : 4; dwellByDisc[b].a.push(days(o.first_seen, o.gone_at)); }
+    for (const o of gone) { if (o.discount_pct == null) continue; const b = o.discount_pct < 20 ? 0 : o.discount_pct < 40 ? 1 : o.discount_pct < 60 ? 2 : o.discount_pct < 80 ? 3 : 4; if (!o.base) dwellByDisc[b].a.push(days(o.first_seen, o.gone_at)); }
     const dwellDisc = dwellByDisc.filter((x) => x.a.length >= 5).map((x) => ({ l: x.l, v: Math.round(median(x.a) * 10) / 10, n: x.a.length }));
     tables.tempo_rabatt = dwellDisc;
     // 5) Märkte im Vergleich
@@ -755,9 +762,9 @@
       const k = o.store_id; if (!per.has(k)) per.set(k, { act: [], new7: 0, gone7: 0, dwell: [] });
       const x = per.get(k);
       if (o.status === "active") x.act.push(o);
-      if (o.first_seen >= d7 && o.first_seen > firstRun) x.new7++;
+      if (o.first_seen >= d7 && o.first_seen > firstRun && !o.base) x.new7++;
       if (o.status === "gone" && o.gone_at >= d7) x.gone7++;
-      if (o.status === "gone") x.dwell.push(days(o.first_seen, o.gone_at));
+      if (o.status === "gone" && !o.base) x.dwell.push(days(o.first_seen, o.gone_at));
     }
     const markets = [...per.entries()].map(([id, x]) => ({ id, markt: nameOf[id] || id, aktiv: x.act.length, median_rabatt: median(x.act.map((o) => o.discount_pct)), neu_pro_tag: Math.round(x.new7 / 7 * 10) / 10, weg_pro_tag: Math.round(x.gone7 / 7 * 10) / 10, verweildauer_tage: x.dwell.length >= 5 ? Math.round(median(x.dwell) * 10) / 10 : null }))
       .sort((a, b) => b.neu_pro_tag - a.neu_pro_tag);
@@ -858,8 +865,8 @@
         <td class="n" data-v="${o.discount_pct ?? -1}">${o.discount_pct != null ? `−${esc(pct(o.discount_pct))}` : "–"}</td>
         <td class="n" data-v="${o.discount_eur ?? -1}">${o.discount_eur != null ? esc(eur(o.discount_eur)) : "–"}</td>
         <td>${esc([o.condition, o.reason_discount].filter(Boolean).join(" · ") || "–")}</td>
-        <td data-v="${+new Date(o.first_seen)}">${esc(fmtD(o.first_seen))}</td>
-        <td data-v="${o.status === "active" ? 0 : 1}">${o.status === "active" ? "gelistet" : `weg ${esc(fmtD(o.gone_at))} · ${esc(fmtDays(days(o.first_seen, o.gone_at)))}`}</td></tr>`).join("")}
+        <td data-v="${o.base ? 0 : +new Date(o.first_seen)}">${o.base ? `<span class="muted">vor Erfassungsbeginn</span>` : esc(fmtD(o.first_seen))}</td>
+        <td data-v="${o.status === "active" ? 0 : 1}">${o.status === "active" ? "gelistet" : `weg ${esc(fmtD(o.gone_at))}${o.base ? "" : ` · ${esc(fmtDays(days(o.first_seen, o.gone_at)))}`}`}</td></tr>`).join("")}
       </tbody></table></div>`;
   };
 
@@ -876,7 +883,7 @@
     const prices = all.map((o) => o.price).filter((v) => v != null);
     const histPrices = all.flatMap((o) => (o.price_history || []).map((x) => x[1])).filter((v) => v != null);
     const drops = all.reduce((n, o) => n + (o.price_history || []).filter((x, i, a) => i && x[1] < a[i - 1][1]).length, 0);
-    const dwell = gone.map((o) => days(o.first_seen, o.gone_at));
+    const dwell = gone.map(dwellOf).filter((v) => v !== null);
     const { labels, counts } = listedPerDay(all);
     // je Markt
     const per = new Map();
@@ -884,7 +891,7 @@
     const savings = all.map((o) => o.discount_eur).filter((v) => v != null);
     const stores_ = [...per.values()].sort((a, b) => b.n - a.n);
     const byWeekday = Array(7).fill(0);
-    for (const o of all) { const wd = (new Date(o.first_seen).getDay() + 6) % 7; byWeekday[wd]++; }
+    for (const o of all) { if (o.base) continue; const wd = (new Date(o.first_seen).getDay() + 6) % 7; byWeekday[wd]++; }
     view.innerHTML = `${back}
       <div class="prodhead">${ref.image ? `<img src="${esc(ref.image)}?f=s" alt="" loading="lazy">` : ""}
         <div><h2>${esc(ref.title)}</h2><p class="muted" style="margin:2px 0">${esc(ref.product_description)}</p>
@@ -948,6 +955,8 @@
     catch (e) { if (e instanceof AuthError) throw e; S.kat = { meta: null, items: [] }; }
     S.kat.byId = new Map(S.kat.items.map((o) => [o.id, o]));
     S.kat.first = S.kat.items.reduce((m, o) => (o.first_seen < m ? o.first_seen : m), "9999");
+    const firstN = S.kat.items.filter((o) => o.first_seen === S.kat.first).length;
+    for (const o of S.kat.items) o.base = firstN >= 1000 && o.first_seen === S.kat.first;      // Erst-Import: Einstelldatum unbekannt
     return S.kat;
   }
   const fundCount = () => {                                   // Artikelnummer -> aktive Fundgrube-Angebote
@@ -963,7 +972,7 @@
     senkung: ["Preis gesenkt (7 T)", (o, c) => o.chg && o.chg.date >= c.d7 && o.chg.to < o.chg.from],
     erhoehung: ["Preis erhöht (7 T)", (o, c) => o.chg && o.chg.date >= c.d7 && o.chg.to > o.chg.from],
     last: ["Letzte Chance", (o) => o.last === 1 && o.status === "active"],
-    neu: ["Neu im Sortiment (7 T)", (o, c) => o.first_seen >= c.d7 && o.first_seen > c.first],
+    neu: ["Neu im Sortiment (7 T)", (o, c) => !o.base && o.first_seen >= c.d7 && o.first_seen > c.first],
     weg: ["Nicht mehr im Sortiment", (o) => o.status === "gone"],
     fund: ["Auch in der Fundgrube", (o, c) => c.fund.has(o.no)],
   };
@@ -974,7 +983,7 @@
     rcount: ["Meiste Bewertungen", (a, b) => b.rcount - a.rcount],
     teuer: ["Preis absteigend", (a, b) => b.price - a.price],
     guenstig: ["Preis aufsteigend", (a, b) => a.price - b.price],
-    neu: ["Neueste Artikel", (a, b) => (b.first_seen || "").localeCompare(a.first_seen || "")],
+    neu: ["Neueste Artikel", (a, b) => (b.base ? "" : b.first_seen || "").localeCompare(a.base ? "" : a.first_seen || "")],
     name: ["Name A–Z", (a, b) => a.name.localeCompare(b.name, "de")],
   };
   async function loadFacets() {                              // Designer -> Artikel (klein), optional
@@ -1002,7 +1011,7 @@
       <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:8px;margin-top:auto"><div><div class="price">${esc(eur(o.price))}</div>${o.prev ? `<div class="was">${esc(eur(o.prev))}</div>` : ""}</div>
         ${recent && (down || up) ? `<span class="tag" style="${down ? "" : "background:#F3D5CE"}">${down ? "▼" : "▲"} ${nf0.format(Math.abs(Math.round(o.chgPct)))} %</span>` : ""}</div>
       <div class="muted" style="font-size:12.5px">${esc(o.top)}${o.col ? ` · ${esc(o.col)}` : ""} ${stars(o)}</div>
-      <div class="muted" style="font-size:12.5px">${o.chg ? `Preis seit ${esc(fmtD(o.chg.date))}` : `seit ${esc(fmtD(o.first_seen))} gelistet`}${fund ? ` · <b>${nf0.format(fund)}× Fundgrube</b>` : ""}</div></a></li>`;
+      <div class="muted" style="font-size:12.5px">${o.chg ? `Preis seit ${esc(fmtD(o.chg.date))}` : o.base ? "Preis unverändert seit Erfassungsbeginn" : `seit ${esc(fmtD(o.first_seen))} gelistet`}${fund ? ` · <b>${nf0.format(fund)}× Fundgrube</b>` : ""}</div></a></li>`;
   }
   document.addEventListener("mouseover", (e) => { const c = e.target.closest?.(".kimg"); const a = c?.querySelector(".kimg__alt"); if (a && !a.src && a.dataset.src) a.src = a.dataset.src; });
   async function renderKatalog(query) {
@@ -1070,14 +1079,14 @@
         ${kpi(eur(o.price), o.prev ? `jetzt (vorher ${eur(o.prev)})` : "aktueller Preis")}
         ${kpi(eur(o.lo), "niedrigster Preis")}${kpi(eur(o.hi), "höchster Preis")}
         ${kpi(nf0.format(o.ph.length - 1), "Preisänderungen")}
-        ${kpi(fmtD(o.first_seen), "erfasst seit")}
+        ${kpi(o.base ? "Erfassungsbeginn" : fmtD(o.first_seen), o.base ? "bereits im Sortiment" : "erfasst seit")}
         ${kpi(o.status === "gone" ? "ausgelistet" : o.last ? "Letzte Chance" : "im Sortiment", o.tag ? `Hinweis: ${o.tag.toLowerCase().replace(/_/g, " ")}` : "Status")}
         ${kpi(nf0.format(fundAct.length), `in der Fundgrube (${nf0.format(fund.length)} insgesamt)`)}
       </div>
       <div class="charts">
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Preisverlauf</h3><p>Jede Änderung seit ${esc(fmtD(o.first_seen))}${o.vto ? ` · aktueller Preis gültig bis ${esc(fmtD(o.vto))}` : ""}</p></div></header>${o.ph.length > 1 ? lineChart(pts, { fmt: eur }) : `<p class="muted">Seit der Erfassung (${esc(fmtD(o.first_seen))}) hat sich der Preis nicht geändert.</p>`}</section>
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Preisverlauf</h3><p>${o.base ? "Jede Änderung seit Erfassungsbeginn" : `Jede Änderung seit ${esc(fmtD(o.first_seen))}`}${o.vto ? ` · aktueller Preis gültig bis ${esc(fmtD(o.vto))}` : ""}</p></div></header>${o.ph.length > 1 ? lineChart(pts, { fmt: eur }) : `<p class="muted">Seit ${o.base ? "Beginn der Erfassung" : `der Erfassung (${esc(fmtD(o.first_seen))})`} hat sich der Preis nicht geändert.</p>`}</section>
         <section class="chart"><header><div><h3>Verlauf</h3></div></header><ul class="timeline">
-          ${[...o.ph.slice(1).map(([t, v], i) => ({ t, text: `Preis ${v < o.ph[i][1] ? "gesenkt" : "erhöht"}: ${eur(o.ph[i][1])} → ${eur(v)}` })), ...o.log.map(([t, k]) => ({ t, text: LOG[k] || k })), { t: o.first_seen, text: "Erstmals erfasst" }].sort((a, b) => b.t.localeCompare(a.t)).map((e) => `<li><b>${esc(fmtD(e.t))}</b> · ${esc(e.text)}</li>`).join("")}</ul></section>
+          ${[...o.ph.slice(1).map(([t, v], i) => ({ t, text: `Preis ${v < o.ph[i][1] ? "gesenkt" : "erhöht"}: ${eur(o.ph[i][1])} → ${eur(v)}` })), ...o.log.map(([t, k]) => ({ t, text: LOG[k] || k })), { t: o.first_seen, text: o.base ? "Bei Erfassungsbeginn schon im Sortiment" : "Erstmals erfasst", hide: o.base }].sort((a, b) => b.t.localeCompare(a.t)).map((e) => `<li>${e.hide ? "" : `<b>${esc(fmtD(e.t))}</b> · `}${esc(e.text)}</li>`).join("")}</ul></section>
         <section class="chart" id="art-sortiment" style="grid-column:1/-1"><p class="muted">Sortiment je Markt wird geladen …</p></section>
         ${fund.length ? `<section class="chart"><header><div><h3>In der Fundgrube</h3><p>${nf0.format(fundAct.length)} jetzt · Zeile antippen = Details</p></div></header>${offerTable(fund.slice(0, 30))}</section>` : ""}
       </div>`;
@@ -1382,7 +1391,7 @@
       if (!g) m.set(k, (g = { key: k, art: a, title: o.title, product_description: o.product_description, image: o.image, orig: o.original_price, offers: [], act: 0, n: 0, min: null, maxPct: null, maxEur: null, newest: "", saved: 0 }));
       g.offers.push(o); g.n++;
       if (!g.image && o.image) g.image = o.image;
-      if ((o.first_seen || "") > g.newest) g.newest = o.first_seen;
+      if (!o.base && (o.first_seen || "") > g.newest) g.newest = o.first_seen;
       if (o.status === "active") {
         g.act++;
         if (o.price != null) g.min = g.min == null ? o.price : Math.min(g.min, o.price);
@@ -1445,7 +1454,7 @@
     const act = allOffers(false).filter((o) => o.status === "active");
     const d7 = new Date(Date.now() - 7 * 864e5).toISOString();
     const per = new Map();
-    for (const o of act) { const x = per.get(o.store_id) || { n: 0, disc: [], new7: 0, top: null, saved: 0 }; x.n++; if (o.discount_pct != null) x.disc.push(o.discount_pct); if (o.first_seen >= d7) x.new7++; x.saved += o.discount_eur || 0; if (!x.top || (o.discount_pct ?? -1) > (x.top.discount_pct ?? -1)) x.top = o; per.set(o.store_id, x); }
+    for (const o of act) { const x = per.get(o.store_id) || { n: 0, disc: [], new7: 0, top: null, saved: 0 }; x.n++; if (o.discount_pct != null) x.disc.push(o.discount_pct); if (o.first_seen >= d7 && !o.base) x.new7++; x.saved += o.discount_eur || 0; if (!x.top || (o.discount_pct ?? -1) > (x.top.discount_pct ?? -1)) x.top = o; per.set(o.store_id, x); }
     const list = stores().map((s) => ({ s, x: per.get(s.id) || { n: 0, disc: [], new7: 0, top: null, saved: 0 } }));
     const MSORT = { name: ["Name A–Z", (a, b) => a.s.name.localeCompare(b.s.name, "de")], n: ["Meiste Angebote", (a, b) => b.x.n - a.x.n], neu: ["Meiste neue (7 T)", (a, b) => b.x.new7 - a.x.new7], rabatt: ["Höchster Median-Rabatt", (a, b) => (median(b.x.disc) ?? -1) - (median(a.x.disc) ?? -1)] };
     const sortKey = lsGet("zc.msort", "name");
@@ -1472,7 +1481,7 @@
     const name = st?.name || all[0].store;
     const act = all.filter((o) => o.status === "active"), gone = all.filter((o) => o.status === "gone");
     const d7 = new Date(Date.now() - 7 * 864e5).toISOString(), firstRun = (S.repo.runs || [])[0]?.ts || "";
-    const new7 = all.filter((o) => o.first_seen >= d7 && o.first_seen > firstRun).length, gone7 = gone.filter((o) => o.gone_at >= d7).length;
+    const new7 = all.filter((o) => o.first_seen >= d7 && o.first_seen > firstRun && !o.base).length, gone7 = gone.filter((o) => o.gone_at >= d7).length;
     const topPct = act.filter((o) => o.discount_pct != null).sort((a, b) => b.discount_pct - a.discount_pct).slice(0, 12);
     const buckets = Array.from({ length: 10 }, (_, i) => ({ l: `${i * 10}–${i * 10 + 9} %`, v: 0 })); act.forEach((o) => { if (o.discount_pct != null) buckets[Math.min(9, Math.max(0, Math.floor(o.discount_pct / 10)))].v++; });
     const reasons = [...act.reduce((m, o) => m.set(o.reason_discount || "–", (m.get(o.reason_discount || "–") || 0) + 1), new Map())].map(([l, v]) => ({ l, v })).sort((a, b) => b.v - a.v).slice(0, 10);
@@ -1487,7 +1496,7 @@
         ${kpi(eur0(act.reduce((a, o) => a + (o.discount_eur || 0), 0)), "Ersparnis gesamt (aktiv)")}
         ${kpi(nf2.format(new7 / 7), "neu pro Tag (7 T)")}
         ${kpi(nf2.format(gone7 / 7), "weg pro Tag (7 T)")}
-        ${kpi(gone.length >= 3 ? fmtDays(median(gone.map((o) => days(o.first_seen, o.gone_at)))) : "–", "Verweildauer (Median)")}
+        ${kpi(gone.filter((o) => !o.base).length >= 3 ? fmtDays(median(gone.map(dwellOf))) : "–", "Verweildauer (Median)")}
         ${kpi(nf0.format(all.length), "insgesamt erfasst")}
       </div>
       <div class="charts">
@@ -1544,12 +1553,12 @@
     const titleOfArt = {}; for (const o of set) { const a = artsOf(o)[0]; if (a && !titleOfArt[a]) titleOfArt[a] = `${o.title} ${o.product_description}`.slice(0, 60); }
     const byTitle = agg(set, (o) => artsOf(o)[0]).filter((r) => r.l !== "–").slice(0, 15).map((r) => ({ l: titleOfArt[r.l] || r.l, v: r.v, href: prodHref(r.l) }));
     const buckets = Array.from({ length: 10 }, (_, i) => ({ l: `${i * 10}–${i * 10 + 9} %`, v: 0 })); set.forEach((o) => { if (o.discount_pct != null) buckets[Math.min(9, Math.max(0, Math.floor(o.discount_pct / 10)))].v++; });
-    const dwellBy = (keyFn) => { const m = new Map(); gone.forEach((o) => { const k = keyFn(o) || "–"; (m.get(k) || m.set(k, []).get(k)).push(days(o.first_seen, o.gone_at)); }); return [...m.entries()].filter(([, a]) => a.length >= 5).map(([l, a]) => ({ l, v: Math.round(median(a) * 100) / 100, n: a.length })).sort((a, b) => a.v - b.v).slice(0, 15); };
+    const dwellBy = (keyFn) => { const m = new Map(); gone.forEach((o) => { const k = keyFn(o) || "–"; if (!o.base) (m.get(k) || m.set(k, []).get(k)).push(days(o.first_seen, o.gone_at)); }); return [...m.entries()].filter(([, a]) => a.length >= 5).map(([l, a]) => ({ l, v: Math.round(median(a) * 100) / 100, n: a.length })).sort((a, b) => a.v - b.v).slice(0, 15); };
     const dwellCond = dwellBy((o) => o.condition), dwellStore = dwellBy((o) => nameOf[o.store_id] || o.store);
     const dayList = []; for (let d = new Date(since); d <= new Date(now); d = new Date(+d + 864e5)) dayList.push(dayKey(d));
     const nNew = Object.fromEntries(dayList.map((d) => [d, 0])), nGone = { ...Object.fromEntries(dayList.map((d) => [d, 0])) };
-    every.forEach((o) => { const a = dayKey(o.first_seen); if (a in nNew) nNew[a]++; if (o.gone_at) { const b = dayKey(o.gone_at); if (b in nGone) nGone[b]++; } });
-    const firstObs = every.reduce((m, o) => (o.first_seen < m ? o.first_seen : m), "9999");
+    every.forEach((o) => { const a = dayKey(o.first_seen); if (!o.base && a in nNew) nNew[a]++; if (o.gone_at) { const b = dayKey(o.gone_at); if (b in nGone) nGone[b]++; } });
+    const nBase = every.filter((o) => o.base).length;
     Object.assign(tables, { maerkte: byStore, gruende: byReason, zustand: byCond, produkte: byTitle, rabatt: buckets, verweil_zustand: dwellCond, verweil_markt: dwellStore, verlauf: dayList.map((d) => ({ l: d, neu: nNew[d], weg: nGone[d] })) });
     const active = every.filter((o) => o.status === "active");
     const k = (v, l) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`;
@@ -1564,11 +1573,11 @@
         ${k(eur0(active.reduce((a, o) => a + (o.discount_eur || 0), 0)), "Rabatt-Summe aktiv")}
         ${k(pct(median(set.map((o) => o.discount_pct))), "Median-Rabatt")}
         ${k(eur(median(set.map((o) => o.price))), "Median-Preis")}
-        ${k(dur(median(gone.map((o) => days(o.first_seen, o.gone_at))) ?? null), "Median-Verweildauer (verschwunden)")}
-        ${k(nf0.format(every.filter((o) => o.first_seen >= since).length), `neu in ${tage} Tagen`)}
+        ${k(dur(median(gone.map(dwellOf)) ?? null), "Median-Verweildauer (verschwunden)")}
+        ${k(nf0.format(every.filter((o) => !o.base && o.first_seen >= since).length), `neu in ${tage} Tagen`)}
         ${k(nf0.format(gone.filter((o) => o.gone_at >= since).length), `verschwunden in ${tage} Tagen`)}
       </div>
-      <p class="muted" style="font-size:12.5px;margin:-14px 0 22px">Grundlage: ${nf0.format(set.length)} Angebote · Beobachtung seit ${fmtD(firstObs)}. „Verschwunden“ heißt: nicht mehr gelistet (verkauft, reserviert oder entfernt) – die Schnittstelle unterscheidet das nicht. Verweildauer erst ab ≥ 5 Fällen je Gruppe; Angebote, die vor Beobachtungsbeginn eingestellt wurden, sind unterschätzt.</p>
+      <p class="muted" style="font-size:12.5px;margin:-14px 0 22px">Grundlage: ${nf0.format(set.length)} Angebote · der Erst-Import${nBase ? ` (${nf0.format(nBase)} Angebote, die beim Start schon da waren)` : ""} ist bei „neu“, Verläufen und Verweildauern ausgeblendet. „Verschwunden“ heißt: nicht mehr gelistet (verkauft, reserviert oder entfernt) – die Schnittstelle unterscheidet das nicht. Verweildauer erst ab ≥ 5 Fällen je Gruppe; Angebote, die vor Beobachtungsbeginn eingestellt wurden, sind unterschätzt.</p>
       <div class="charts">
         <section class="chart" style="grid-column:1/-1"><header><div><h3>Neu vs. verschwunden pro Tag</h3><p>Erstmals gesehen bzw. zuletzt gesehen, Berliner Zeit</p></div>${csvBtn("verlauf")}</header>
           ${columns([dayList.map((d) => nNew[d]), dayList.map((d) => nGone[d])], dayList, ["#2E7D4F", "#B5452B"])}<div class="legend"><span><i style="background:#2E7D4F"></i>neu</span><span><i style="background:#B5452B"></i>verschwunden</span></div></section>
@@ -1740,7 +1749,7 @@
         <p><b>Quelle.</b> Die Daten stammen aus der Schnittstelle, die IKEAs eigene Zweite-Chance-Seite lädt (<code>web-api.ikea.com/circular/circular-asis</code>). Sie ist nicht dokumentiert und kann sich jederzeit ändern. Abgerufen wird stündlich, alle Märkte nacheinander mit Pausen.</p>
         <p><b>Eindeutigkeit.</b> Jedes Einzelstück hat bei IKEA eine Angebots-UUID; sie ist der Schlüssel. Drei gleiche Regale im selben Markt sind drei Datensätze. Doppelte Einträge innerhalb einer Antwort werden verworfen.</p>
         <p><b>Verschwinden.</b> Ein Angebot gilt erst als „weg“, wenn es in zwei aufeinanderfolgenden <i>erfolgreichen</i> Abrufen seines Markts fehlt. Fällt ein Markt aus oder liefert er unplausibel null Angebote, bleibt sein Bestand unverändert. Taucht ein Angebot wieder auf (etwa nach abgelaufener Reservierung), wird derselbe Datensatz reaktiviert.</p>
-        <p><b>Datum.</b> IKEA liefert kein Einstelldatum. Alle Zeitangaben sind Beobachtungen dieses Trackers; die Genauigkeit entspricht dem Abrufintervall (≈ 1 Stunde). Angebote, die schon vor dem ersten Abruf gelistet waren, haben ein zu spätes <code>first_seen</code>.</p>
+        <p><b>Datum.</b> IKEA liefert kein Einstelldatum. Alle Zeitangaben sind Beobachtungen dieses Trackers; die Genauigkeit entspricht dem Abrufintervall (≈ 1 Stunde). Angebote, die schon vor dem ersten Abruf gelistet waren (Erst-Import), werden in Neu-Zahlen, Verweildauern und Datumsanzeigen ausgeblendet.</p>
         <p><b>Aufbewahrung.</b> Nichts wird automatisch gelöscht: aktive und verschwundene Angebote, ihr Verlauf und das Abrufprotokoll bleiben dauerhaft gespeichert (Archiv nach Monaten). Alle Dateien liegen verschlüsselt auf dem Server und werden erst in diesem Browser entschlüsselt.</p>
         <h3 style="margin-top:20px">Felder</h3>
         <table class="tbl"><tbody>${DICT.map(([k, v]) => `<tr><td class="mono" style="white-space:nowrap">${k}</td><td>${v}</td></tr>`).join("")}</tbody></table>
