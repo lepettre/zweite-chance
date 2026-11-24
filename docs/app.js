@@ -848,17 +848,20 @@
       ${lines}${dots}</svg></div>
       <div class="legend"><span><i style="background:#0058A3"></i>noch gelistet</span><span><i style="background:#9EA2A9"></i>verschwunden</span><span>Punkt antippen = Angebot öffnen</span></div>`;
   }
-  const offerTable = (list, { showStore = true, showTitle = false } = {}) => `<div class="tblwrap"><table class="tbl" data-sorttable="o"><thead><tr>
-      ${showTitle ? `<th data-k="0">Produkt</th>` : ""}${showStore ? `<th data-k="${showTitle ? 1 : 0}">Markt</th>` : ""}
-      <th class="n" data-k="${+showTitle + +showStore}">Preis</th><th class="n" data-k="${+showTitle + +showStore + 1}">Rabatt</th><th data-k="${+showTitle + +showStore + 2}">Zustand / Grund</th><th data-k="${+showTitle + +showStore + 3}">seit</th><th data-k="${+showTitle + +showStore + 4}">Status</th></tr></thead><tbody>
+  const offerTable = (list, { showStore = true, showTitle = false } = {}) => {
+    const cols = [...(showTitle ? ["Produkt"] : []), ...(showStore ? ["Markt"] : []), "Preis", "Rabatt", "Ersparnis", "Zustand / Grund", "seit", "Status"];
+    const num = new Set(["Preis", "Rabatt", "Ersparnis"]);
+    return `<div class="tblwrap"><table class="tbl" data-sorttable="o"><thead><tr>${cols.map((c, i) => `<th data-k="${i}" ${num.has(c) ? 'class="n"' : ""}>${c}</th>`).join("")}</tr></thead><tbody>
       ${list.map((o) => `<tr data-id="${esc(o.id)}" style="cursor:pointer">
         ${showTitle ? `<td><b>${esc(o.title)}</b> <span class="muted">${esc(o.product_description)}</span></td>` : ""}${showStore ? `<td>${esc(o.store)}</td>` : ""}
         <td class="n" data-v="${o.price ?? -1}"><b>${esc(eur(o.price))}</b> <span class="muted">${o.original_price ? esc(eur(o.original_price)) : ""}</span></td>
         <td class="n" data-v="${o.discount_pct ?? -1}">${o.discount_pct != null ? `−${esc(pct(o.discount_pct))}` : "–"}</td>
+        <td class="n" data-v="${o.discount_eur ?? -1}">${o.discount_eur != null ? esc(eur(o.discount_eur)) : "–"}</td>
         <td>${esc([o.condition, o.reason_discount].filter(Boolean).join(" · ") || "–")}</td>
         <td data-v="${+new Date(o.first_seen)}">${esc(fmtD(o.first_seen))}</td>
         <td data-v="${o.status === "active" ? 0 : 1}">${o.status === "active" ? "gelistet" : `weg ${esc(fmtD(o.gone_at))} · ${esc(fmtDays(days(o.first_seen, o.gone_at)))}`}</td></tr>`).join("")}
       </tbody></table></div>`;
+  };
 
   async function renderProdukt(query) {
     const p = new URLSearchParams(query || ""); const art = ZC.normArticle(p.get("art") || "");
@@ -877,7 +880,8 @@
     const { labels, counts } = listedPerDay(all);
     // je Markt
     const per = new Map();
-    for (const o of all) { const x = per.get(o.store_id) || { name: o.store, id: o.store_id, act: 0, n: 0, prices: [], disc: [], last: "" }; x.n++; if (o.status === "active") x.act++; if (o.price != null) x.prices.push(o.price); if (o.discount_pct != null) x.disc.push(o.discount_pct); if ((o.last_seen || "") > x.last) x.last = o.last_seen; per.set(o.store_id, x); }
+    for (const o of all) { const x = per.get(o.store_id) || { name: o.store, id: o.store_id, act: 0, n: 0, prices: [], disc: [], sav: [], last: "" }; x.n++; if (o.status === "active") x.act++; if (o.price != null) x.prices.push(o.price); if (o.discount_pct != null) x.disc.push(o.discount_pct); if (o.discount_eur != null) x.sav.push(o.discount_eur); if ((o.last_seen || "") > x.last) x.last = o.last_seen; per.set(o.store_id, x); }
+    const savings = all.map((o) => o.discount_eur).filter((v) => v != null);
     const stores_ = [...per.values()].sort((a, b) => b.n - a.n);
     const byWeekday = Array(7).fill(0);
     for (const o of all) { const wd = (new Date(o.first_seen).getDay() + 6) % 7; byWeekday[wd]++; }
@@ -892,6 +896,8 @@
         ${kpi(prices.length ? `${eur(Math.min(...histPrices))} – ${eur(Math.max(...histPrices))}` : "–", "Preisspanne (alle Preise)")}
         ${kpi(eur(median(prices)), "Median-Preis")}
         ${kpi(pct(median(all.map((o) => o.discount_pct))), "Median-Rabatt")}
+        ${kpi(savings.length ? eur(savings.reduce((a, v) => a + v, 0) / savings.length) : "–", "Ersparnis Ø je Angebot")}
+        ${kpi(savings.length ? eur(Math.max(...savings)) : "–", "größte Ersparnis")}
         ${kpi(dwell.length ? fmtDays(median(dwell)) : "–", `Verweildauer (Median, ${dwell.length} weg)`)}
         ${kpi(nf0.format(drops), "Preissenkungen")}
         ${kpi(nf0.format(per.size), "Märkte")}
@@ -899,57 +905,147 @@
       <div class="charts">
         <section class="chart" style="grid-column:1/-1"><header><div><h3>Preisverlauf</h3><p>Jede Linie ein Angebot, Stufe = Preisänderung</p></div></header>${priceDots(all)}</section>
         <section class="chart" style="grid-column:1/-1"><header><div><h3>Wann im Angebot?</h3><p>Anzahl gleichzeitig gelisteter Angebote je Tag</p></div></header>${columns([counts], labels, ["#0058A3"])}</section>
-        <section class="chart"><header><div><h3>Wo?</h3><p>Märkte mit diesem Artikel · Markt antippen für dessen Statistik</p></div></header>
-          <div class="tblwrap"><table class="tbl" data-sorttable="w"><thead><tr><th data-k="0">Markt</th><th class="n" data-k="1">jetzt</th><th class="n" data-k="2">gesamt</th><th class="n" data-k="3">ab</th><th class="n" data-k="4">Median-Rabatt</th><th data-k="5">zuletzt</th></tr></thead><tbody>
-          ${stores_.map((x) => `<tr><td><a href="${marktHref(x.id)}">${esc(x.name)}</a></td><td class="n" data-v="${x.act}">${nf0.format(x.act)}</td><td class="n" data-v="${x.n}">${nf0.format(x.n)}</td><td class="n" data-v="${Math.min(...x.prices, 1e9)}">${x.prices.length ? esc(eur(Math.min(...x.prices))) : "–"}</td><td class="n" data-v="${median(x.disc) ?? -1}">${esc(pct(median(x.disc)))}</td><td data-v="${+new Date(x.last || 0)}">${esc(rel(x.last))}</td></tr>`).join("")}</tbody></table></div></section>
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Wo war oder ist es im Angebot?</h3><p>je Markt: wie oft, Preise, Rabatt und Ersparnis · Markt antippen = Markt-Seite</p></div></header>
+          <div class="tblwrap"><table class="tbl" data-sorttable="w"><thead><tr><th data-k="0">Markt</th><th class="n" data-k="1">jetzt</th><th class="n" data-k="2">wie oft</th><th class="n" data-k="3">ab</th><th class="n" data-k="4">Ø Rabatt</th><th class="n" data-k="5">Ø Ersparnis</th><th class="n" data-k="6">max. Ersparnis</th><th data-k="7">zuletzt</th></tr></thead><tbody>
+          ${stores_.map((x) => { const avgD = x.disc.length ? x.disc.reduce((a, v) => a + v, 0) / x.disc.length : null, avgS = x.sav.length ? x.sav.reduce((a, v) => a + v, 0) / x.sav.length : null; return `<tr><td><a href="${marktHref(x.id)}">${esc(x.name)}</a></td><td class="n" data-v="${x.act}">${nf0.format(x.act)}</td><td class="n" data-v="${x.n}">${nf0.format(x.n)}×</td><td class="n" data-v="${Math.min(...x.prices, 1e9)}">${x.prices.length ? esc(eur(Math.min(...x.prices))) : "–"}</td><td class="n" data-v="${avgD ?? -1}">${esc(pct(avgD))}</td><td class="n" data-v="${avgS ?? -1}">${avgS != null ? esc(eur(avgS)) : "–"}</td><td class="n" data-v="${x.sav.length ? Math.max(...x.sav) : -1}">${x.sav.length ? esc(eur(Math.max(...x.sav))) : "–"}</td><td data-v="${+new Date(x.last || 0)}">${esc(rel(x.last))}</td></tr>`; }).join("")}</tbody></table></div></section>
         <section class="chart"><header><div><h3>Neu eingestellt nach Wochentag</h3><p>Erstmals gesehen</p></div></header>${bars(WD.map((l, i) => ({ l, v: byWeekday[i] })), { cls: "bl" })}</section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Alle Angebote</h3><p>Zeile antippen = Details · Spaltenkopf = sortieren</p></div></header>${offerTable(all.slice().sort((a, b) => (b.first_seen || "").localeCompare(a.first_seen || "")))}</section>
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Alle Angebote dieses Produkts</h3><p>jedes einzelne Angebot mit Preis, Rabatt und Ersparnis · Zeile antippen = Details · Spaltenkopf = sortieren</p></div></header>${offerTable(all.slice().sort((a, b) => (b.first_seen || "").localeCompare(a.first_seen || "")))}</section>
       </div>`;
     bindSortTables(view);
     $("#prod-merken").addEventListener("click", () => openRuleDialog(null, { name: `${ref.title} ${ZC.fmtArticle(art)}`, enabled: true, notify: true, article_numbers: [ZC.fmtArticle(art)], keywords: [], stores: [] }));
   }
 
+  /* ---------- Märkte: Übersicht und Unterseite je Markt ---------- */
+  // Angebote nach Produkt bündeln (Artikelnummer; ohne Nummer nach Name+Beschreibung)
+  function groupProducts(offers) {
+    const m = new Map();
+    for (const o of offers) {
+      const a = artsOf(o)[0] || "";
+      const k = a || `t:${o.title}|${o.product_description}`;
+      let g = m.get(k);
+      if (!g) m.set(k, (g = { key: k, art: a, title: o.title, product_description: o.product_description, image: o.image, orig: o.original_price, offers: [], act: 0, n: 0, min: null, maxPct: null, maxEur: null, newest: "", saved: 0 }));
+      g.offers.push(o); g.n++;
+      if (!g.image && o.image) g.image = o.image;
+      if ((o.first_seen || "") > g.newest) g.newest = o.first_seen;
+      if (o.status === "active") {
+        g.act++;
+        if (o.price != null) g.min = g.min == null ? o.price : Math.min(g.min, o.price);
+        if (o.discount_pct != null) g.maxPct = Math.max(g.maxPct ?? -1, o.discount_pct);
+        if (o.discount_eur != null) { g.maxEur = Math.max(g.maxEur ?? -1, o.discount_eur); g.saved += o.discount_eur; }
+      }
+    }
+    return [...m.values()];
+  }
+  const PSORT = {
+    anzahl: ["Meiste Angebote", (a, b) => b.act - a.act || b.n - a.n],
+    rabatt: ["Höchster Rabatt (%)", (a, b) => (b.maxPct ?? -1) - (a.maxPct ?? -1)],
+    ersparnis: ["Größte Ersparnis (€)", (a, b) => (b.maxEur ?? -1) - (a.maxEur ?? -1)],
+    neu: ["Neueste zuerst", (a, b) => (b.newest || "").localeCompare(a.newest || "")],
+    preis: ["Günstigste zuerst", (a, b) => (a.min ?? 1e9) - (b.min ?? 1e9)],
+    name: ["Name A–Z", (a, b) => (a.title || "").localeCompare(b.title || "", "de")],
+  };
+  function productCard(g, storeId) {
+    const href = g.art ? prodHref(g.art) : `#/aktuell?q=${encodeURIComponent(g.title)}${storeId ? `&s=${encodeURIComponent(storeId)}` : ""}`;
+    const isNewP = S.prevVisit && g.newest > S.prevVisit;
+    return `<li class="card pcard"><a href="${href}" class="pcard__a">
+      ${img(g)}
+      <div class="offer__t" style="font-size:14.5px">${esc(g.title)} ${isNewP ? `<span class="badge badge--new">neu</span>` : ""}</div>
+      <div class="offer__d" style="white-space:normal;font-size:13px">${esc(g.product_description)}</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:8px;margin-top:auto">
+        <div>${g.act ? `<div class="price">${g.act > 1 ? "ab " : ""}${esc(eur(g.min))}</div>` : `<div class="muted" style="font-size:13px">derzeit nicht gelistet</div>`}${g.orig ? `<div class="was">${esc(eur(g.orig))}</div>` : ""}</div>
+        ${g.maxPct != null ? `<span class="tag">−${esc(pct(g.maxPct))}</span>` : ""}
+      </div>
+      <div class="muted" style="font-size:12.5px">${g.act ? `${nf0.format(g.act)}× jetzt` : ""}${g.n > g.act ? `${g.act ? " · " : ""}${nf0.format(g.n)}× insgesamt` : ""}${g.maxEur ? ` · spart bis ${esc(eur0(g.maxEur))}` : ""}</div>
+    </a></li>`;
+  }
+  // Gemeinsame Produkt-Galerie mit Suche, Sortierung und "mehr"
+  function productGallery(id, offers, storeId) {
+    return `<section class="chart" style="grid-column:1/-1" id="${id}"><header><div><h3>Produkte <small class="muted" data-pg-count></small></h3><p>Antippen = Produkt mit Preisverlauf, Ersparnis und allen Märkten</p></div></header>
+      <div class="pg-ctl"><input class="inp" data-pg-q placeholder="Produkt suchen" aria-label="Produkte durchsuchen">
+        <select class="inp" data-pg-sort aria-label="Sortierung">${Object.entries(PSORT).map(([k, [l]]) => `<option value="${k}">${l}</option>`).join("")}</select>
+        <label class="switch"><input type="checkbox" data-pg-gone> auch verschwundene</label></div>
+      <ul class="grid" data-pg-list></ul><div class="more" data-pg-more></div></section>`;
+  }
+  function bindGallery(id, offers, storeId) {
+    const box = $(`#${id}`); if (!box) return;
+    const groups = groupProducts(offers);
+    let shown = 60;
+    const draw = () => {
+      const q = ZC.fold($("[data-pg-q]", box).value).trim(), withGone = $("[data-pg-gone]", box).checked;
+      const cmp = PSORT[$("[data-pg-sort]", box).value][1];
+      const list = groups.filter((g) => (withGone || g.act) && (!q || ZC.fold(`${g.title} ${g.product_description} ${g.art} ${ZC.fmtArticle(g.art)}`).includes(q))).sort(cmp);
+      $("[data-pg-count]", box).textContent = `${nf0.format(list.length)}`;
+      $("[data-pg-list]", box).innerHTML = list.slice(0, shown).map((g) => productCard(g, storeId)).join("") || `<li class="muted">Nichts gefunden.</li>`;
+      $("[data-pg-more]", box).innerHTML = list.length > shown ? `<button class="btn">${nf0.format(Math.min(60, list.length - shown))} weitere (${nf0.format(list.length - shown)} übrig)</button>` : "";
+      $("[data-pg-more] button", box)?.addEventListener("click", () => { shown += 60; draw(); });
+    };
+    $("[data-pg-q]", box).addEventListener("input", debounce(() => { shown = 60; draw(); }, 150));
+    $("[data-pg-sort]", box).addEventListener("change", () => { shown = 60; draw(); });
+    $("[data-pg-gone]", box).addEventListener("change", () => { shown = 60; draw(); });
+    draw();
+  }
+
+  async function renderMaerkte() {
+    const act = allOffers(false).filter((o) => o.status === "active");
+    const d7 = new Date(Date.now() - 7 * 864e5).toISOString();
+    const per = new Map();
+    for (const o of act) { const x = per.get(o.store_id) || { n: 0, disc: [], new7: 0, top: null, saved: 0 }; x.n++; if (o.discount_pct != null) x.disc.push(o.discount_pct); if (o.first_seen >= d7) x.new7++; x.saved += o.discount_eur || 0; if (!x.top || (o.discount_pct ?? -1) > (x.top.discount_pct ?? -1)) x.top = o; per.set(o.store_id, x); }
+    const list = stores().map((s) => ({ s, x: per.get(s.id) || { n: 0, disc: [], new7: 0, top: null, saved: 0 } }));
+    const MSORT = { name: ["Name A–Z", (a, b) => a.s.name.localeCompare(b.s.name, "de")], n: ["Meiste Angebote", (a, b) => b.x.n - a.x.n], neu: ["Meiste neue (7 T)", (a, b) => b.x.new7 - a.x.new7], rabatt: ["Höchster Median-Rabatt", (a, b) => (median(b.x.disc) ?? -1) - (median(a.x.disc) ?? -1)] };
+    const sortKey = lsGet("zc.msort", "name");
+    view.innerHTML = `<div class="toolbar"><h2>Märkte <small>${list.length}</small></h2>
+        <div class="toolbar__r"><input class="inp" id="m-find" placeholder="Markt suchen" style="width:auto">
+        <select class="inp" id="m-sort" style="width:auto">${Object.entries(MSORT).map(([k, [l]]) => `<option value="${k}" ${k === sortKey ? "selected" : ""}>${l}</option>`).join("")}</select></div></div>
+      <ul class="mgrid">${list.sort(MSORT[sortKey]?.[1] || MSORT.name[1]).map(({ s, x }) => `<li><a class="mcard" href="${marktHref(s.id)}">
+        ${x.top ? img(x.top, "mcard__img") : `<div class="mcard__img offer__img--none">▢</div>`}
+        <div class="mcard__b"><b>${esc(s.name)}</b>
+          <span>${nf0.format(x.n)} Angebote · Median ${esc(pct(median(x.disc)))}</span>
+          <span class="muted">${nf0.format(x.new7)} neu in 7 Tagen${x.top?.discount_pct != null ? ` · bis −${esc(pct(x.top.discount_pct))}` : ""}</span></div></a></li>`).join("")}</ul>`;
+    $("#m-sort").addEventListener("change", (e) => { lsSet("zc.msort", e.target.value); renderMaerkte(); });
+    $("#m-find").addEventListener("input", (e) => { const q = ZC.fold(e.target.value); $$(".mgrid li").forEach((li) => { li.hidden = q && !ZC.fold(li.textContent).includes(q); }); });
+  }
+
   async function renderMarkt(query) {
     const p = new URLSearchParams(query || ""); const id = p.get("id") || "";
-    if (hasRepo() && !archiveFullyLoaded()) { view.innerHTML = `${back}<div class="skeleton"></div>`; await loadArchive(); }
+    const backM = `<p style="margin:0 0 10px"><a href="#/maerkte" class="linkbtn">← alle Märkte</a></p>`;
+    if (hasRepo() && !archiveFullyLoaded()) { view.innerHTML = `${backM}<div class="skeleton"></div>`; await loadArchive(); }
+    if (hasRepo() && !S.repo.runs) S.repo.runs = await getBin("runs.bin", S.repo.meta.updated).catch(() => []);
     const st = stores().find((s) => s.id === id);
     const all = allOffers(true).filter((o) => o.store_id === id);
-    if (!st && !all.length) { view.innerHTML = `${back}<div class="empty"><h3>Markt nicht gefunden</h3></div>`; return; }
+    if (!st && !all.length) { view.innerHTML = `${backM}<div class="empty"><h3>Markt nicht gefunden</h3></div>`; return; }
     const name = st?.name || all[0].store;
     const act = all.filter((o) => o.status === "active"), gone = all.filter((o) => o.status === "gone");
     const d7 = new Date(Date.now() - 7 * 864e5).toISOString(), firstRun = (S.repo.runs || [])[0]?.ts || "";
     const new7 = all.filter((o) => o.first_seen >= d7 && o.first_seen > firstRun).length, gone7 = gone.filter((o) => o.gone_at >= d7).length;
-    const topPct = act.filter((o) => o.discount_pct != null).sort((a, b) => b.discount_pct - a.discount_pct).slice(0, 20);
-    const topEur = act.filter((o) => o.discount_eur != null).sort((a, b) => b.discount_eur - a.discount_eur).slice(0, 10);
-    // häufigste Produkte (Artikelnummer) in diesem Markt
-    const prodMap = new Map();
-    for (const o of all) { const a = artsOf(o)[0] || ""; const k = a || o.title; const x = prodMap.get(k) || { art: a, title: o.title, desc: o.product_description, act: 0, n: 0, min: Infinity }; x.n++; if (o.status === "active") { x.act++; x.min = Math.min(x.min, o.price ?? Infinity); } prodMap.set(k, x); }
-    const prods = [...prodMap.values()].sort((a, b) => b.act - a.act || b.n - a.n).slice(0, 25);
+    const topPct = act.filter((o) => o.discount_pct != null).sort((a, b) => b.discount_pct - a.discount_pct).slice(0, 12);
     const buckets = Array.from({ length: 10 }, (_, i) => ({ l: `${i * 10}–${i * 10 + 9} %`, v: 0 })); act.forEach((o) => { if (o.discount_pct != null) buckets[Math.min(9, Math.max(0, Math.floor(o.discount_pct / 10)))].v++; });
     const reasons = [...act.reduce((m, o) => m.set(o.reason_discount || "–", (m.get(o.reason_discount || "–") || 0) + 1), new Map())].map(([l, v]) => ({ l, v })).sort((a, b) => b.v - a.v).slice(0, 10);
+    const conds = [...act.reduce((m, o) => m.set(o.condition || "–", (m.get(o.condition || "–") || 0) + 1), new Map())].map(([l, v]) => ({ l, v })).sort((a, b) => b.v - a.v);
     const { labels, counts } = listedPerDay(all, 60);
-    view.innerHTML = `${back}
-      <div class="toolbar"><h2>${esc(name)} <small>Markt-Statistik</small></h2><div class="toolbar__r"><a class="btn" href="#/aktuell?s=${esc(id)}">Alle Angebote hier (${nf0.format(act.length)})</a></div></div>
+    view.innerHTML = `${backM}
+      <div class="toolbar"><h2>${esc(name)}</h2><div class="toolbar__r"><a class="btn" href="#/aktuell?s=${esc(id)}">Als Liste mit Filtern</a><a class="btn" href="#/archiv?s=${esc(id)}">Archiv dieses Markts</a></div></div>
       <div class="kpis">
         ${kpi(nf0.format(act.length), "aktive Angebote")}
+        ${kpi(nf0.format(groupProducts(act).length), "verschiedene Produkte")}
         ${kpi(pct(median(act.map((o) => o.discount_pct))), "Median-Rabatt")}
-        ${kpi(eur0(act.reduce((a, o) => a + (o.discount_eur || 0), 0)), "Rabatt-Summe")}
+        ${kpi(eur0(act.reduce((a, o) => a + (o.discount_eur || 0), 0)), "Ersparnis gesamt (aktiv)")}
         ${kpi(nf2.format(new7 / 7), "neu pro Tag (7 T)")}
         ${kpi(nf2.format(gone7 / 7), "weg pro Tag (7 T)")}
         ${kpi(gone.length >= 3 ? fmtDays(median(gone.map((o) => days(o.first_seen, o.gone_at)))) : "–", "Verweildauer (Median)")}
+        ${kpi(nf0.format(all.length), "insgesamt erfasst")}
       </div>
       <div class="charts">
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Größte Rabatte jetzt (Prozent)</h3><p>Antippen für Details</p></div></header>${topPct.length ? `<ul class="offers">${topPct.map(offerRow).join("")}</ul>` : "<p class='muted'>Keine aktiven Angebote.</p>"}</section>
-        <section class="chart"><header><div><h3>Größte Ersparnis jetzt (Euro)</h3></div></header>${offerTable(topEur, { showStore: false, showTitle: true })}</section>
-        <section class="chart"><header><div><h3>Häufigste Produkte hier</h3><p>Antippen = Produkt-Statistik (alle Märkte)</p></div></header>
-          <div class="tblwrap"><table class="tbl" data-sorttable="p"><thead><tr><th data-k="0">Produkt</th><th class="n" data-k="1">jetzt</th><th class="n" data-k="2">gesamt</th><th class="n" data-k="3">ab</th></tr></thead><tbody>
-          ${prods.map((x) => `<tr><td>${x.art ? `<a href="${prodHref(x.art)}"><b>${esc(x.title)}</b></a>` : `<b>${esc(x.title)}</b>`} <span class="muted">${esc(x.desc)}</span></td><td class="n" data-v="${x.act}">${nf0.format(x.act)}</td><td class="n" data-v="${x.n}">${nf0.format(x.n)}</td><td class="n" data-v="${Number.isFinite(x.min) ? x.min : 1e9}">${Number.isFinite(x.min) ? esc(eur(x.min)) : "–"}</td></tr>`).join("")}</tbody></table></div></section>
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Größte Rabatte jetzt</h3><p>Antippen = Angebot mit allen Details</p></div><a class="linkbtn" href="#/aktuell?s=${esc(id)}&sort=rabattpct">alle ›</a></header>${topPct.length ? `<ul class="grid">${topPct.map(offerCard).join("")}</ul>` : "<p class='muted'>Keine aktiven Angebote.</p>"}</section>
+        ${productGallery("pg-markt", all, id)}
         <section class="chart"><header><div><h3>Rabatthöhe</h3><p>aktive Angebote</p></div></header>${bars(buckets, { cls: "y" })}</section>
+        <section class="chart"><header><div><h3>Zustand</h3></div></header>${bars(conds, { cls: "bl" })}</section>
         <section class="chart"><header><div><h3>Häufigste Rabattgründe</h3></div></header>${bars(reasons)}</section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Bestand je Tag</h3><p>gleichzeitig gelistete Angebote, letzte 60 Tage</p></div></header>${columns([counts], labels, ["#0058A3"])}</section>
+        <section class="chart"><header><div><h3>Bestand je Tag</h3><p>gleichzeitig gelistete Angebote, letzte 60 Tage</p></div></header>${columns([counts], labels, ["#0058A3"])}</section>
       </div>`;
+    bindGallery("pg-markt", all, id);
     bindSortTables(view);
   }
+
   // Produktsuche für die Statistik-Seite
   function productFinder(every) {
     const m = new Map();
@@ -1280,11 +1376,11 @@
     const h = location.hash.replace(/^#\/?/, "") || "aktuell";
     const [name, query] = h.split("?");
     if (name === "merkliste") { const rg = new URLSearchParams(query || "").get("regel"); location.replace(`#/aktuell?m=${rg !== null && savedSearches()[rg] ? savedSearches()[rg].r.id : "all"}`); return; }
-    const tab0 = ["produkt", "markt"].includes(name) ? "statistik" : ["aktuell", "archiv", "statistik", "daten"].includes(name) ? name : "aktuell";
+    const tab0 = name === "produkt" ? "statistik" : name === "markt" ? "maerkte" : ["aktuell", "archiv", "maerkte", "statistik", "daten"].includes(name) ? name : "aktuell";
     const tab = tab0 === "aktuell" && /(^|&)m=/.test(query || "") ? "gemerkt" : tab0;
     $$(".tabs a").forEach((a) => a.dataset.tab === tab ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current"));
     S.shown = 120;
-    const r = { aktuell: () => renderList("aktuell", query), gemerkt: () => renderList("aktuell", query), archiv: () => renderList("archiv", query), statistik: () => (name === "produkt" ? renderProdukt(query) : name === "markt" ? renderMarkt(query) : renderStatistik(query)), daten: () => renderDaten(query) }[tab];
+    const r = { aktuell: () => renderList("aktuell", query), gemerkt: () => renderList("aktuell", query), archiv: () => renderList("archiv", query), maerkte: () => (name === "markt" ? renderMarkt(query) : renderMaerkte()), statistik: () => (name === "produkt" ? renderProdukt(query) : renderStatistik(query)), daten: () => renderDaten(query) }[tab];
     Promise.resolve(r()).catch((e) => { console.error(e); view.innerHTML = `<div class="empty"><h3>Fehler beim Anzeigen</h3><p>${esc(e.message || e)}</p></div>`; });
   }
   window.addEventListener("hashchange", () => { if ($("#detail").open) $("#detail").close(); route(); });
