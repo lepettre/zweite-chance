@@ -79,7 +79,13 @@ def facets(rows: dict) -> dict:
     for k, r in sorted(rows.items()):
         if r.get("designer"):
             by.setdefault(r["designer"], []).append(k)
-    return {"designer": by, "n": len(rows)}
+    mat: dict[str, list[str]] = {}
+    for k, r in sorted(rows.items()):
+        m = re.split(r"\s*[,(;/]\s*", r.get("material") or "")[0].strip()
+        if m:
+            mat.setdefault(m[:1].upper() + m[1:], []).append(k)
+    mat = dict(sorted(mat.items(), key=lambda kv: -len(kv[1]))[:60])         # nur die haeufigsten Materialien
+    return {"designer": by, "material": mat, "n": len(rows)}
 
 
 def pick(db: dict, have: dict, limit: int, max_age_days: int, today: str) -> list[str]:

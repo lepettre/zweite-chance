@@ -71,27 +71,40 @@ def gaps(db: dict, in_map: dict[str, str]) -> dict:
             "only_sitemap_ids": only_map[:300], "only_list_ids": only_list[:300]}
 
 
-def fill(db: dict, ids: list[str], in_map: dict[str, str], day: str, limit: int) -> int:
-    """Luecken-Artikel (nur in der Sitemap) ueber ihre Produkt-JSON nachladen. Sets (s...) bleiben Platzhalter."""
+def fill(db: dict, ids: list[str], in_map: dict[str, str], day: str, limit: int, workers: int = 3) -> int:
+    """Luecken-Artikel (nur in der Sitemap) ueber ihre Produkt-JSON nachladen (Einzelartikel und Sets).
+    Artikel ohne Treffer werden als "stub" vermerkt, damit sie nicht jeden Tag neu versucht werden."""
+    todo = [i for i in ids if i not in db][:limit]
+    results: dict[str, dict | None] = {}
+    blocked = threading.Event()
+
+    def one(art: str) -> None:
+        if blocked.is_set():
+            return
+        try:
+            results[art] = api.fetch_product_json(art)
+        except api.Blocked:
+            blocked.set()
+        except Exception:
+            results[art] = None
+        api.pause()
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        list(ex.map(one, todo))
+    if blocked.is_set() and not results:
+        raise api.Blocked("Produkt-JSON gesperrt")
     done = 0
-    for art in ids:
-        if done >= limit:
-            break
-        if art in db:
+    for art in todo:
+        if art not in results:
             continue
         slug = in_map.get(art, "")
-        rec = {"id": art, "no": art.lstrip("s"), "type": "SPR" if art.startswith("s") else "ART", "name": slug.rsplit("-", 1)[0].replace("-", " ").upper(),
-               "kind": "", "measure": "", "slug": slug, "img": "", "cat": "", "price": None, "prev": None, "vfrom": "", "vto": "", "tag": "", "last": 0, "online": 0}
-        if not art.startswith("s"):
-            try:
-                p = api.fetch_product_json(art)
-                rec.update(name=p.get("name") or rec["name"], kind=p.get("typeName", ""), price=p.get("priceNumeral"),
-                           img=(p.get("mainImage") or {}).get("url", "").replace(model.IMG_PREFIX, ""))
-            except api.Blocked:
-                raise
-            except Exception:
-                pass
-            api.pause()
+        p = results[art] or {}
+        pip = str(p.get("pipUrl") or "")
+        rec = {"id": art, "no": art.lstrip("s"), "type": "SPR" if art.startswith("s") else "ART",
+               "name": p.get("name") or slug.rsplit("-", 1)[0].replace("-", " ").upper(), "kind": p.get("typeName", ""), "measure": "",
+               "slug": pip[len(model.P_PREFIX):].rstrip("/") if pip.startswith(model.P_PREFIX) else slug, "cat": "",
+               "img": (p.get("mainImage") or {}).get("url", "").replace(model.IMG_PREFIX, ""), "price": p.get("priceNumeral"), "prev": None,
+               "vfrom": "", "vto": "", "tag": "", "last": 0, "online": 0, "col": "", "ctx": "", "rating": 0, "rcount": 0}
         if rec["price"] is None:
             db[art] = {**rec, "price": 0.0, "first_seen": day, "last_seen": day, "status": "stub", "missing": 0, "ph": [], "log": []}
         else:
@@ -125,12 +138,22 @@ def main(argv=None) -> int:
     if len(db) < before:
         raise SystemExit(f"Abbruch: Bestand waere von {before} auf {len(db)} geschrumpft.")
     gap = meta.get("gaps")
+    in_map = None
     if a.sitemap and not blocked:
         in_map = sitemap_ids()
+        store.write_bin("gaps.bin", {"day": day, "map": {i: u for i, u in in_map.items() if i not in db}})   # alle Luecken, fuer die taeglichen Nachlade-Laeufe
+    elif a.fill and not blocked:
+        saved = store.read_bin("gaps.bin", {}) or {}
+        in_map = saved.get("map") or None
+    if in_map is not None:
         gap = {**gaps(db, in_map), "day": day}
         if a.fill:
-            gap["filled"] = fill(db, gap["only_sitemap_ids"], in_map, day, a.fill)
-            gap = {**gaps(db, in_map), "day": day, "filled": gap["filled"]}
+            todo = [i for i in sorted(in_map, key=lambda x: (x.startswith("s"), x)) if i not in db]
+            try:
+                gap["filled"] = fill(db, todo, in_map, day, a.fill, a.workers)
+            except api.Blocked as ex:
+                print(f"[katalog] Nachladen gesperrt: {ex}")
+            gap = {**gaps(db, in_map), "day": day, "filled": gap.get("filled", 0)}
     version = store.save_db(db)
     run = {"ts": ts, "categories": len(keys), "failed": len(failed), "seen": len(uniq), "complete": int(complete),
            "total": len(db), "active": sum(1 for o in db.values() if o["status"] == "active"), **stats,
