@@ -959,7 +959,7 @@
     for (const o of S.kat.items) o.base = firstN >= 1000 && o.first_seen === S.kat.first;      // Erst-Import: Einstelldatum unbekannt
     const fam = new Map(), vr = new Map();                       // Familie = gleicher Name; Variante = gleicher Name + Produkttyp (unterscheidet sich in Farbe/Maß)
     for (const o of S.kat.items) { o.fk = o.name; o.vk = `${o.name}|${o.kind}`; (fam.get(o.fk) || fam.set(o.fk, []).get(o.fk)).push(o); (vr.get(o.vk) || vr.set(o.vk, []).get(o.vk)).push(o); }
-    S.kat.fam = fam; S.kat.vr = vr;
+    S.kat.fam = fam; S.kat.vr = vr; S.kat.byNo = new Map(S.kat.items.map((o) => [o.no, o]));
     return S.kat;
   }
   const fundCount = () => {                                   // Artikelnummer -> aktive Fundgrube-Angebote
@@ -973,12 +973,22 @@
   const myMarkets = () => lsGet(MY_KEY, []);
   const storeBits = (R, sid, o) => { const s = R.byId[sid], i = R.idx.get(o.id); return s && i != null && i < s.n ? bitAt(s.r, i) : null; };     // 1 / 0 / null (unbekannt)
   const spread = (R, o) => { const i = R.idx.get(o.id); return i == null || R.known[i] < MIN_KNOWN ? null : { n: R.cnt[i], of: R.known[i] }; };
+  const selSet = (c, v) => { const m = c._ss || (c._ss = new Map()); let s = m.get(v); if (!s) m.set(v, (s = new Set(String(v).split("|").filter(Boolean)))); return s; };
+  function multiControl(d, c, st) {
+    const sel = new Set((st[d.k] || "").split("|").filter(Boolean)), opts = d.opts(c, st);
+    const label = sel.size ? `${[...sel].slice(0, 2).join(", ")}${sel.size > 2 ? ` +${sel.size - 2}` : ""}` : d.l;
+    return `<details class="ms${sel.size ? " ms--on" : ""}" data-fk="${d.k}" data-multi ${S.openMs === d.k && st !== NOOPEN ? "open" : ""}><summary class="inp">${esc(label)}</summary>
+      <div class="ms__pop"><input class="inp ms__q" type="search" placeholder="${esc(d.l.replace("alle ", ""))} suchen …" aria-label="suchen">
+        <div class="ms__list">${opts.map(([v, t, n]) => `<label class="ms__o"><input type="checkbox" value="${esc(v)}" ${sel.has(v) ? "checked" : ""}><span>${esc(t)}</span>${n != null ? `<small>${nf0.format(n)}</small>` : ""}</label>`).join("")}</div>
+        <div class="ms__f"><span class="muted">${sel.size ? `${sel.size} gewählt (ODER)` : "mehrere möglich"}</span>${sel.size ? `<button type="button" class="linkbtn" data-ms-clear>Auswahl aufheben</button>` : ""}</div></div></details>`;
+  }
+  const NOOPEN = {};
   const FILTERS = [
     { k: "cat", l: "alle Kategorien", main: true, opts: (c) => c.tops, test: (o, v) => o.top === v },
     { k: "sub", l: "alle Unterkategorien", main: true, dep: "cat", opts: (c, st) => c.subsOf(st.cat), test: (o, v) => o.sub === v },
-    { k: "col", l: "alle Farben", main: true, extra: true, opts: (c) => c.cols, test: (o, v) => (o.col || "").split(", ").includes(v) },
-    { k: "des", l: "alle Designer", main: true, needs: "F", opts: (c) => c.F.designers.map((d) => [d, null]), test: (o, v, c) => c.F.by.get(o.id) === v },
-    { k: "mat", l: "alle Materialien", needs: "F.materials", opts: (c) => c.F.materials.map((m) => [m, null]), test: (o, v, c) => c.F.matBy.get(o.id) === v },
+    { k: "col", l: "alle Farben", main: true, extra: true, multi: true, opts: (c) => c.cols, test: (o, v, c) => { const s = selSet(c, v); return (o.col || "").split(", ").some((x) => s.has(x)); } },
+    { k: "des", l: "alle Designer", main: true, extra: true, multi: true, needs: "F", opts: (c) => c.F.persons.map((p) => [p.name, p.name + (p.resolved ? "" : " (Kürzel)"), p.n]), test: (o, v, c) => { const s = selSet(c, v); return (c.F.ppl.get(o.id) || []).some((n) => s.has(n)); } },
+    { k: "mat", l: "alle Materialien", extra: true, multi: true, needs: "F.materials", opts: (c) => c.F.materials.map((m) => [m, m, null]), test: (o, v, c) => selSet(c, v).has(c.F.matBy.get(o.id)) },
     { k: "pmin", l: "Preis ab €", t: "number", main: true, test: (o, v) => o.price >= +v },
     { k: "pmax", l: "bis €", t: "number", main: true, test: (o, v) => o.price <= +v },
     { k: "typ", l: "Einzelartikel & Sets", opts: () => [["ART", "nur Einzelartikel", null], ["SPR", "nur Sets/Kombinationen", null]], test: (o, v) => o.type === v },
@@ -1014,6 +1024,7 @@
   const defAvailable = (d, c) => !d.needs || (d.needs === "R" ? !!c.R : d.needs === "F" ? !!c.F?.designers.length : d.needs === "F.materials" ? !!c.F?.materials?.length : true);
   function filterControl(d, c, st, id) {
     const v = st[d.k] ?? "";
+    if (d.multi) return multiControl(d, c, st);
     if (d.t === "number") return `<input class="inp" data-fk="${d.k}" id="${id}${d.k}" type="number" min="0" placeholder="${esc(d.l)}" value="${esc(v)}" style="max-width:${d.k === "pmin" ? 112 : 96}px" aria-label="${esc(d.l)}">`;
     const opts = d.opts(c, st).map(([val, text, n]) => `<option value="${esc(val)}" ${val === v ? "selected" : ""}>${esc(text)}${n != null ? ` (${nf0.format(n)})` : ""}</option>`).join("");
     if (d.dep === "cat" && !opts) return "";
@@ -1028,11 +1039,37 @@
         ${c.R ? `<a class="linkbtn" href="#/sortiment" title="Meine Märkte festlegen">Meine Märkte (${myMarkets().length}) festlegen</a>` : ""}</div></details>`;
   }
   const extraFilterBar = (c, id) => { const defs = FILTERS.filter((d) => (!d.main || d.extra) && defAvailable(d, c)); return `<details class="morefilters"><summary>Weitere Filter</summary><div class="pg-ctl">${defs.map((d) => filterControl(d, c, {}, id)).join("")}</div></details>`; };
-  const readFilterEls = (root) => Object.fromEntries([...root.querySelectorAll("[data-fk]")].map((e) => [e.dataset.fk, e.value]).filter(([, v]) => v !== ""));
+  const readFilterEls = (root) => Object.fromEntries([...root.querySelectorAll("[data-fk]")].map((e) => [e.dataset.fk, e.dataset.multi !== undefined ? [...e.querySelectorAll("input:checked")].map((x) => x.value).join("|") : e.value]).filter(([, v]) => v !== ""));
   function passes(o, st, c) {
     for (const d of FILTERS) { const v = st[d.k]; if (v === undefined || v === "" || !defAvailable(d, c)) continue; if (!d.test(o, v, c, st)) return false; }
     return true;
   }
+  document.addEventListener("input", (e) => { const q = e.target.closest?.(".ms__q"); if (!q) return; const t = ZC.fold(q.value); q.closest(".ms").querySelectorAll(".ms__o").forEach((l) => { l.hidden = !!t && !ZC.fold(l.textContent).includes(t); }); });
+  document.addEventListener("click", (e) => {
+    const clr = e.target.closest?.("[data-ms-clear]");
+    if (clr) { const ms = clr.closest(".ms"); ms.querySelectorAll("input:checked").forEach((x) => (x.checked = false)); ms.querySelector("input[type=checkbox]")?.dispatchEvent(new Event("change", { bubbles: true })); return; }
+    document.querySelectorAll(".ms[open]").forEach((m) => { if (!m.contains(e.target)) { m.open = false; if (S.openMs === m.dataset.fk) S.openMs = null; } });
+  });
+  /* ---------- Favoriten: jeder Katalog-Artikel lässt sich merken (= Merklisten-Regel mit Artikelnummer) ---------- */
+  const isFavRule = (r) => (r.article_numbers || []).length === 1 && !(r.keywords || []).length && !(r.stores || []).length;
+  const favSet = () => { const k = `${S.rules.length}|${S.repo.watch.length}|${S.favV || 0}`; if (S.favC?.k === k) return S.favC.s; const s = new Set(); for (const r of allRules()) if (isFavRule(r)) s.add(ZC.normArticle(r.article_numbers[0])); S.favC = { k, s }; return s; };
+  const isFav = (o) => favSet().has(ZC.normArticle(o.no));
+  const favBtn = (o) => `<button type="button" class="fav ${isFav(o) ? "fav--on" : ""}" data-fav="${esc(o.id)}" aria-pressed="${isFav(o)}" title="${isFav(o) ? "Favorit – antippen zum Entfernen" : "Als Favorit merken (Benachrichtigung, wenn in der Fundgrube)"}">${isFav(o) ? "★" : "☆"}</button>`;
+  async function toggleFav(id) {
+    const o = S.kat?.byId.get(id); if (!o) return;
+    const key = ZC.normArticle(o.no), mine = S.rules.filter((r) => isFavRule(r) && ZC.normArticle(r.article_numbers[0]) === key);
+    if (isFav(o)) {
+      if (!mine.length) { toast("Dieser Favorit kommt aus der Sicherung und lässt sich nur mit verbundenem Worker entfernen."); return; }
+      if (!confirmTwice(`„${o.name}“ aus den Favoriten entfernen?`)) return;
+      S.rules = S.rules.filter((r) => !mine.includes(r)); await persistRules(true); toast("Entfernt. Der frühere Stand ist unter „Daten“ wiederherstellbar.");
+    } else {
+      S.rules.push({ id: newId(), name: `${o.name}${o.kind ? ` ${o.kind}` : ""} ${ZC.fmtArticle(o.no)}`, enabled: true, notify: true, article_numbers: [ZC.fmtArticle(o.no)] });
+      await persistRules(); toast(`★ „${esc(o.name)}“ ist Favorit – Meldung, sobald er in der Fundgrube auftaucht.`);
+    }
+    S.favV = (S.favV || 0) + 1; updateBadges();
+    document.querySelectorAll("[data-fav]").forEach((b) => { const x = S.kat.byId.get(b.dataset.fav), on = x && isFav(x); b.classList.toggle("fav--on", !!on); b.textContent = on ? "★" : "☆"; b.setAttribute("aria-pressed", !!on); });
+  }
+  document.addEventListener("click", (e) => { const b = e.target.closest?.("[data-fav]"); if (b) { e.preventDefault(); e.stopPropagation(); toggleFav(b.dataset.fav); } }, true);
   const kUrl = (o) => `${K_P}${o.slug}/`;
   const kImg = (o, f = "xs") => (o.img ? `<img class="offer__img" src="${K_IMG}${esc(o.img)}?f=${f}" alt="" loading="lazy" decoding="async">` : `<div class="offer__img offer__img--none">▢</div>`);
   const daysAgoIso = (n) => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
@@ -1044,6 +1081,7 @@
     neu: ["Neu im Sortiment (7 T)", (o, c) => !o.base && o.first_seen >= c.d7 && o.first_seen > c.first],
     weg: ["Nicht mehr im Sortiment", (o) => o.status === "gone"],
     fund: ["Auch in der Fundgrube", (o, c) => c.fund.has(o.no)],
+    fav: ["★ Favoriten", (o) => isFav(o)],
     luecken: ["Nur Basisdaten (Lücken)", (o) => o.status === "stub"],
   };
   const isStub = (o) => o.status === "stub";
@@ -1060,7 +1098,10 @@
   async function loadFacets() {                              // Designer -> Artikel (klein), optional
     if (S.facets !== undefined) return S.facets;
     try { const d = await getK("facets.bin"); const by = new Map(); for (const [name, ids] of Object.entries(d.designer || {})) for (const id of ids) by.set(id, name); const matBy = new Map(); for (const [name, ids] of Object.entries(d.material || {})) for (const id of ids) matBy.set(id, name);
-      S.facets = { designers: Object.keys(d.designer || {}).sort((x, y) => x.localeCompare(y, "de")), by, matBy, materials: Object.keys(d.material || {}).sort((x, y) => x.localeCompare(y, "de")), n: d.n }; }
+      const pm = ZC.designerPeople(Object.keys(d.designer || {}).filter((r) => !IOS.test(r))), ppl = new Map(), pc = new Map(), pr = new Map();
+      for (const [raw, ids] of Object.entries(d.designer || {})) { const ps = pm.get(raw); if (!ps) continue; const names = [...new Set(ps.map((x) => x.name))]; for (const x of ps) pr.set(x.name, x.resolved); for (const id of ids) ppl.set(id, names); for (const n of names) pc.set(n, (pc.get(n) || 0) + ids.length); }
+      const persons = [...pc].map(([name, n]) => ({ name, n, resolved: pr.get(name) })).sort((a, b) => ZC.sortByLast(a.name, b.name));
+      S.facets = { designers: Object.keys(d.designer || {}).sort((x, y) => x.localeCompare(y, "de")), persons, ppl, by, matBy, materials: Object.keys(d.material || {}).sort((x, y) => x.localeCompare(y, "de")), n: d.n }; }
     catch (e) { if (e instanceof AuthError) throw e; S.facets = null; }
     return S.facets;
   }
@@ -1077,17 +1118,17 @@
   function kCard(o, fund, R) {
     const sp = R ? spread(R, o) : null;
     const down = o.chg && o.chg.to < o.chg.from, up = o.chg && o.chg.to > o.chg.from, recent = o.chg && o.chg.date >= daysAgoIso(7);
-    return `<li class="card pcard"><a class="pcard__a" href="#/artikel?id=${esc(o.id)}">
+    return `<li class="card pcard">${favBtn(o)}<a class="pcard__a" href="#/artikel?id=${esc(o.id)}">
       <div class="kimg">${o.img ? `<img class="offer__img" src="${K_IMG}${esc(o.img)}?f=xs" alt="" loading="lazy" decoding="async">` : `<div class="offer__img offer__img--none">▢</div>`}${o.ctx ? `<img class="kimg__alt" data-src="${K_IMG}${esc(o.ctx)}?f=xs" alt="" decoding="async">` : ""}</div>
       <div class="offer__t" style="font-size:14.5px">${esc(o.name)} ${o.status === "gone" ? `<span class="badge badge--gone">weg</span>` : ""}${o.last && o.status === "active" ? ` <span class="badge badge--new" style="background:var(--rust)">letzte Chance</span>` : ""}</div>
       <div class="offer__d" style="white-space:normal;font-size:13px">${esc([o.kind, o.measure].filter(Boolean).join(", "))}</div>
       <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:8px;margin-top:auto"><div><div class="price">${esc(eur(o.price))}</div>${o.prev ? `<div class="was">${esc(eur(o.prev))}</div>` : ""}</div>
         ${recent && (down || up) ? `<span class="tag" style="${down ? "" : "background:#F3D5CE"}">${down ? "▼" : "▲"} ${nf0.format(Math.abs(Math.round(o.chgPct)))} %</span>` : ""}</div>
       <div class="muted" style="font-size:12.5px">${esc(o.top)}${o.col ? ` · ${esc(o.col)}` : ""} ${stars(o)}</div>
-      <div class="muted" style="font-size:12.5px">${o.chg ? `Preis seit ${esc(fmtD(o.chg.date))}` : o.base ? "Preis unverändert seit Erfassungsbeginn" : `seit ${esc(fmtD(o.first_seen))} gelistet`}${fund ? ` · <b>${nf0.format(fund)}× Fundgrube</b>` : ""}${sp ? ` · in ${sp.n}/${sp.of} Märkten` : ""}</div></a></li>`;
+      <div class="muted" style="font-size:12.5px">${o.chg ? `Preis seit ${esc(fmtD(o.chg.date))}` : o.base ? "Preis unverändert seit Erfassungsbeginn" : `seit ${esc(fmtD(o.first_seen))} gelistet`}${fund ? ` · <b>${nf0.format(fund)}× Fundgrube</b>` : ""}${sp ? ` · in ${sp.n} von ${sp.of} Märkten` : ""}</div></a></li>`;
   }
   document.addEventListener("mouseover", (e) => { const c = e.target.closest?.(".kimg"); const a = c?.querySelector(".kimg__alt"); if (a && !a.src && a.dataset.src) a.src = a.dataset.src; });
-  const K_VIEWS = { karten: "Einzelartikel", varianten: "Varianten gruppiert", familien: "Produktfamilien", tabelle: "Tabelle" };
+  const K_VIEWS = { karten: "Einzelartikel", varianten: "Varianten gruppiert", familien: "Produktfamilien", tabelle: "Tabelle", fundgrube: "Fundgrube (nach Artikel)" };
   const rangeTxt = (a) => { const v = a.map((o) => o.price); const lo = Math.min(...v), hi = Math.max(...v); return lo === hi ? eur(lo) : `${eur(lo)} – ${eur(hi)}`; };
   const uniq = (a) => [...new Set(a.filter(Boolean))];
   function groupCard(g, key, mode) {      // g = Artikel einer Variantengruppe bzw. Familie
@@ -1103,14 +1144,46 @@
       <div class="muted" style="font-size:12.5px">${nf0.format(act)} im Sortiment${first < "9999" ? ` · ältester seit ${esc(fmtD(first))}` : ""}</div></a></li>`;
   }
   function kTable(list) {
-    return `<div class="tblwrap"><table class="tbl" data-sorttable="s"><thead><tr><th data-k="0">Artikel</th><th data-k="1">Art.-Nr.</th><th data-k="2">Kategorie</th><th data-k="3">Farbe</th><th class="n" data-k="4">Preis</th><th class="n" data-k="5">★</th><th data-k="6">seit</th></tr></thead><tbody>${list.map((o) => `<tr><td><a href="#/artikel?id=${esc(o.id)}"><b>${esc(o.name)}</b></a> <span class="muted">${esc([o.kind, o.measure].filter(Boolean).join(", "))}</span>${o.status === "gone" ? ` <span class="badge badge--gone">weg</span>` : ""}</td><td class="mono">${esc(ZC.fmtArticle(o.no))}</td><td class="muted">${esc(o.cat.split(" › ").slice(0, 2).join(" › "))}</td><td>${esc(o.col)}</td><td class="n" data-v="${o.price}">${esc(eur(o.price))}</td><td class="n" data-v="${o.rating || 0}">${o.rcount ? nf2.format(o.rating) : ""}</td><td data-v="${o.base ? 0 : +new Date(o.first_seen)}">${o.base ? "–" : esc(fmtD(o.first_seen))}</td></tr>`).join("")}</tbody></table></div>`;
+    return `<div class="tblwrap"><table class="tbl" data-sorttable="s"><thead><tr><th data-k="0">Artikel</th><th data-k="1">Art.-Nr.</th><th data-k="2">Kategorie</th><th data-k="3">Farbe</th><th class="n" data-k="4">Preis</th><th class="n" data-k="5">★</th><th data-k="6">seit</th></tr></thead><tbody>${list.map((o) => `<tr><td>${favBtn(o)}<a href="#/artikel?id=${esc(o.id)}"><b>${esc(o.name)}</b></a> <span class="muted">${esc([o.kind, o.measure].filter(Boolean).join(", "))}</span>${o.status === "gone" ? ` <span class="badge badge--gone">weg</span>` : ""}</td><td class="mono">${esc(ZC.fmtArticle(o.no))}</td><td class="muted">${esc(o.cat.split(" › ").slice(0, 2).join(" › "))}</td><td>${esc(o.col)}</td><td class="n" data-v="${o.price}">${esc(eur(o.price))}</td><td class="n" data-v="${o.rating || 0}">${o.rcount ? nf2.format(o.rating) : ""}</td><td data-v="${o.base ? 0 : +new Date(o.first_seen)}">${o.base ? "–" : esc(fmtD(o.first_seen))}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+  /* Fundgrube nach Artikelnummer: eigene Liste, getrennt vom regulären Sortiment (dort tauchen auch Artikel auf, die nicht mehr im Katalog sind) */
+  function renderFundArtikel(kat, p) {
+    const q = ZC.fold(p.get("q") || ""), fs = p.get("fs") || "alle", so = p.get("so") || "n";
+    const g = new Map();
+    for (const o of S.repo.current) { if (o.status !== "active") continue; const a = artsOf(o)[0]; if (!a) continue; const x = g.get(a) || { a, offers: [], stores: new Set() }; x.offers.push(o); x.stores.add(o.store_id); g.set(a, x); }
+    const rows = [...g.values()].map((x) => { const c = kat.byNo.get(x.a); const pr = x.offers.map((o) => o.price); return { ...x, ref: x.offers[0], cat: c, min: Math.min(...pr), pct: Math.max(0, ...x.offers.map((o) => o.discount_pct || 0)), live: c && c.status === "active" }; });
+    const FS = { alle: ["Alle", () => true], kat: ["Aktuell im Katalog", (r) => r.live], weg: ["Nicht (mehr) im Katalog", (r) => !r.live] };
+    const SO = { n: ["Meiste Angebote", (a, b) => b.offers.length - a.offers.length], guenstig: ["Günstigster Preis", (a, b) => a.min - b.min], rabatt: ["Größter Rabatt", (a, b) => b.pct - a.pct], maerkte: ["Meiste Märkte", (a, b) => b.stores.size - a.stores.size], name: ["Name A–Z", (a, b) => a.ref.title.localeCompare(b.ref.title, "de")] };
+    const cnt = Object.fromEntries(Object.entries(FS).map(([k, [, f]]) => [k, rows.filter(f).length]));
+    const list = rows.filter(FS[fs]?.[1] || FS.alle[1]).filter((r) => !q || ZC.fold(`${r.ref.title} ${r.ref.product_description} ${r.a} ${ZC.fmtArticle(r.a)}`).includes(q)).sort((SO[so] || SO.n)[1]);
+    const link = (patch) => `#/katalog?${new URLSearchParams(Object.entries({ v: "fundgrube", q: p.get("q") || "", fs, so, ...patch }).filter(([, v]) => v))}`;
+    let shown = 120;
+    view.innerHTML = `<div class="toolbar"><h2>Fundgrube nach Artikel <small>${nf0.format(rows.length)} verschiedene Artikel · ${nf0.format(S.repo.current.filter((o) => o.status === "active").length)} Angebote</small></h2><div class="toolbar__r"><a class="btn" href="#/statistik">Fundgrube-Statistik</a></div></div>
+      <div class="pg-ctl" id="fa-bar"><input class="inp" id="fa-q" type="search" placeholder="Name, Artikelnr. …" value="${esc(p.get("q") || "")}">
+        <select class="inp" id="fa-view" aria-label="Ansicht">${Object.entries(K_VIEWS).map(([k, l]) => `<option value="${k}" ${k === "fundgrube" ? "selected" : ""}>Ansicht: ${l}</option>`).join("")}</select>
+        <select class="inp" id="fa-so" aria-label="Sortierung">${Object.entries(SO).map(([k, [l]]) => `<option value="${k}" ${k === so ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+      <nav class="chips2">${Object.entries(FS).map(([k, [l]]) => `<a class="chip2 ${k === fs ? "chip2--on" : ""}" href="${link({ fs: k })}">${l} <small>${nf0.format(cnt[k])}</small></a>`).join("")}</nav>
+      <p class="muted" style="margin:0 0 10px">${nf0.format(list.length)} Artikel · Artikel der Fundgrube erscheinen zusätzlich auf ihrer Katalogseite, zählen aber nicht zum regulären Sortiment.</p><ul class="grid" id="fa-list"></ul><div class="more" id="fa-more"></div>`;
+    const draw = () => {
+      $("#fa-list").innerHTML = list.slice(0, shown).map((r) => `<li class="card pcard"><a class="pcard__a" href="${prodHref(r.a)}">${img(r.ref)}
+        <div class="offer__t" style="font-size:14.5px">${esc(r.ref.title)} ${r.live ? "" : `<span class="badge badge--gone">${r.cat ? "nicht mehr im Katalog" : "nicht im Katalog"}</span>`}</div>
+        <div class="offer__d" style="white-space:normal;font-size:13px">${esc(r.ref.product_description)}</div>
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:auto"><div class="price">ab ${esc(eur(r.min))}</div>${r.pct ? `<span class="tag">−${nf0.format(Math.round(r.pct))} %</span>` : ""}</div>
+        <div class="muted" style="font-size:12.5px">${nf0.format(r.offers.length)} ${r.offers.length === 1 ? "Angebot" : "Angebote"} in ${nf0.format(r.stores.size)} ${r.stores.size === 1 ? "Markt" : "Märkten"}</div></a>${r.cat ? favBtn(r.cat) : ""}</li>`).join("") || `<li class="muted">Nichts gefunden.</li>`;
+      $("#fa-more").innerHTML = list.length > shown ? `<button class="btn">${nf0.format(Math.min(120, list.length - shown))} weitere (${nf0.format(list.length - shown)} übrig)</button>` : "";
+      $("#fa-more button")?.addEventListener("click", () => { shown += 120; draw(); });
+    };
+    $("#fa-bar").addEventListener("change", () => { const v = $("#fa-view").value; location.hash = v === "fundgrube" ? link({ q: $("#fa-q").value.trim(), so: $("#fa-so").value }) : `#/katalog?v=${v}`; });
+    draw();
   }
   async function renderKatalog(query) {
     view.innerHTML = `<div class="toolbar"><h2>Katalog</h2></div><div class="skeleton"></div>`;
     const kat = await loadKatalog();
     if (!kat.meta) { view.innerHTML = `<div class="empty"><h3>Noch keine Katalogdaten</h3><p>Der erste Katalog-Lauf steht noch aus (Actions → Katalog).</p></div>`; return; }
     const [F, R] = await Promise.all([loadFacets(), loadRange()]);
-    const p = new URLSearchParams(query || ""); const q = p.get("q") || "", fk = K_FILTERS[p.get("f")] ? p.get("f") : "alle", sk = K_SORT[p.get("sort")] ? p.get("sort") : "chg";
+    const p = new URLSearchParams(query || "");
+    if (p.get("v") === "fundgrube") { if (!hasRepo()) { view.innerHTML = `<div class="empty"><h3>Keine Fundgrube-Daten</h3></div>`; return; } return renderFundArtikel(kat, p); }
+    const q = p.get("q") || "", fk = K_FILTERS[p.get("f")] ? p.get("f") : "alle", sk = K_SORT[p.get("sort")] ? p.get("sort") : "chg";
     const fc = filterCtx(kat, R, F), ctx = { d7: fc.d7, first: kat.first, fund: fc.fund };
     const st = Object.fromEntries(FILTERS.filter((d) => p.get(d.k) && defAvailable(d, fc)).map((d) => [d.k, p.get(d.k)]));
     const terms = ZC.fold(q).split(/\s+/).filter(Boolean);
@@ -1142,7 +1215,7 @@
       $("#k-more button")?.addEventListener("click", () => { shown += 120; draw(); });
     };
     const go = (patch = {}) => { const x = readFilterEls($("#k-bar")); location.hash = link({ ...Object.fromEntries(FILTERS.map((d) => [d.k, ""])), ...x, q: $("#k-q").value.trim(), sort: $("#k-sort").value, v: $("#k-view").value === "karten" ? "" : $("#k-view").value, ...patch }); };
-    $("#k-bar").addEventListener("change", (e) => go(e.target.dataset.fk === "cat" ? { sub: "" } : {}));
+    $("#k-bar").addEventListener("change", (e) => { S.openMs = e.target.closest(".ms")?.dataset.fk || null; go(e.target.dataset.fk === "cat" ? { sub: "" } : {}); });
     draw();
   }
   function variantSection(kat, o) {
@@ -1168,7 +1241,7 @@
     const LOG = { gone: "Aus dem Sortiment genommen", back: "Wieder im Sortiment", last: "Als „Letzte Chance“ markiert" };
     view.innerHTML = `${backK}
       <div class="prodhead">${o.img ? `<img src="${K_IMG}${esc(o.img)}?f=s" alt="" loading="lazy">` : ""}
-        <div><h2>${esc(o.name)}</h2><p class="muted" style="margin:2px 0">${esc([o.kind, o.measure].filter(Boolean).join(", "))}</p>
+        <div><h2>${esc(o.name)} ${favBtn(o)}</h2><p class="muted" style="margin:2px 0">${esc([o.kind, o.measure].filter(Boolean).join(", "))}</p>
         <p class="mono" style="margin:0">Art. ${esc(ZC.fmtArticle(o.no))}${o.type === "SPR" ? " · Set/Kombination" : ""} · <a href="#/katalog?cat=${encodeURIComponent(o.top)}${o.sub ? `&sub=${encodeURIComponent(o.sub)}` : ""}">${esc(o.cat)}</a></p>
         <p style="margin:6px 0 0">${stars(o)}${o.col ? ` · Farbe: ${esc(o.col)}` : ""}<span id="art-designer"></span></p>
         <p id="art-desc" class="muted" style="margin:8px 0 0;max-width:62ch"></p><div id="art-gallery" class="gallery"></div>
@@ -1178,7 +1251,7 @@
         ${kpi(eur(o.price), o.prev ? `jetzt (vorher ${eur(o.prev)})` : "aktueller Preis")}
         ${kpi(eur(o.lo), "niedrigster Preis")}${kpi(eur(o.hi), "höchster Preis")}
         ${kpi(nf0.format(o.ph.length - 1), "Preisänderungen")}
-        ${kpi(o.base ? "Erfassungsbeginn" : fmtD(o.first_seen), o.base ? "bereits im Sortiment" : "erfasst seit")}
+        ${kpi(o.base ? "seit Start" : fmtD(o.first_seen), o.base ? "bereits im Sortiment" : "erfasst seit")}
         ${kpi(o.status === "gone" ? "ausgelistet" : o.last ? "Letzte Chance" : "im Sortiment", o.tag ? `Hinweis: ${o.tag.toLowerCase().replace(/_/g, " ")}` : "Status")}
         ${kpi(nf0.format(fundAct.length), `in der Fundgrube (${nf0.format(fund.length)} insgesamt)`)}
       </div>
@@ -1197,13 +1270,13 @@
     const imgs = [...new Set([o.img, o.ctx, ...((r?.imgs || "").split("|"))].filter(Boolean))];
     const g = $("#art-gallery"); if (g) g.innerHTML = imgs.slice(0, 8).map((f) => `<a href="${K_IMG}${esc(f)}?f=xl" target="_blank" rel="noopener"><img src="${K_IMG}${esc(f)}?f=xs" alt="" loading="lazy"></a>`).join("");
     if (!r) { const d = $("#art-desc"); if (d) d.textContent = D ? "Beschreibung wird in den nächsten Tagen nachgeladen." : ""; return; }
-    if (r.designer && $("#art-designer")) $("#art-designer").innerHTML = ` · Designer: <a href="#/katalog?des=${encodeURIComponent(r.designer)}"><b>${esc(r.designer)}</b></a>`;
+    if (r.designer && $("#art-designer")) { const ns = !IOS.test(r.designer) && S.facets?.ppl.get(o.id) || [r.designer]; $("#art-designer").innerHTML = ` · Designer: ${ns.map((n) => `<a href="#/katalog?des=${encodeURIComponent(n)}"><b>${esc(n)}</b></a>`).join(", ")}${ns.join("/") !== r.designer ? ` <small class="muted">(bei IKEA: ${esc(r.designer)})</small>` : ""}`; }
     if ($("#art-desc")) $("#art-desc").innerHTML = `${esc(r.desc)}${r.material ? `<br><b>Material:</b> ${esc(r.material)}` : ""}${r.w || r.h || r.d ? `<br><b>Maße:</b> ${esc([r.w && `Breite ${r.w}`, r.h && `Höhe ${r.h}`, r.d && `Tiefe ${r.d}`].filter(Boolean).join(" · "))}` : ""}`;
   }
   const kat0 = () => S.kat || { items: [] };
   async function fillKatalogDiag() {
     const box = $("#diag-katalog"); if (!box) return;
-    loadFacets().then((F) => { const c = $("#diag-details"); if (c) c.innerHTML = F ? `${nf0.format(F.n)} von ${nf0.format(kat0().items.length)} Artikeln · ${nf0.format(F.designers.length)} Designer` : "noch nicht geholt (Actions → Details, läuft danach täglich)"; }).catch(() => {});
+    loadFacets().then((F) => { const c = $("#diag-details"); if (c) c.innerHTML = F ? `${nf0.format(F.n)} von ${nf0.format(kat0().items.length)} Artikeln · ${nf0.format(F.persons.length)} Designer` : "noch nicht geholt (Actions → Details, läuft danach täglich)"; }).catch(() => {});
     loadRange().then((R) => { const c = $("#diag-range"); if (c) c.innerHTML = R ? `${R.st.length} Märkte × ${nf0.format(R.N)} Artikel · Stand ${esc(rel(R.updated))}` : "noch keine Messung (Actions → Sortiment)"; }).catch(() => {});
     const kat = await loadKatalog().catch(() => null);
     if (!kat?.meta) { box.innerHTML += `<p class="muted">Noch keine Katalogdaten. Erster Lauf: Actions → Katalog.</p>`; return; }
@@ -1263,11 +1336,10 @@
     const tops = [...R.kat.items.reduce((m, o) => m.set(o.top, (m.get(o.top) || 0) + 1), new Map())].sort((a, b) => a[0].localeCompare(b[0], "de"));
     return `<div class="pg-ctl" data-df="${id}"><input class="inp" data-f="q" placeholder="Artikel suchen"><select class="inp" data-f="cat"><option value="">alle Kategorien</option>${tops.map(([c, n]) => `<option>${esc(c)}</option>`).join("")}</select>
       <select class="inp" data-f="sub" hidden><option value="">alle Unterkategorien</option></select>
-      ${F?.designers.length ? `<select class="inp" data-f="des"><option value="">alle Designer</option>${F.designers.map((d) => `<option>${esc(d)}</option>`).join("")}</select>` : ""}
       <input class="inp" data-f="pmin" type="number" min="0" placeholder="Preis ab €" style="max-width:105px"><input class="inp" data-f="pmax" type="number" min="0" placeholder="bis €" style="max-width:95px">
       <select class="inp" data-f="sort">${Object.entries(DF_SORT).map(([k, [l]]) => `<option value="${k}" ${k === sort ? "selected" : ""}>${l}</option>`).join("")}</select>${extraFilterBar(filterCtx(R.kat, R, F), id + "-")}</div>`;
   }
-  const dfRead = (id) => { const g = (f) => $(`[data-df="${id}"] [data-f="${f}"]`)?.value || ""; return { q: ZC.fold(g("q")).trim(), cat: g("cat"), sub: g("sub"), des: g("des"), pmin: g("pmin") === "" ? null : +g("pmin"), pmax: g("pmax") === "" ? null : +g("pmax"), sort: g("sort") || "selten", x: readFilterEls($(`[data-df="${id}"]`)) }; };
+  const dfRead = (id) => { const g = (f) => $(`[data-df="${id}"] [data-f="${f}"]`)?.value || ""; return { q: ZC.fold(g("q")).trim(), cat: g("cat"), sub: g("sub"), pmin: g("pmin") === "" ? null : +g("pmin"), pmax: g("pmax") === "" ? null : +g("pmax"), sort: g("sort") || "selten", x: readFilterEls($(`[data-df="${id}"]`)) }; };
   function dfWire(id, R, redraw) {
     const root = $(`[data-df="${id}"]`);
     root.addEventListener("input", debounce((e) => { if (e.target.dataset.f !== "cat") redraw(); }, 200));
@@ -1281,7 +1353,7 @@
   }
   const dfApply = (R, F, list, f) => { const fc = filterCtx(R.kat, R, F); return list.filter((i) => {
     const o = itemAt(R, i); if (!o || isStub(o)) return false;
-    return (f.x ? passes(o, f.x, fc) : true) && (!f.cat || o.top === f.cat) && (!f.sub || o.sub === f.sub) && (!f.des || F?.by.get(o.id) === f.des) && (f.pmin == null || o.price >= f.pmin) && (f.pmax == null || o.price <= f.pmax)
+    return (f.x ? passes(o, f.x, fc) : true) && (!f.cat || o.top === f.cat) && (!f.sub || o.sub === f.sub) && (f.pmin == null || o.price >= f.pmin) && (f.pmax == null || o.price <= f.pmax)
       && (!f.q || (o._sh || (o._sh = ZC.fold(`${o.name} ${o.kind} ${o.measure} ${o.no} ${o.col}`))).includes(f.q));
   }).sort(DF_SORT[f.sort][1](R)); };
   function listRows(R, F, list, { showWo = true, shown = 100 } = {}) {
@@ -1437,7 +1509,7 @@
     const withDes = act.filter((o) => desOf(o));
     // --- Designer ---
     const byDes = new Map();
-    for (const o of withDes) { const d = desOf(o), g = byDes.get(d) || []; g.push(o); byDes.set(d, g); }
+    for (const o of withDes) { const raw = desOf(o); for (const d of (IOS.test(raw) ? [raw] : F.ppl.get(o.id) || [raw])) { const g = byDes.get(d) || []; g.push(o); byDes.set(d, g); } }
     const desRows = [...byDes.entries()].map(([d, list]) => {
       const st = stat(list.map((o) => o.price)), cats = [...list.reduce((m, o) => m.set(o.top, (m.get(o.top) || 0) + 1), new Map())].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([c, n]) => `${c} (${n})`);
       const rated = list.filter((o) => o.rcount >= 5);

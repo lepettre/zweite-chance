@@ -256,6 +256,25 @@
     return out;
   }
 
-  const api = { compileRule, deriveKeyB64, importKey, openBlob, unpackOffers, IKEA_PAGE, KNOWN_SLUGS, storeName, storeSlug, offerLink, fold, normArticle, fmtArticle, flatten, merge, plausible, ingestSnapshot, matches, offerKey, ruleKey, dedupeRules, cleanRule, topSorted };
+  /* Designer-Namen: "H Preutz/W Braasch" -> Einzelpersonen; Kürzel über vollständig genannte Namen auflösen (Rohtext bleibt unverändert) */
+  const SPLIT = /\s*(?:\/|;|,|&|\bund\b|\band\b|\bsowie\b)\s*/i;
+  const isAbbr = (n) => /^(?:[A-ZÀ-Þ]\.?[-\s]?){1,3}\s+\S/.test(n) && /^[A-ZÀ-Þ]\.?(\s|$)/.test(n) && n.split(/\s+/)[0].replace(/\./g, "").length <= 2;
+  const lastOf = (n) => n.trim().split(/\s+/).slice(-1)[0];
+  function designerPeople(rawNames) {
+    const parts = new Map();                                        // Rohname -> Teile
+    for (const raw of rawNames) parts.set(raw, String(raw).split(SPLIT).map((x) => x.trim()).filter(Boolean));
+    const full = new Set();                                         // vollständig genannte Namen (mind. ein Vorname ausgeschrieben)
+    for (const ps of parts.values()) for (const n of ps) if (!isAbbr(n) && /\s/.test(n)) full.add(n);
+    const byLast = new Map(); for (const n of full) { const l = lastOf(n); (byLast.get(l) || byLast.set(l, []).get(l)).push(n); }
+    const resolve = (n) => {
+      if (!isAbbr(n)) return { name: n, resolved: true };
+      const ini = n.replace(/\./g, "").split(/\s+/)[0][0], c = (byLast.get(lastOf(n)) || []).filter((x) => x[0] === ini);
+      return c.length === 1 ? { name: c[0], resolved: true } : { name: n, resolved: false };
+    };
+    const map = new Map(); for (const [raw, ps] of parts) map.set(raw, ps.map(resolve));
+    return map;                                                      // Rohname -> [{name, resolved}]
+  }
+  const sortByLast = (a, b) => lastOf(a).localeCompare(lastOf(b), "de") || a.localeCompare(b, "de");
+  const api = { designerPeople, sortByLast, lastOf, compileRule, deriveKeyB64, importKey, openBlob, unpackOffers, IKEA_PAGE, KNOWN_SLUGS, storeName, storeSlug, offerLink, fold, normArticle, fmtArticle, flatten, merge, plausible, ingestSnapshot, matches, offerKey, ruleKey, dedupeRules, cleanRule, topSorted };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.ZC = api;
 })(typeof window !== "undefined" ? window : globalThis);
