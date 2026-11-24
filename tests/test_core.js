@@ -97,3 +97,14 @@ assert.deepStrictEqual(top.map((x) => x.n), [1, 2, 3]);
   const d = ZC.dedupeRules([{ name: "a", keywords: ["kallax"], notify: false }, { name: "b", keywords: ["kallax"] }]);
   assert.strictEqual(d.length, 1); assert.notStrictEqual(d[0].notify, false, "Benachrichtigung gewinnt");
 }
+
+// Designer-Namen: Kürzel werden über vollständig genannte Namen aufgelöst
+{
+  const m = ZC.designerPeople(["Henrik Preutz", "Wiebke Braasch", "H Preutz/W Braasch", "S Edholm/L Ullenius", "Ehlén Johansson", "Ida Pettersson Preutz"]);
+  assert.deepStrictEqual(m.get("H Preutz/W Braasch").map((x) => x.name), ["Henrik Preutz", "Wiebke Braasch"]);
+  assert.deepStrictEqual(m.get("S Edholm/L Ullenius").map((x) => x.resolved), [false, false]);
+  assert.deepStrictEqual(m.get("Henrik Preutz").map((x) => x.name), ["Henrik Preutz"]);
+  assert.strictEqual(m.get("Ehlén Johansson")[0].resolved, true);
+  assert.deepStrictEqual(["Henrik Preutz", "Anna Efverlund", "Jóna Berglind Stefánsdóttir"].sort(ZC.sortByLast), ["Anna Efverlund", "Henrik Preutz", "Jóna Berglind Stefánsdóttir"]);
+  console.log("designer: ok");
+}
