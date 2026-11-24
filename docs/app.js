@@ -1026,7 +1026,7 @@
     const act = kat.items.filter((o) => o.status === "active").length, m = kat.meta;
     const link = (patch) => `#/katalog?${new URLSearchParams(Object.fromEntries(Object.entries({ q, f: fk, sort: sk, cat, sub, col, des, pmin: p.get("pmin") || "", pmax: p.get("pmax") || "", ...patch }).filter(([, v]) => v)))}`;
     const sel = (id, label, opts, cur) => `<select class="inp" id="${id}" aria-label="${label}"><option value="">${label}</option>${opts.map(([v, n]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(v)}${n != null ? ` (${nf0.format(n)})` : ""}</option>`).join("")}</select>`;
-    view.innerHTML = `<div class="toolbar"><h2>Katalog <small>${nf0.format(act)} Artikel im Sortiment · Stand ${esc(rel(m.updated))}</small></h2></div>
+    view.innerHTML = `<div class="toolbar"><h2>Katalog <small>${nf0.format(act)} Artikel im Sortiment · Stand ${esc(rel(m.updated))}</small></h2><div class="toolbar__r"><a class="btn" href="#/katalogstat">Katalog-Statistik</a></div></div>
       <div class="pg-ctl"><input class="inp" id="k-q" type="search" placeholder="Name, Artikelnr., Kategorie, Farbe …" value="${esc(q)}">
         ${sel("k-cat", "alle Kategorien", tops, cat)}${cat && subs.length ? sel("k-sub", "alle Unterkategorien", subs, sub) : ""}${sel("k-col", "alle Farben", cols, col)}
         ${F?.designers.length ? sel("k-des", "alle Designer", F.designers.map((d) => [d, null]), des) : ""}
@@ -1304,6 +1304,73 @@
       <p style="margin:4px 0"><b>Ja:</b> ${yes.map(esc).join(", ") || "–"}</p><p class="muted" style="margin:4px 0"><b>Nein:</b> ${no.map(esc).join(", ") || "–"}</p>`;
   }
 
+  /* ---------- Katalog-Statistik: Designer, Preisbereiche, Kategorien, Farben ---------- */
+  const quantile = (sorted, q) => { if (!sorted.length) return null; const i = (sorted.length - 1) * q, lo = Math.floor(i), hi = Math.ceil(i); return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo); };
+  const IOS = /ikea of sweden/i;
+  // Preisbereich als kleine Grafik (log-Skala): Linie = min–max, Kasten = mittlere Hälfte, Punkt = Median
+  const priceRange = (r, lo = 0.5, hi = 6000, w = 150) => {
+    const x = (v) => 4 + ((Math.log(Math.max(v, lo)) - Math.log(lo)) / (Math.log(hi) - Math.log(lo))) * (w - 8);
+    return `<svg width="${w}" height="16" viewBox="0 0 ${w} 16" role="img" aria-label="Preis ${eur(r.min)} bis ${eur(r.max)}, Median ${eur(r.med)}"><line x1="${x(r.min)}" x2="${x(r.max)}" y1="8" y2="8" stroke="#9EA2A9" stroke-width="2"/>
+      <rect x="${x(r.q1)}" y="3" width="${Math.max(2, x(r.q3) - x(r.q1))}" height="10" fill="#0058A3" fill-opacity=".35"/><circle cx="${x(r.med)}" cy="8" r="3.5" fill="#0058A3"/></svg>`;
+  };
+  const stat = (arr) => { const s = arr.slice().sort((a, b) => a - b); return { n: s.length, min: s[0], q1: quantile(s, .25), med: quantile(s, .5), q3: quantile(s, .75), max: s[s.length - 1] }; };
+
+  async function renderKatalogStat() {
+    view.innerHTML = `<div class="toolbar"><h2>Katalog-Statistik</h2></div><div class="skeleton"></div>`;
+    const kat = await loadKatalog();
+    if (!kat.meta) { view.innerHTML = `<div class="empty"><h3>Noch keine Katalogdaten</h3></div>`; return; }
+    const F = await loadFacets();
+    const act = kat.items.filter((o) => o.status === "active"), total = act.length;
+    const desOf = (o) => F?.by.get(o.id) || "";
+    const withDes = act.filter((o) => desOf(o));
+    // --- Designer ---
+    const byDes = new Map();
+    for (const o of withDes) { const d = desOf(o), g = byDes.get(d) || []; g.push(o); byDes.set(d, g); }
+    const desRows = [...byDes.entries()].map(([d, list]) => {
+      const st = stat(list.map((o) => o.price)), cats = [...list.reduce((m, o) => m.set(o.top, (m.get(o.top) || 0) + 1), new Map())].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([c, n]) => `${c} (${n})`);
+      const rated = list.filter((o) => o.rcount >= 5);
+      return { d, n: list.length, ...st, cats: cats.join(", "), rating: rated.length ? rated.reduce((a, o) => a + o.rating, 0) / rated.length : null, ios: IOS.test(d) };
+    }).sort((a, b) => b.n - a.n);
+    const ios = desRows.filter((r) => r.ios), iosN = ios.reduce((a, r) => a + r.n, 0);
+    const named = desRows.filter((r) => !r.ios);
+    // IKEA of Sweden je Kategorie
+    const catMap = new Map();
+    for (const o of withDes) { const c = catMap.get(o.top) || { ios: 0, other: 0 }; (IOS.test(desOf(o)) ? (c.ios++) : (c.other++)); catMap.set(o.top, c); }
+    const catIos = [...catMap.entries()].map(([c, x]) => ({ c, ...x, share: x.ios / (x.ios + x.other) })).sort((a, b) => b.ios - a.ios);
+    // --- Preise je Kategorie ---
+    const byCat = new Map(); for (const o of act) { const g = byCat.get(o.top) || []; g.push(o); byCat.set(o.top, g); }
+    const catRows = [...byCat.entries()].map(([c, l]) => ({ c, ...stat(l.map((o) => o.price)), rating: (() => { const r = l.filter((o) => o.rcount >= 5); return r.length ? r.reduce((a, o) => a + o.rating, 0) / r.length : null; })() })).sort((a, b) => b.n - a.n);
+    // --- Preisverteilung ---
+    const edges = [0, 5, 10, 20, 50, 100, 200, 500, 1000, Infinity], lab = ["unter 5 €", "5–10 €", "10–20 €", "20–50 €", "50–100 €", "100–200 €", "200–500 €", "500–1.000 €", "ab 1.000 €"];
+    const hist = lab.map((l, i) => ({ l, v: act.filter((o) => o.price >= edges[i] && o.price < edges[i + 1]).length }));
+    // --- Farben ---
+    const colors = [...act.reduce((m, o) => { for (const c of (o.col || "").split(", ").filter(Boolean)) m.set(c, (m.get(c) || 0) + 1); return m; }, new Map())].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([l, v]) => ({ l, v }));
+    // --- Preisänderungen je Woche ---
+    const wk = (d) => { const t = new Date(d + "T00:00:00Z"); const day = (t.getUTCDay() + 6) % 7; t.setUTCDate(t.getUTCDate() - day); return t.toISOString().slice(0, 10); };
+    const wDown = new Map(), wUp = new Map();
+    for (const o of kat.items) for (let i = 1; i < o.ph.length; i++) { const w = wk(o.ph[i][0]); (o.ph[i][1] < o.ph[i - 1][1] ? wDown : wUp).set(w, ((o.ph[i][1] < o.ph[i - 1][1] ? wDown : wUp).get(w) || 0) + 1); }
+    const weeks = [...new Set([...wDown.keys(), ...wUp.keys()])].sort();
+    const rated = act.filter((o) => o.rcount >= 20);
+    const sets = act.filter((o) => o.type === "SPR").length, discounted = act.filter((o) => o.prev).length;
+    const cov = F ? `${nf0.format(F.n)} von ${nf0.format(total)} Artikeln mit abgerufenen Details` : "Details noch nicht abgerufen";
+    const dRow = (r) => `<tr><td><a href="#/katalog?des=${encodeURIComponent(r.d)}"><b>${esc(r.d)}</b></a>${r.ios ? ` <span class="badge badge--back">Marke</span>` : ""}</td><td class="n" data-v="${r.n}">${nf0.format(r.n)}</td><td data-v="${r.med}">${priceRange(r)}</td><td class="n" data-v="${r.min}">${esc(eur(r.min))}</td><td class="n" data-v="${r.med}">${esc(eur(r.med))}</td><td class="n" data-v="${r.max}">${esc(eur(r.max))}</td><td class="n" data-v="${r.rating ?? -1}">${r.rating ? nf2.format(r.rating) : "–"}</td><td class="muted" style="font-size:12.5px">${esc(r.cats)}</td></tr>`;
+    view.innerHTML = `<p style="margin:0 0 10px"><a href="#/katalog" class="linkbtn">← Katalog</a> · <a href="#/statistik" class="linkbtn">Fundgrube-Statistik</a></p><div class="toolbar"><h2>Katalog-Statistik <small>${nf0.format(total)} Artikel im Sortiment</small></h2></div>
+      <div class="kpis">${kpi(nf0.format(total), "Artikel im Sortiment")}${kpi(nf0.format(byCat.size), "Hauptkategorien")}${kpi(eur(median(act.map((o) => o.price))), "Median-Preis")}${kpi(`${nf0.format(sets)} (${pct(sets / total * 100)})`, "Sets und Kombinationen")}
+        ${kpi(`${nf0.format(discounted)} (${pct(discounted / total * 100)})`, "mit Vorher-Preis")}${kpi(nf0.format(act.filter((o) => o.last).length), "„Letzte Chance“")}${kpi(rated.length ? nf2.format(rated.reduce((a, o) => a + o.rating, 0) / rated.length) : "–", `Ø Bewertung (${nf0.format(rated.length)} Artikel mit ≥ 20)`)}</div>
+      <div class="charts">
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Designer: wer hat die meisten Artikel, wer designt in welchem Preisbereich?</h3><p>${esc(cov)} · Linie = günstigster bis teuerster, Kasten = mittlere Hälfte, Punkt = Median (log-Skala) · Spaltenkopf = sortieren · Name = Artikel anzeigen</p></div></header>
+          ${desRows.length ? `<div class="tblwrap"><table class="tbl" data-sorttable="d"><thead><tr><th data-k="0">Designer</th><th class="n" data-k="1">Artikel</th><th>Preisbereich</th><th class="n" data-k="3">ab</th><th class="n" data-k="4">Median</th><th class="n" data-k="5">bis</th><th class="n" data-k="6">Ø Bew.</th><th>Hauptkategorien</th></tr></thead><tbody>${desRows.slice(0, 60).map(dRow).join("")}</tbody></table></div>${desRows.length > 60 ? `<p class="muted" style="font-size:12.5px">${desRows.length - 60} weitere Designer, siehe Katalog-Filter „Designer“.</p>` : ""}` : `<p class="muted">Designer werden täglich nachgeladen (Actions → Details). Sobald Daten da sind, erscheint hier die Rangliste.</p>`}</section>
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Wo ist nur „IKEA of Sweden“ genannt?</h3><p>Artikel, bei denen kein einzelner Designer, sondern nur die Marke steht · ${nf0.format(iosN)} von ${nf0.format(withDes.length)} Artikeln mit Designer-Angabe (${withDes.length ? pct(iosN / withDes.length * 100) : "–"})</p></div></header>
+          ${catIos.length ? `<div class="tblwrap"><table class="tbl" data-sorttable="i"><thead><tr><th data-k="0">Kategorie</th><th class="n" data-k="1">nur „IKEA of Sweden“</th><th class="n" data-k="2">mit Einzel-Designer</th><th data-k="3">Anteil Marke</th></tr></thead><tbody>${catIos.map((r) => `<tr><td><a href="#/katalog?cat=${encodeURIComponent(r.c)}&des=${encodeURIComponent(ios[0]?.d || "IKEA of Sweden")}">${esc(r.c)}</a></td><td class="n" data-v="${r.ios}">${nf0.format(r.ios)}</td><td class="n" data-v="${r.other}">${nf0.format(r.other)}</td><td data-v="${r.share}"><span class="mbar"><i style="width:${r.share * 100}%"></i></span> ${nf0.format(Math.round(r.share * 100))} %</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">Noch keine Designer-Daten.</p>`}</section>
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Preisbereiche je Kategorie</h3><p>Linie = günstigster bis teuerster, Kasten = mittlere Hälfte, Punkt = Median · Kategorie antippen = Artikel</p></div></header>
+          <div class="tblwrap"><table class="tbl" data-sorttable="c"><thead><tr><th data-k="0">Kategorie</th><th class="n" data-k="1">Artikel</th><th>Preisbereich</th><th class="n" data-k="3">ab</th><th class="n" data-k="4">Median</th><th class="n" data-k="5">bis</th><th class="n" data-k="6">Ø Bew.</th></tr></thead><tbody>${catRows.map((r) => `<tr><td><a href="#/katalog?cat=${encodeURIComponent(r.c)}"><b>${esc(r.c)}</b></a></td><td class="n" data-v="${r.n}">${nf0.format(r.n)}</td><td data-v="${r.med}">${priceRange(r)}</td><td class="n" data-v="${r.min}">${esc(eur(r.min))}</td><td class="n" data-v="${r.med}">${esc(eur(r.med))}</td><td class="n" data-v="${r.max}">${esc(eur(r.max))}</td><td class="n" data-v="${r.rating ?? -1}">${r.rating ? nf2.format(r.rating) : "–"}</td></tr>`).join("")}</tbody></table></div></section>
+        <section class="chart"><header><div><h3>Preisverteilung</h3><p>Wie viele Artikel in welchem Preisbereich</p></div></header>${bars(hist, { cls: "y" })}</section>
+        <section class="chart"><header><div><h3>Häufigste Farben</h3></div></header>${bars(colors, { cls: "bl" })}</section>
+        <section class="chart" style="grid-column:1/-1"><header><div><h3>Preisänderungen je Woche</h3><p>Senkungen und Erhöhungen · wird mit jedem Tag aussagekräftiger</p></div></header>${weeks.length >= 2 ? `${columns([weeks.map((w) => wDown.get(w) || 0), weeks.map((w) => wUp.get(w) || 0)], weeks, ["#2E7D4F", "#B5452B"])}<div class="legend"><span><i style="background:#2E7D4F"></i>gesenkt</span><span><i style="background:#B5452B"></i>erhöht</span></div>` : "<p class='muted'>Erst ab der zweiten Woche mit Daten.</p>"}</section>
+      </div>`;
+    bindSortTables(view);
+  }
+
   /* ---------- Märkte: Übersicht und Unterseite je Markt ---------- */
   // Angebote nach Produkt bündeln (Artikelnummer; ohne Nummer nach Name+Beschreibung)
   function groupProducts(offers) {
@@ -1488,7 +1555,7 @@
     const k = (v, l) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`;
     view.innerHTML = `
       <div class="toolbar"><h2>Statistik</h2>
-        <div class="toolbar__r">
+        <div class="toolbar__r"><a class="btn" href="#/katalogstat">Katalog-Statistik</a>
           <div class="seg" role="group" aria-label="Datengrundlage"><button data-scope="aktiv" aria-pressed="${scope === "aktiv"}">Aktuell gelistet</button><button data-scope="alle" aria-pressed="${scope === "alle"}">Alle erfassten</button></div>
           <label class="sr" for="tage">Zeitraum Verlauf</label><select class="inp" id="tage" style="width:auto">${[14, 30, 90, 365].map((t) => `<option value="${t}" ${t === tage ? "selected" : ""}>${t} Tage</option>`).join("")}</select>
         </div></div>
@@ -1766,11 +1833,11 @@
     const h = location.hash.replace(/^#\/?/, "") || "aktuell";
     const [name, query] = h.split("?");
     if (name === "merkliste") { const rg = new URLSearchParams(query || "").get("regel"); location.replace(`#/aktuell?m=${rg !== null && savedSearches()[rg] ? savedSearches()[rg].r.id : "all"}`); return; }
-    const tab0 = name === "produkt" ? "statistik" : name === "markt" ? "maerkte" : name === "artikel" ? "katalog" : ["aktuell", "archiv", "maerkte", "katalog", "sortiment", "statistik", "daten"].includes(name) ? name : "aktuell";
+    const tab0 = name === "produkt" || name === "katalogstat" ? "statistik" : name === "markt" ? "maerkte" : name === "artikel" ? "katalog" : ["aktuell", "archiv", "maerkte", "katalog", "sortiment", "statistik", "daten"].includes(name) ? name : "aktuell";
     const tab = tab0 === "aktuell" && /(^|&)m=/.test(query || "") ? "gemerkt" : tab0;
     $$(".tabs a").forEach((a) => a.dataset.tab === tab ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current"));
     S.shown = 120;
-    const r = { aktuell: () => renderList("aktuell", query), gemerkt: () => renderList("aktuell", query), archiv: () => renderList("archiv", query), maerkte: () => (name === "markt" ? renderMarkt(query) : renderMaerkte()), katalog: () => (name === "artikel" ? renderArtikel(query) : renderKatalog(query)), sortiment: () => renderSortiment(query), statistik: () => (name === "produkt" ? renderProdukt(query) : renderStatistik(query)), daten: () => renderDaten(query) }[tab];
+    const r = { aktuell: () => renderList("aktuell", query), gemerkt: () => renderList("aktuell", query), archiv: () => renderList("archiv", query), maerkte: () => (name === "markt" ? renderMarkt(query) : renderMaerkte()), katalog: () => (name === "artikel" ? renderArtikel(query) : renderKatalog(query)), sortiment: () => renderSortiment(query), statistik: () => (name === "produkt" ? renderProdukt(query) : name === "katalogstat" ? renderKatalogStat() : renderStatistik(query)), daten: () => renderDaten(query) }[tab];
     Promise.resolve(r()).catch((e) => { console.error(e); view.innerHTML = `<div class="empty"><h3>Fehler beim Anzeigen</h3><p>${esc(e.message || e)}</p></div>`; });
   }
   window.addEventListener("hashchange", () => { if ($("#detail").open) $("#detail").close(); route(); });
