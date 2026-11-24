@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Zweite Chance für IKEA",
+  "short_name": "Zweite Chance",
+  "version": "0.1.0",
+  "description": "Zeigt auf IKEA-Produktseiten, wo es den Artikel gerade in der Fundgrube (Zweite Chance) gibt, und wie sich der Preis entwickelt hat.",
+  "icons": { "48": "icons/icon-192.png", "128": "icons/icon-192.png" },
+  "permissions": ["storage", "unlimitedStorage"],
+  "host_permissions": ["https://lepettre.github.io/*"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["https://www.ikea.com/de/de/p/*"], "js": ["content.js"], "run_at": "document_idle" }
+  ],
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "action": { "default_title": "Zweite Chance", "default_popup": "options.html" }
+}
