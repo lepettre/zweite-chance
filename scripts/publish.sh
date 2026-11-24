@@ -5,6 +5,8 @@ set -euo pipefail
 cd "${GITHUB_WORKSPACE:-$(pwd)}"
 rm -rf out/pub && mkdir -p out/pub
 cp docs/index.html docs/app.js docs/core.js docs/styles.css docs/bookmarklet.src.js out/pub/
+cp docs/manifest.webmanifest out/pub/
+cp -r docs/icons out/pub/icons
 cp -r site/d out/pub/d
 touch out/pub/.nojekyll
 cd out/pub
