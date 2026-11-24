@@ -1,0 +1,117 @@
+import json
+import os
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+
+FIX = Path(__file__).parent / "fixtures"
+
+
+def sample_items():
+    from katalog import model
+    page = json.loads((FIX / "plp_sample.json").read_text())["productListPage"]
+    return [x for x in (model.parse_item(i) for i in page["productWindow"]) if x]
+
+
+class TestModel(unittest.TestCase):
+    def test_parse(self):
+        items = {i["id"]: i for i in sample_items()}
+        self.assertEqual(len(items), 4)
+        sofa = items["s29490102"]
+        self.assertEqual(sofa["price"], 1110.0); self.assertEqual(sofa["no"], "29490102"); self.assertEqual(sofa["type"], "SPR")
+        self.assertTrue(sofa["slug"].endswith("s29490102"), sofa["slug"])
+        kivik = items["s19470227"]
+        self.assertEqual(kivik["prev"], 399.0); self.assertEqual(kivik["tag"], "NEW_LOWER_PRICE")
+        self.assertIn("90584658", items)
+
+    def test_merge_lifecycle_never_deletes(self):
+        from katalog import model
+        db, items = {}, sample_items()
+        st = model.merge(db, items, "2026-11-01", complete=True)
+        self.assertEqual(st["new"], 4); self.assertEqual(len(db), 4)
+        # Preis aendert sich
+        cheaper = [dict(i, price=i["price"] - 10) if i["id"] == "90584658" else i for i in items]
+        st = model.merge(db, cheaper, "2026-11-02", complete=True)
+        self.assertEqual(st["price_change"], 1)
+        self.assertEqual(db["90584658"]["ph"], [["2026-11-01", 549.0], ["2026-11-02", 539.0]])
+        # unvollstaendiger Lauf zaehlt nichts als fehlend
+        model.merge(db, [], "2026-11-03", complete=False)
+        self.assertTrue(all(o["status"] == "active" and o["missing"] == 0 for o in db.values()))
+        # drei vollstaendige Laeufe ohne Artikel -> gone, aber nichts wird geloescht
+        for d in ("2026-11-04", "2026-11-05", "2026-11-06"):
+            model.merge(db, [i for i in items if i["id"] != "30635533"], d, complete=True)
+        self.assertEqual(db["30635533"]["status"], "gone"); self.assertEqual(len(db), 4)
+        self.assertEqual(db["30635533"]["log"][-1], ["2026-11-06", "gone"])
+        # taucht wieder auf
+        st = model.merge(db, items, "2026-11-07", complete=True)
+        self.assertEqual(st["back"], 1); self.assertEqual(db["30635533"]["status"], "active")
+        self.assertEqual([x[1] for x in db["30635533"]["log"]], ["gone", "back"])
+
+    def test_last_chance_logged(self):
+        from katalog import model
+        db, items = {}, sample_items()
+        model.merge(db, items, "2026-11-01", True)
+        flagged = [dict(i, last=1) if i["id"] == "90584658" else i for i in items]
+        st = model.merge(db, flagged, "2026-11-02", True)
+        self.assertEqual(st["last_chance"], 1); self.assertEqual(db["90584658"]["log"], [["2026-11-02", "last"]])
+
+    def test_pack_roundtrip(self):
+        from katalog import model
+        db = {}
+        model.merge(db, sample_items(), "2026-11-01", True)
+        model.merge(db, [dict(i, price=i["price"] + 5) for i in sample_items()], "2026-11-02", True)
+        back = model.unpack(model.pack(db))
+        self.assertEqual(back, db)
+
+    def test_sitemap_parser(self):
+        from katalog import api
+        text = ('<url><loc>https://www.ikea.com/de/de/p/knivshult-schublade-hoch-dunkelgrau-70600664/</loc></url>'
+                '<url><loc>https://www.ikea.com/de/de/p/jaettebo-sofa-s29490102/</loc></url><url><loc>https://x/y</loc></url>')
+        self.assertEqual(api.parse_sitemap(text), {"70600664": "knivshult-schublade-hoch-dunkelgrau-70600664", "s29490102": "jaettebo-sofa-s29490102"})
+
+
+class TestRun(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        os.environ["TRACKER_ROOT"] = str(self.tmp); os.environ["KATALOG_DATA"] = str(self.tmp / "k"); os.environ["ZC_PASSWORD"] = "pw"
+        import importlib
+        import katalog.store, katalog.run
+        importlib.reload(katalog.store); importlib.reload(katalog.run)
+        self.run, self.store, self.api = katalog.run, katalog.store, katalog.api
+        self.api.pause = lambda: None
+        self.api.category_ids = lambda: ["1", "2"]
+        self.pages = {"1": json.loads((FIX / "plp_sample.json").read_text())["productListPage"], "2": {"productWindow": []}}
+        self.api.fetch_category = lambda k: self.pages[k]
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+        os.environ.pop("KATALOG_DATA", None)
+
+    def test_run_stores_encrypted_and_never_shrinks(self):
+        self.assertEqual(self.run.main([]), 0)
+        raw = (self.tmp / "k" / "items.bin").read_bytes()
+        self.assertTrue(raw.startswith(b"ZC1")); self.assertNotIn(b"KIVIK", raw)
+        db = self.store.load_db(); self.assertEqual(len(db), 4)
+        meta = self.store.read_bin("meta.bin"); self.assertEqual(meta["last_run"]["total"], 4)
+        # Kategorie faellt aus -> unvollstaendig, nichts geht verloren
+        self.api.fetch_category = lambda k: (_ for _ in ()).throw(RuntimeError("timeout"))
+        self.run.main([])
+        self.assertEqual(len(self.store.load_db()), 4)
+        self.assertEqual(self.store.read_bin("meta.bin")["last_run"]["complete"], 0)
+
+    def test_gaps_and_fill(self):
+        self.run.main([])
+        db = self.store.load_db()
+        in_map = {"90584658": "x-90584658", "70600664": "knivshult-schublade-hoch-dunkelgrau-70600664", "s11112222": "set-s11112222"}
+        g = self.run.gaps(db, in_map)
+        self.assertEqual(g["only_sitemap"], 2); self.assertGreaterEqual(g["only_list"], 3)
+        self.api.fetch_product_json = lambda a: {"name": "KNIVSHULT", "typeName": "Schublade hoch", "priceNumeral": 89, "mainImage": {"url": "https://www.ikea.com/de/de/images/products/k.jpg"}}
+        n = self.run.fill(db, g["only_sitemap_ids"], in_map, "2026-11-02", 5)
+        self.assertEqual(n, 2)
+        self.assertEqual(db["70600664"]["price"], 89); self.assertEqual(db["70600664"]["status"], "active")
+        self.assertEqual(db["s11112222"]["status"], "stub")
+
+
+if __name__ == "__main__":
+    unittest.main()
