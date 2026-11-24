@@ -957,6 +957,9 @@
     S.kat.first = S.kat.items.reduce((m, o) => (o.first_seen < m ? o.first_seen : m), "9999");
     const firstN = S.kat.items.filter((o) => o.first_seen === S.kat.first).length;
     for (const o of S.kat.items) o.base = firstN >= 1000 && o.first_seen === S.kat.first;      // Erst-Import: Einstelldatum unbekannt
+    const fam = new Map(), vr = new Map();                       // Familie = gleicher Name; Variante = gleicher Name + Produkttyp (unterscheidet sich in Farbe/Maß)
+    for (const o of S.kat.items) { o.fk = o.name; o.vk = `${o.name}|${o.kind}`; (fam.get(o.fk) || fam.set(o.fk, []).get(o.fk)).push(o); (vr.get(o.vk) || vr.set(o.vk, []).get(o.vk)).push(o); }
+    S.kat.fam = fam; S.kat.vr = vr;
     return S.kat;
   }
   const fundCount = () => {                                   // Artikelnummer -> aktive Fundgrube-Angebote
@@ -1084,6 +1087,24 @@
       <div class="muted" style="font-size:12.5px">${o.chg ? `Preis seit ${esc(fmtD(o.chg.date))}` : o.base ? "Preis unverändert seit Erfassungsbeginn" : `seit ${esc(fmtD(o.first_seen))} gelistet`}${fund ? ` · <b>${nf0.format(fund)}× Fundgrube</b>` : ""}${sp ? ` · in ${sp.n}/${sp.of} Märkten` : ""}</div></a></li>`;
   }
   document.addEventListener("mouseover", (e) => { const c = e.target.closest?.(".kimg"); const a = c?.querySelector(".kimg__alt"); if (a && !a.src && a.dataset.src) a.src = a.dataset.src; });
+  const K_VIEWS = { karten: "Einzelartikel", varianten: "Varianten gruppiert", familien: "Produktfamilien", tabelle: "Tabelle" };
+  const rangeTxt = (a) => { const v = a.map((o) => o.price); const lo = Math.min(...v), hi = Math.max(...v); return lo === hi ? eur(lo) : `${eur(lo)} – ${eur(hi)}`; };
+  const uniq = (a) => [...new Set(a.filter(Boolean))];
+  function groupCard(g, key, mode) {      // g = Artikel einer Variantengruppe bzw. Familie
+    const a = g[0], act = g.filter((o) => o.status === "active").length;
+    const cols = uniq(g.flatMap((o) => (o.col || "").split(", "))), kinds = uniq(g.map((o) => o.kind)), sizes = uniq(g.map((o) => o.measure));
+    const sub = mode === "familien" ? `${kinds.length} ${kinds.length === 1 ? "Produkttyp" : "Produkttypen"}: ${kinds.slice(0, 3).join(", ")}${kinds.length > 3 ? " …" : ""}` : [a.kind, cols.length > 1 ? `${cols.length} Farben` : cols[0], sizes.length > 1 ? `${sizes.length} Maße` : sizes[0]].filter(Boolean).join(", ");
+    const first = g.reduce((m, o) => (o.base ? m : o.first_seen < m ? o.first_seen : m), "9999");
+    return `<li class="card pcard"><a class="pcard__a" href="#/katalog?${mode === "familien" ? "fam" : "var"}=${encodeURIComponent(key)}">
+      <div class="kimg">${a.img ? `<img class="offer__img" src="${K_IMG}${esc(a.img)}?f=xs" alt="" loading="lazy" decoding="async">` : `<div class="offer__img offer__img--none">▢</div>`}</div>
+      <div class="offer__t" style="font-size:14.5px">${esc(a.name)} <span class="badge">${nf0.format(g.length)} ${g.length === 1 ? "Artikel" : "Artikel"}</span></div>
+      <div class="offer__d" style="white-space:normal;font-size:13px">${esc(sub)}</div>
+      <div class="price" style="margin-top:auto">${esc(rangeTxt(g))}</div>
+      <div class="muted" style="font-size:12.5px">${nf0.format(act)} im Sortiment${first < "9999" ? ` · ältester seit ${esc(fmtD(first))}` : ""}</div></a></li>`;
+  }
+  function kTable(list) {
+    return `<div class="tblwrap"><table class="tbl" data-sorttable="s"><thead><tr><th data-k="0">Artikel</th><th data-k="1">Art.-Nr.</th><th data-k="2">Kategorie</th><th data-k="3">Farbe</th><th class="n" data-k="4">Preis</th><th class="n" data-k="5">★</th><th data-k="6">seit</th></tr></thead><tbody>${list.map((o) => `<tr><td><a href="#/artikel?id=${esc(o.id)}"><b>${esc(o.name)}</b></a> <span class="muted">${esc([o.kind, o.measure].filter(Boolean).join(", "))}</span>${o.status === "gone" ? ` <span class="badge badge--gone">weg</span>` : ""}</td><td class="mono">${esc(ZC.fmtArticle(o.no))}</td><td class="muted">${esc(o.cat.split(" › ").slice(0, 2).join(" › "))}</td><td>${esc(o.col)}</td><td class="n" data-v="${o.price}">${esc(eur(o.price))}</td><td class="n" data-v="${o.rating || 0}">${o.rcount ? nf2.format(o.rating) : ""}</td><td data-v="${o.base ? 0 : +new Date(o.first_seen)}">${o.base ? "–" : esc(fmtD(o.first_seen))}</td></tr>`).join("")}</tbody></table></div>`;
+  }
   async function renderKatalog(query) {
     view.innerHTML = `<div class="toolbar"><h2>Katalog</h2></div><div class="skeleton"></div>`;
     const kat = await loadKatalog();
@@ -1094,27 +1115,43 @@
     const st = Object.fromEntries(FILTERS.filter((d) => p.get(d.k) && defAvailable(d, fc)).map((d) => [d.k, p.get(d.k)]));
     const terms = ZC.fold(q).split(/\s+/).filter(Boolean);
     const cnt = Object.fromEntries(Object.entries(K_FILTERS).map(([k, [, f]]) => [k, kat.items.filter((o) => f(o, ctx)).length]));
-    const base = kat.items.filter((o) => K_FILTERS[fk][1](o, ctx) && passes(o, st, fc)
+    const vw = K_VIEWS[p.get("v")] ? p.get("v") : "karten", famQ = p.get("fam") || "", varQ = p.get("var") || "";
+    const base0 = kat.items.filter((o) => K_FILTERS[fk][1](o, ctx) && passes(o, st, fc)
       && (!terms.length || terms.every((t) => (o._h || (o._h = ZC.fold(`${o.name} ${o.kind} ${o.measure} ${o.no} ${ZC.fmtArticle(o.no)} ${o.cat} ${o.col}`))).includes(t))));
+    const base = base0.filter((o) => (!famQ || o.fk === famQ) && (!varQ || o.vk === varQ));
     base.sort(K_SORT[sk][1]);
+    const groups = vw === "varianten" || vw === "familien" ? [...base.reduce((m, o) => { const k = vw === "familien" ? o.fk : o.vk; (m.get(k) || m.set(k, []).get(k)).push(o); return m; }, new Map())] : [];
+    const items = vw === "karten" || vw === "tabelle" ? base : groups;
     let shown = 120;
     const act = kat.items.filter((o) => o.status === "active").length, m = kat.meta;
-    const link = (patch) => `#/katalog?${new URLSearchParams(Object.fromEntries(Object.entries({ q, f: fk, sort: sk, ...st, ...patch }).filter(([, v]) => v)))}`;
+    const link = (patch) => `#/katalog?${new URLSearchParams(Object.fromEntries(Object.entries({ q, f: fk, sort: sk, ...st, v: vw === "karten" ? "" : vw, fam: famQ, var: varQ, ...patch }).filter(([, v]) => v)))}`;
     view.innerHTML = `<div class="toolbar"><h2>Katalog <small>${nf0.format(act)} Artikel im Sortiment · Stand ${esc(rel(m.updated))}</small></h2><div class="toolbar__r"><a class="btn" href="#/katalogstat">Katalog-Statistik</a></div></div>
       <div class="pg-ctl" id="k-bar"><input class="inp" id="k-q" type="search" placeholder="Name, Artikelnr., Kategorie, Farbe …" value="${esc(q)}">
         ${filterBarHtml(fc, st, "k-")}
+        <select class="inp" id="k-view" aria-label="Ansicht">${Object.entries(K_VIEWS).map(([k, l]) => `<option value="${k}" ${k === vw ? "selected" : ""}>Ansicht: ${l}</option>`).join("")}</select>
         <select class="inp" id="k-sort" aria-label="Sortierung">${Object.entries(K_SORT).map(([k, [l]]) => `<option value="${k}" ${k === sk ? "selected" : ""}>${l}</option>`).join("")}</select></div>
       <nav class="chips2">${Object.entries(K_FILTERS).filter(([k]) => k !== "luecken" || cnt[k]).map(([k, [l]]) => `<a class="chip2 ${k === fk ? "chip2--on" : ""}" href="${link({ f: k })}">${l} <small>${nf0.format(cnt[k])}</small></a>`).join("")}${Object.keys(st).length ? ` <a class="chip2" href="${link(Object.fromEntries([...Object.keys(st), "q"].map((k) => [k, ""])))}">Filter zurücksetzen ✕</a>` : ""}</nav>
-      <p class="muted" id="k-count" style="margin:0 0 10px"></p><ul class="grid" id="k-list"></ul><div class="more" id="k-more"></div>`;
+      ${famQ || varQ ? `<p style="margin:0 0 8px"><a class="chip2 chip2--on" href="${link({ fam: "", var: "" })}">${famQ ? "Familie" : "Variante"}: ${esc(famQ || varQ.replace("|", " · "))} ✕</a></p>` : ""}
+      <p class="muted" id="k-count" style="margin:0 0 10px"></p><${vw === "tabelle" ? "div" : "ul"} class="${vw === "tabelle" ? "" : "grid"}" id="k-list"></${vw === "tabelle" ? "div" : "ul"}><div class="more" id="k-more"></div>`;
     const draw = () => {
-      $("#k-count").textContent = `${nf0.format(base.length)} Treffer${F ? "" : " (Designer-/Material-Filter folgen, sobald die Details geladen sind)"}${R ? "" : " · Markt-Filter erscheinen nach der ersten Sortiments-Messung"}`;
-      $("#k-list").innerHTML = base.slice(0, shown).map((o) => kCard(o, fc.fund.get(o.no) || 0, R)).join("") || `<li class="muted">Nichts gefunden.</li>`;
-      $("#k-more").innerHTML = base.length > shown ? `<button class="btn">${nf0.format(Math.min(120, base.length - shown))} weitere (${nf0.format(base.length - shown)} übrig)</button>` : "";
+      $("#k-count").textContent = `${nf0.format(items.length)} ${vw === "familien" ? "Produktfamilien" : vw === "varianten" ? "Variantengruppen" : "Treffer"}${vw === "karten" || vw === "tabelle" ? "" : ` (${nf0.format(base.length)} Artikel)`}${F ? "" : " (Designer-/Material-Filter folgen, sobald die Details geladen sind)"}${R ? "" : " · Markt-Filter erscheinen nach der ersten Sortiments-Messung"}`;
+      const part = items.slice(0, shown);
+      $("#k-list").innerHTML = !items.length ? `<li class="muted">Nichts gefunden.</li>` : vw === "tabelle" ? kTable(part) : vw === "karten" ? part.map((o) => kCard(o, fc.fund.get(o.no) || 0, R)).join("") : part.map(([k, g]) => groupCard(g, k, vw)).join("");
+      if (vw === "tabelle") bindSortTables($("#k-list"));
+      $("#k-more").innerHTML = items.length > shown ? `<button class="btn">${nf0.format(Math.min(120, items.length - shown))} weitere (${nf0.format(items.length - shown)} übrig)</button>` : "";
       $("#k-more button")?.addEventListener("click", () => { shown += 120; draw(); });
     };
-    const go = (patch = {}) => { const x = readFilterEls($("#k-bar")); location.hash = link({ ...Object.fromEntries(FILTERS.map((d) => [d.k, ""])), ...x, q: $("#k-q").value.trim(), sort: $("#k-sort").value, ...patch }); };
+    const go = (patch = {}) => { const x = readFilterEls($("#k-bar")); location.hash = link({ ...Object.fromEntries(FILTERS.map((d) => [d.k, ""])), ...x, q: $("#k-q").value.trim(), sort: $("#k-sort").value, v: $("#k-view").value === "karten" ? "" : $("#k-view").value, ...patch }); };
     $("#k-bar").addEventListener("change", (e) => go(e.target.dataset.fk === "cat" ? { sub: "" } : {}));
     draw();
+  }
+  function variantSection(kat, o) {
+    const vs = kat.vr.get(o.vk) || [], fam = kat.fam.get(o.fk) || [], other = uniq(fam.filter((x) => x.vk !== o.vk).map((x) => x.kind));
+    if (vs.length < 2 && !other.length) return "";
+    const rows = vs.slice().sort((a, b) => (a.col || "").localeCompare(b.col || "", "de") || a.price - b.price).map((x) => `<tr ${x.id === o.id ? 'style="font-weight:600"' : ""}><td><a href="#/artikel?id=${esc(x.id)}">${x.img ? `<img class="thumb" src="${K_IMG}${esc(x.img)}?f=xxs" alt="" loading="lazy">` : ""}${esc(x.col || "–")}</a></td><td>${esc(x.measure)}</td><td class="n" data-v="${x.price}">${esc(eur(x.price))}</td><td data-v="${x.base ? 0 : +new Date(x.first_seen)}">${x.base ? "<span class='muted'>seit Erfassungsbeginn</span>" : esc(fmtD(x.first_seen))}</td><td>${x.status === "active" ? "im Sortiment" : `weg ${esc(fmtD(x.gone_at || x.last_seen))}`}</td></tr>`).join("");
+    return `<section class="chart" style="grid-column:1/-1"><header><div><h3>Varianten und Familie</h3><p>${nf0.format(vs.length)} Varianten dieses Artikels (Farbe/Maß) · ${nf0.format(fam.length)} Artikel in der Familie „${esc(o.name)}“</p></div><a class="linkbtn" href="#/katalog?v=familien&fam=${encodeURIComponent(o.fk)}">ganze Familie ›</a></header>
+      ${vs.length > 1 ? `<div class="tblwrap"><table class="tbl" data-sorttable="s"><thead><tr><th data-k="0">Farbe</th><th data-k="1">Maß</th><th class="n" data-k="2">Preis</th><th data-k="3">erfasst seit</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}
+      ${other.length ? `<p class="muted" style="margin:8px 0 0">Weitere Produkttypen der Familie: ${other.map((k) => `<a href="#/katalog?fam=${encodeURIComponent(o.fk)}&q=${encodeURIComponent(k)}">${esc(k)}</a>`).join(", ")}</p>` : ""}</section>`;
   }
   async function renderArtikel(query) {
     const id = new URLSearchParams(query || "").get("id") || "";
@@ -1149,6 +1186,7 @@
         <section class="chart" style="grid-column:1/-1"><header><div><h3>Preisverlauf</h3><p>${o.base ? "Jede Änderung seit Erfassungsbeginn" : `Jede Änderung seit ${esc(fmtD(o.first_seen))}`}${o.vto ? ` · aktueller Preis gültig bis ${esc(fmtD(o.vto))}` : ""}</p></div></header>${o.ph.length > 1 ? lineChart(pts, { fmt: eur }) : `<p class="muted">Seit ${o.base ? "Beginn der Erfassung" : `der Erfassung (${esc(fmtD(o.first_seen))})`} hat sich der Preis nicht geändert.</p>`}</section>
         <section class="chart"><header><div><h3>Verlauf</h3></div></header><ul class="timeline">
           ${[...o.ph.slice(1).map(([t, v], i) => ({ t, text: `Preis ${v < o.ph[i][1] ? "gesenkt" : "erhöht"}: ${eur(o.ph[i][1])} → ${eur(v)}` })), ...o.log.map(([t, k]) => ({ t, text: LOG[k] || k })), { t: o.first_seen, text: o.base ? "Bei Erfassungsbeginn schon im Sortiment" : "Erstmals erfasst", hide: o.base }].sort((a, b) => b.t.localeCompare(a.t)).map((e) => `<li>${e.hide ? "" : `<b>${esc(fmtD(e.t))}</b> · `}${esc(e.text)}</li>`).join("")}</ul></section>
+        ${variantSection(kat, o)}
         <section class="chart" id="art-sortiment" style="grid-column:1/-1"><p class="muted">Sortiment je Markt wird geladen …</p></section>
         ${fund.length ? `<section class="chart"><header><div><h3>In der Fundgrube</h3><p>${nf0.format(fundAct.length)} jetzt · Zeile antippen = Details</p></div></header>${offerTable(fund.slice(0, 30))}</section>` : ""}
       </div>`;
