@@ -21,6 +21,7 @@ if [ "$age" -lt 561600 ] && [ -z "${FORCE_BACKUP:-}" ]; then
 fi
 mkdir -p "$DIR/d"
 cp -f site/d/* "$DIR/d/"
+if [ -d site/k ]; then mkdir -p "$DIR/k"; cp -f site/k/* "$DIR/k/"; fi
 cd "$DIR"
 git config user.name "bot"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

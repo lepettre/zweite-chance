@@ -8,6 +8,7 @@ cp docs/index.html docs/app.js docs/core.js docs/styles.css docs/bookmarklet.src
 cp docs/manifest.webmanifest out/pub/
 cp -r docs/icons out/pub/icons
 cp -r site/d out/pub/d
+[ -d site/k ] && cp -r site/k out/pub/k   # Katalog-Daten (eigener Workflow) nie beim Veroeffentlichen verlieren
 touch out/pub/.nojekyll
 cd out/pub
 git init -q -b gh-pages
