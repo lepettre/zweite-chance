@@ -1,0 +1,53 @@
+name: Sortiment
+
+on:
+  schedule:
+    - cron: "30 0 * * 6"        # wöchentlich (Samstag nachts): Sortiment aller 55 Märkte neu messen
+  workflow_dispatch:
+    inputs:
+      stores:
+        description: "Nur so viele Märkte (die am längsten nicht gemessenen zuerst), 0 = alle"
+        default: "0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: katalog
+  cancel-in-progress: false
+
+jobs:
+  sortiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 170
+    env:
+      ZC_PASSWORD: ${{ secrets.ZC_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+      STORES: ${{ inputs.stores }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Passwort vorhanden?
+        run: '[ -n "$ZC_PASSWORD" ] || { echo "::error::Secret ZC_PASSWORD fehlt."; exit 1; }'
+      - name: Tests
+        run: python -m unittest tests.test_katalog -q
+      - name: Letzten Stand holen
+        run: bash scripts/fetch_site.sh
+      - name: Sortiment messen
+        id: run
+        run: |
+          set +e; python -m katalog.sortiment --stores "${STORES:-0}"; rc=$?; set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then exit "$rc"; fi
+      - name: Veröffentlichen
+        if: steps.run.outputs.rc == '0'
+        run: bash scripts/publish.sh k range.bin
+      - name: Fehlschlag melden (gesperrt)
+        if: steps.run.outputs.rc == '2'
+        run: |
+          echo "::error::IKEA hat den Abruf gesperrt (HTTP 403/429)."
+          exit 1

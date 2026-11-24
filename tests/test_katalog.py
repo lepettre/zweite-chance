@@ -115,3 +115,60 @@ class TestRun(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSortiment(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        os.environ["TRACKER_ROOT"] = str(self.tmp); os.environ["KATALOG_DATA"] = str(self.tmp / "k"); os.environ["ZC_PASSWORD"] = "pw"
+        import importlib
+        import katalog.store, katalog.sortiment, katalog.run
+        importlib.reload(katalog.store); importlib.reload(katalog.sortiment)
+        self.s, self.store, self.api = katalog.sortiment, katalog.store, katalog.api
+        self.api.pause = lambda: None
+        from katalog import model
+        db = {}
+        model.merge(db, sample_items(), "2026-11-01", True)
+        self.store.save_db(db)
+        self.api.stores = lambda: [{"id": "066", "name": "Augsburg", "lat": 48.4, "lng": 10.8}, {"id": "324", "name": "Berlin", "lat": 52.5, "lng": 13.5}]
+        self.in_range = {"066": {"90584658", "29490102"}, "324": {"90584658", "30635533", "19470227"}}
+
+        def avail(store_id, nos):
+            out = []
+            for n in nos:
+                typ = "SPR" if n in ("29490102", "19470227") else "ART"
+                out.append({"itemKey": {"itemNo": n, "itemType": typ}, "buyingOption": {"cashCarry": {"range": {"inRange": n in self.in_range[store_id]},
+                            "availability": {"quantity": 3 if n == "90584658" else 0}}}})
+            return out
+        self.api.availabilities = avail
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp); os.environ.pop("KATALOG_DATA", None)
+
+    def test_bits_roundtrip(self):
+        flags = [True, False, True, True, False, False, False, False, True]
+        self.assertEqual(self.s.from_bits(self.s.to_bits(flags), len(flags)), flags)
+
+    def test_sweep_and_append_only_ids(self):
+        self.assertEqual(self.s.main([]), 0)
+        d = self.store.read_bin("range.bin")
+        ids = d["ids"]; self.assertEqual(len(ids), 4)
+        r066 = dict(zip(ids, self.s.from_bits(d["range"]["066"], len(ids))))
+        self.assertEqual({k for k, v in r066.items() if v}, {"90584658", "s29490102"})
+        stock = dict(zip(ids, self.s.from_bits(d["stock"]["324"], len(ids))))
+        self.assertTrue(stock["90584658"]); self.assertFalse(stock["30635533"])
+        # neuer Artikel: Liste waechst nur am Ende, bestehende Positionen bleiben
+        from katalog import model
+        db = self.store.load_db()
+        model.merge(db, [dict(sample_items()[0], id="11111111", no="11111111", type="ART")], "2026-11-02", False)
+        self.store.save_db(db)
+        self.s.main(["--stores", "1"])
+        ids2 = self.store.read_bin("range.bin")["ids"]
+        self.assertEqual(ids2[:4], ids); self.assertEqual(len(ids2), 5)
+
+    def test_oldest_measurement_first(self):
+        self.s.main(["--stores", "1"])
+        d = self.store.read_bin("range.bin")
+        self.assertEqual(sum(1 for s in d["stores"] if s.get("day")), 1)
+        self.s.main(["--stores", "1"])
+        self.assertEqual(sum(1 for s in self.store.read_bin("range.bin")["stores"] if s.get("day")), 2, "zweiter Lauf nimmt den anderen Markt")
