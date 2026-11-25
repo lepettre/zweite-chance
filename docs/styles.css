@@ -219,3 +219,7 @@ body{padding-top:env(safe-area-inset-top,0px)}
 input.inp{height:36px;border:0;border-bottom:1px solid var(--ink);padding:0 2px;width:100%}
 .h2{display:flex;justify-content:space-between;align-items:baseline;gap:10px;border-top:1px solid var(--ink);padding-top:10px;margin-bottom:4px}
 .alts a img{width:100%;height:100%;object-fit:contain}
+.loc{font-size:13px;color:var(--ink);margin-top:1px}
+.loc b{color:var(--blue)}
+.only-m{display:none}
+@media(max-width:640px){.only-m{display:inline}}
