@@ -26,7 +26,7 @@ concurrency:
 jobs:
   katalog:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       ZC_PASSWORD: ${{ secrets.ZC_PASSWORD }}
       GH_TOKEN: ${{ github.token }}
@@ -51,7 +51,7 @@ jobs:
         run: |
           ARGS=""
           [ "${LIMIT:-0}" != "0" ] && [ -n "${LIMIT}" ] && ARGS="$ARGS --limit $LIMIT"
-          F="${FILL:-0}"; { [ -z "$F" ] || [ "$F" = "0" ]; } && F=800        # täglich: Lücken aus der gespeicherten Liste nachladen
+          F="${FILL:-0}"; { [ -z "$F" ] || [ "$F" = "0" ]; } && F=3000        # täglich: Lücken aus der gespeicherten Liste nachladen
           if [ "$SITEMAP" = "true" ] || [ "$(date -u +%u)" = "7" ]; then ARGS="$ARGS --sitemap"; fi   # Sonntags: Sitemap neu einlesen
           ARGS="$ARGS --fill $F"
           echo "Argumente:$ARGS"

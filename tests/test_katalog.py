@@ -25,6 +25,14 @@ class TestModel(unittest.TestCase):
         self.assertEqual(kivik["prev"], 399.0); self.assertEqual(kivik["tag"], "NEW_LOWER_PRICE")
         self.assertIn("90584658", items)
 
+    def test_breadcrumb_and_facets_fill_gaps(self):
+        from katalog import details
+        html = '<script type="application/ld+json">{"@type":"BreadcrumbList","itemListElement":[{"position":1,"name":"Produkte"},{"position":2,"name":"Beleuchtung"},{"position":3,"name":"Arbeitsleuchten"}]}</script>'
+        r = details.parse_page(html)
+        self.assertEqual(r["cat"], "Beleuchtung › Arbeitsleuchten")
+        f = details.facets({"1": {**r, "color": "grau"}, "2": {**r, "color": "weiß"}}, {"1": {"cat": "", "col": ""}, "2": {"cat": "X", "col": "weiß"}})
+        self.assertEqual(f["cat"], {"1": "Beleuchtung › Arbeitsleuchten"}); self.assertEqual(f["col"], {"1": "grau"})
+
     def test_parse_structure_and_variants(self):
         from katalog import model
         it = {"itemNo": "12345678", "itemType": "ART", "name": "STOCKHOLM 2025", "typeName": "Vase", "salesPrice": {"numeral": 19.99},

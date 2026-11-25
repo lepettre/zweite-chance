@@ -18,7 +18,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from . import api, model, store
 
-FIELDS = ["designer", "desc", "material", "color", "w", "h", "d", "imgs", "day", "ok"]
+FIELDS = ["designer", "desc", "material", "color", "w", "h", "d", "imgs", "cat", "day", "ok"]
 
 
 def parse_page(html: str) -> dict:
@@ -29,6 +29,9 @@ def parse_page(html: str) -> dict:
             d = json.loads(m.group(1))
         except ValueError:
             continue
+        if isinstance(d, dict) and d.get("@type") == "BreadcrumbList":      # Kategoriepfad (fehlt bei nachgeholten Artikeln)
+            names = [str(x.get("name") or "") for x in sorted(d.get("itemListElement") or [], key=lambda x: x.get("position", 0))]
+            out["cat"] = " › ".join(n for n in names[1:] if n)
         if isinstance(d, dict) and d.get("@type") == "Product":
             out["desc"] = re.sub(r"\s+", " ", str(d.get("description") or "")).strip()
             out["material"] = str(d.get("material") or "")
@@ -74,7 +77,7 @@ def unpack(d: dict | None) -> dict:
     return {row[0]: {f: table[row[i + 1]] for i, f in enumerate(names[1:])} for row in d["r"]}
 
 
-def facets(rows: dict) -> dict:
+def facets(rows: dict, db: dict | None = None) -> dict:
     by: dict[str, list[str]] = {}
     for k, r in sorted(rows.items()):
         if r.get("designer"):
@@ -85,12 +88,18 @@ def facets(rows: dict) -> dict:
         if m:
             mat.setdefault(m[:1].upper() + m[1:], []).append(k)
     mat = dict(sorted(mat.items(), key=lambda kv: -len(kv[1]))[:60])         # nur die haeufigsten Materialien
-    return {"designer": by, "material": mat, "n": len(rows)}
+    # Kategorie und Farbe fuer Artikel, deren Listeneintrag sie nicht hat (nachgeholte Luecken)
+    cat = {k: r["cat"] for k, r in rows.items() if r.get("cat") and db is not None and k in db and not db[k].get("cat")}
+    col = {k: r["color"] for k, r in rows.items() if r.get("color") and db is not None and k in db and not db[k].get("col")}
+    return {"designer": by, "material": mat, "cat": cat, "col": col, "n": len(rows)}
 
 
 def pick(db: dict, have: dict, limit: int, max_age_days: int, today: str) -> list[str]:
     """Erst Artikel ohne Details (neueste zuerst), dann die am laengsten nicht aufgefrischten."""
     todo = sorted((i for i, o in db.items() if o["status"] == "active" and o.get("slug") and i not in have), key=lambda i: db[i]["first_seen"], reverse=True)
+    # danach: Artikel ohne Kategorie, deren Details noch keinen Kategoriepfad haben
+    seen = set(todo)
+    todo += [i for i, o in db.items() if o["status"] == "active" and o.get("slug") and not o.get("cat") and i in have and not have[i].get("cat") and i not in seen]
     if len(todo) < limit:
         cutoff = (date.fromisoformat(today) - timedelta(days=max_age_days)).isoformat()
         old = sorted((i for i, r in have.items() if i in db and r.get("day", "") < cutoff), key=lambda i: have[i].get("day", ""))
@@ -142,7 +151,7 @@ def main(argv=None) -> int:
     if blocked.is_set() and not n_ok[0]:
         return 2
     store.write_bin("details.bin", pack(have))
-    store.write_bin("facets.bin", facets(have))          # klein: Designer -> Artikel (fuer Filter, ohne die langen Texte zu laden)
+    store.write_bin("facets.bin", facets(have, db))          # klein: Designer -> Artikel (fuer Filter, ohne die langen Texte zu laden)
     print(f"[details] fertig: {n_ok[0]} geholt, {n_fail[0]} ohne Ergebnis, gesamt {len(have)}, {round(time.time() - t0)} s")
     return 0
 
