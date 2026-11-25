@@ -7,6 +7,8 @@ Schreiben geht OHNE Passwort (oeffentlicher Schluessel), lesen nur MIT Passwort:
 
   python -m tracker.docsec keys                 # einmalig (GitHub-Lauf): Schluesselpaar anlegen, falls keins da ist
   python -m tracker.docsec seal handbuch/X.md   # lokal: Klartext verschluesseln -> handbuch/X.md.enc, Klartext loeschen
+  Ergaenzen ohne Passwort: neue Datei handbuch/Changelog+2.16.md (nur der neue Eintrag) verschluesseln;
+  beim Veroeffentlichen steht sie vor dem bisherigen Text (neueste Ergaenzung zuerst).
   python -m tracker.docsec open handbuch/X.md.enc  # mit ZC_PASSWORD: Klartext ausgeben (zum Bearbeiten)
   python -m tracker.docsec publish OUT          # mit ZC_PASSWORD: alle Texte als OUT (wie die anderen Daten verschluesselt)
 """
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -80,7 +83,16 @@ def main(argv=None) -> int:
         return 0
     if cmd == "publish":
         priv = private_key()
-        docs = {p.name[:-len(".md.enc")]: open_text(p.read_bytes(), priv) for p in sorted(DIR.glob("*.md.enc"))}
+        # Ergaenzungen ohne Passwort: "Changelog+2.16.md.enc" wird VOR "Changelog.md.enc" angehaengt (neueste oben)
+        parts: dict[str, list[tuple[str, str]]] = {}
+        for p in sorted(DIR.glob("*.md.enc")):
+            stem = p.name[:-len(".md.enc")]
+            base, _, add = stem.partition("+")
+            parts.setdefault(base, []).append((add, open_text(p.read_bytes(), priv)))
+        def order(x):                                   # Ergaenzungen nach Version absteigend, Grundtext zuletzt
+            ver = tuple(int(n) if n.isdigit() else 0 for n in re.split(r"[.\-]", x[0])) if x[0] else ()
+            return (x[0] == "", tuple(-n for n in ver))
+        docs = {b: "\n\n".join(t for _, t in sorted(v, key=order)) for b, v in parts.items()}
         out = Path(a[1])
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(crypto.seal({"docs": docs}, crypto.key_from_env()))

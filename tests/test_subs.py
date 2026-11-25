@@ -60,3 +60,24 @@ class TestHandbuch(unittest.TestCase):
         blob = docsec.seal_text("Datenstandard äöü", pub)
         self.assertNotIn(b"Datenstandard", blob)
         self.assertEqual(docsec.open_text(blob, raw), "Datenstandard äöü")
+
+
+class TestHandbuchReihenfolge(unittest.TestCase):
+    def test_ergaenzungen_vorne(self):
+        import base64, os, tempfile
+        from pathlib import Path
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+        from tracker import docsec, crypto
+        os.environ["ZC_PASSWORD"] = "pw"
+        k = X25519PrivateKey.generate()
+        raw = k.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
+        pub = base64.b64encode(k.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
+        tmp = Path(tempfile.mkdtemp())
+        docsec.DIR, docsec.PRIV = tmp, tmp / "key.bin"
+        docsec.PRIV.write_bytes(crypto.seal({"key": base64.b64encode(raw).decode()}, crypto.key_from_env()))
+        for name, text in [("Changelog", "## 2.15"), ("Changelog+2.16", "## 2.16"), ("Changelog+2.17", "## 2.17")]:
+            (tmp / f"{name}.md.enc").write_bytes(docsec.seal_text(text, pub))
+        docsec.main(["publish", str(tmp / "out.bin")])
+        out = crypto.open_((tmp / "out.bin").read_bytes(), crypto.key_from_env())["docs"]["Changelog"]
+        self.assertEqual(out, "## 2.17\n\n## 2.16\n\n## 2.15")

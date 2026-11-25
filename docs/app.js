@@ -2,6 +2,7 @@
    Datenschicht wie bisher (verschlüsselte Dateien unter d/ und k/, Merkliste über den Worker). Die alte Oberfläche liegt unter alt.html. */
 (function () {
   "use strict";
+  const APP_VERSION = "2.15";       // bei jeder Änderung erhöhen und im Handbuch-Changelog eintragen
   /* ================= Grundlagen ================= */
   const $ = (s, el = document) => el.querySelector(s);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -733,12 +734,27 @@
     }
     return `<h1>Analyse</h1><div class="anav" role="group" aria-label="Bereich">${nav.map(([k, l]) => `<button data-go="#/analyse?b=${k}" aria-pressed="${b === k}">${l}</button>`).join("")}<button data-go="#/analyse?b=laender" aria-pressed="${b === "laender"}">Länder</button></div>${body}`;
   }
+  function md(text) {           // kleine Markdown-Darstellung (Überschriften, Listen, Tabellen, Fett, Code)
+    const inl = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`(.+?)`/g, "<code>$1</code>");
+    const lines = String(text || "").split("\n"), out = []; let i = 0;
+    while (i < lines.length) {
+      const l = lines[i];
+      if (/^\|/.test(l)) { const rows = []; while (i < lines.length && /^\|/.test(lines[i])) { if (!/^\|[-| ]+\|$/.test(lines[i])) rows.push(lines[i].split("|").slice(1, -1).map((c) => c.trim())); i++; } out.push(`<div class="tw"><table>${rows.map((r, k) => `<tr>${r.map((c) => (k ? `<td>${inl(c)}</td>` : `<th>${inl(c)}</th>`)).join("")}</tr>`).join("")}</table></div>`); continue; }
+      if (/^[-*] |^\d+\. /.test(l)) { const ol = /^\d/.test(l), it = []; while (i < lines.length && /^[-*] |^\d+\. /.test(lines[i])) { it.push(lines[i].replace(/^[-*] |^\d+\. /, "")); i++; } out.push(`<${ol ? "ol" : "ul"} class="mdl">${it.map((x) => `<li>${inl(x)}</li>`).join("")}</${ol ? "ol" : "ul"}>`); continue; }
+      const h = l.match(/^(#{1,3}) (.*)/); if (h) out.push(`<h${h[1].length + 1} class="mdh">${inl(h[2])}</h${h[1].length + 1}>`); else if (l.trim()) out.push(`<p class="mdp">${inl(l)}</p>`);
+      i++;
+    }
+    return out.join("");
+  }
   async function pageDaten() {
     const meta = S.repo.meta, km = S.kat.meta;
     if (meta && !S.repo.runs) S.repo.runs = (await soft(getBin("runs.bin", meta.updated))) || [];
     if (S.state === undefined) S.state = await soft(getBin("state.bin", meta?.updated));
     const runs = (S.repo.runs || []).filter((r) => r.ts).slice(-25), gaps = runs.slice(1).map((r, i) => Math.round((new Date(r.ts) - new Date(runs[i].ts)) / 60000));
     const sent = (S.state?.sent || []).slice(-10).reverse();
+    if (S.hb === undefined) S.hb = await soft(getBin("handbuch.bin"));
+    const docs = S.hb?.docs || {}, names = Object.keys(docs), cur = names.includes(S.hbDoc) ? S.hbDoc : names[0];
+    const hbHtml = `<div class="sec"><div class="h"><h2>Handbuch</h2><span class="kd">App-Version ${APP_VERSION}</span></div>${names.length ? `<div class="seg" style="margin:0 0 10px -12px">${names.map((n) => `<button data-hbdoc="${esc(n)}" aria-pressed="${n === cur}">${esc(n)}</button>`).join("")}</div><div class="md">${md(docs[cur])}</div>` : `<p class="kd">Noch nicht veröffentlicht.</p>`}</div>`;
     return `<h1>Daten</h1>
       <div class="nums"><div><b class="tn">${meta ? fDT(meta.updated) : "–"}</b><span>letzter Fundgrube-Abruf${meta ? `, ${meta.last_run.stores_ok} von ${meta.last_run.stores_total} Märkten` : ""}</span></div><div><b class="tn">${km ? fDT(km.updated) : "–"}</b><span>Sortiment zuletzt aktualisiert</span></div><div><b class="tn">${S.rng ? fDT(S.rng.updated) : "–"}</b><span>Verfügbarkeit je Markt gemessen</span></div><div><b class="tn">${S.facets ? nf(S.facets.n) : "–"}</b><span>Artikel mit Details (Designer, Text, Bilder)</span></div></div>
       <div class="two"><div><h2>Abruf-Takt</h2><p class="sub">Abstände der letzten Fundgrube-Abrufe in Minuten · rot: über 90</p><div class="runs">${gaps.map((v) => `<i class="${v > 90 ? "late" : ""}" style="height:${Math.min(34, Math.max(3, v / 4))}px" title="${v} Min."></i>`).join("")}</div>
@@ -748,6 +764,7 @@
         <div><h2>Zuletzt per Telegram gemeldet</h2><p class="sub">Einstellungen im Reiter Einstellungen</p><div class="feed">${sent.map((m) => `<div style="grid-template-columns:96px minmax(0,1fr);cursor:default"><span class="kd tn">${fDT(m.ts)}</span><span style="font-size:13px">${esc(String(m.text || "").replace(/<[^>]+>/g, "")).replace(/\n/g, "<br>")}</span></div>`).join("") || "<p class='kd'>Noch nichts gemeldet.</p>"}</div>${S.state?.outbox?.length ? `<p class="kd">${S.state.outbox.length} Nachrichten warten auf den Versand.</p>` : ""}</div></div>
       <div class="sec"><div class="h"><h2>Märkte</h2><span class="kd">${storeList().length}</span></div><div class="tw"><table><thead><tr><th>Markt</th><th class="r">aktiv</th><th>zuletzt ok</th><th class="hide">Fehler</th></tr></thead><tbody>${storeList().map((s) => `<tr data-go="#/markt?id=${encodeURIComponent(s.id)}"><td>${isMine(s.id) ? `<b>${esc(s.name)}</b>` : esc(s.name)}</td><td class="r tn">${nf(s.active)}</td><td class="tn">${rel(s.last_ok)}</td><td class="hide kd">${esc(s.error || s.last_error || "")}</td></tr>`).join("")}</tbody></table></div></div>
       <div class="sec"><div class="h"><h2>Begriffe</h2></div><dl class="dl2"><dt>Sortiment</dt><dd>alle Artikel, die IKEA Deutschland regulär verkauft</dd><dt>Bereich</dt><dd>oberste Kategorie, z. B. „Sofas & Sessel“</dd><dt>Serie</dt><dd>alle Artikel mit demselben IKEA-Namen, z. B. STOCKHOLM, über alle Jahre und Kollektionen</dd><dt>Kollektion</dt><dd>Reihe mit Jahr im Namen, z. B. STOCKHOLM 2025; kann mehrere Jahre laufen</dd><dt>Produkt</dt><dd>Serie plus Art, z. B. VIMLE 3er-Sofa</dd><dt>Farbe/Größe</dt><dd>ein Produkt in einer bestimmten Farbe oder Größe, mit eigener Artikelnummer</dd><dt>Set</dt><dd>mehrere Artikel, die IKEA unter einer Nummer zusammen verkauft</dd><dt>Angebot</dt><dd>ein einzelnes Teil in einer Fundgrube, mit eigenem Preis, Zustand und Markt</dd><dt>Startbestand</dt><dd>was beim Beginn der Erfassung schon da war; zählt nie als „neu“, hat kein Einstelldatum</dd><dt>Tage bis weg</dt><dd>vom ersten bis zum letzten Tag, an dem ein Angebot gelistet war</dd><dt>Verschwunden</dt><dd>erst wenn ein Angebot in zwei erfolgreichen Abrufen seines Markts fehlt</dd></dl>
+        ${hbHtml}
         <p class="kd" style="margin-top:12px">Alle Daten liegen verschlüsselt und werden erst in diesem Browser geöffnet. Nichts wird automatisch gelöscht. IKEA liefert kein Einstelldatum; alle Zeitangaben sind Beobachtungen der Abrufe. Die alte Ansicht bleibt unter <a class="lnk" href="alt.html">alt.html</a> erreichbar.</p></div>`;
   }
   async function pageEinst() {
@@ -941,6 +958,7 @@
     if (d.view) { S.view[tab] = d.view; lsSet(LS.view, S.view); return rerender(); }
     if (d.grp) { S.grp = d.grp; return rerender(); }
     if (d.ov) { S.ovIkea = d.ov === "1"; return rerender(); }
+    if (d.hbdoc) { S.hbDoc = d.hbdoc; return rerender(); }
     if (d.tmday) { S.tmDay = d.tmday; memo.clear(); return rerender(); }
     if (d.intl) { S.intlCc = d.intl; return rerender(); }
     if (d.heat) { S.heatSort = d.heat; return rerender(); }
