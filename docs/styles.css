@@ -65,7 +65,7 @@ h1 .fav{width:44px;height:44px;vertical-align:.12em}h1 .fav svg{width:34px;heigh
 .fav svg{width:19px;height:19px}.fav path{fill:none;stroke:currentColor;stroke-width:1.7}.fav.on path{fill:currentColor}
 
 /* Filtersatz */
-.q{font-size:clamp(17px,1.9vw,22px);line-height:1.55;letter-spacing:-.012em;max-width:1120px}
+.q-old{font-size:clamp(17px,1.9vw,22px);line-height:1.55;letter-spacing:-.012em;max-width:1120px}
 .slot{position:relative;display:inline}
 .slot>button{color:var(--blue);font-weight:600;border-bottom:2px solid currentColor;line-height:1.15}
 .slot>button.set{color:var(--ink);border-color:var(--ink)}
@@ -131,7 +131,7 @@ td .pr{font-size:16px}
 .imgs .p{display:flex;align-items:baseline;gap:8px;margin-top:4px}.imgs .p .pr{font-size:18px}
 .imgs .f{font-size:12px;color:var(--ink2);margin-top:auto;padding-top:4px}
 .imgs .fav{position:absolute;top:4px;right:4px}
-@media(max-width:640px){.hide{display:none}td{padding:5px 8px 5px 0}h1{margin:14px 0 8px}.sec{margin-top:22px}.q{font-size:17px;line-height:1.45}}
+@media(max-width:640px){.hide{display:none}td{padding:5px 8px 5px 0}h1{margin:14px 0 8px}.sec{margin-top:22px}.q-old{font-size:17px;line-height:1.45}}
 .empty{padding:40px 0;color:var(--mut)}
 
 /* Detailseiten */
@@ -242,3 +242,38 @@ input.inp{height:36px;border:0;border-bottom:1px solid var(--ink);padding:0 2px;
 .slot .x{font-size:.55em;color:var(--mut);margin-left:4px;text-decoration:underline}
 .follow{font-size:11.5px;font-weight:600;border:1px solid var(--blue);color:var(--blue);padding:0 7px;margin-left:4px;vertical-align:1px;line-height:18px}
 .follow.on{background:var(--blue);color:#fff}
+/* Filterleiste */
+.fbar{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 6px}
+.fb{position:relative}
+.fb>button{border:1px solid var(--rule);background:#fff;padding:6px 10px;font-size:13.5px;font-weight:600;white-space:nowrap}
+.fb>button.set{border-color:var(--ink);background:var(--wash)}
+.fb>button[aria-expanded="true"]{border-color:var(--blue);color:var(--blue)}
+.poph{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+.toks{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;align-items:center}
+.toks button[data-untok]{background:var(--ink);color:#fff;padding:3px 9px;font-size:12.5px}
+.srtl{font-size:13px;color:var(--mut);display:flex;gap:6px;align-items:center}
+.vh{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+@media(max-width:640px){.fbar{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;padding-bottom:2px}.fbar::-webkit-scrollbar{display:none}}
+/* Time Machine */
+.tmstrip{display:flex;gap:8px;overflow-x:auto;padding:2px 0 8px;scroll-snap-type:x proximity}
+.tmd{flex:0 0 124px;border:1px solid var(--rule);background:#fff;padding:6px;text-align:left;scroll-snap-align:start;display:flex;flex-direction:column;gap:4px}
+.tmd.on{border:2px solid var(--ink)}
+.tmh{font-weight:700;font-size:13px}
+.tmp{display:grid;grid-template-columns:1fr 1fr;gap:2px;min-height:56px}
+.tmp img{width:100%;aspect-ratio:1;object-fit:contain}
+.tmc{font-size:11.5px;color:var(--ink2);line-height:1.3}
+/* Bahnen (Varianten im Zeitverlauf) */
+.lanes{font-size:12.5px}
+.ln{display:grid;grid-template-columns:minmax(0,210px) minmax(0,1fr);gap:10px;align-items:center;padding:3px 0;cursor:pointer}
+.ln:hover .ll{color:var(--blue)}
+.ll{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lt{position:relative;height:14px}
+.lt.ax{height:16px;color:var(--mut);font-size:11px}
+.lt.ax span{position:absolute;top:0;padding-left:3px;border-left:1px solid var(--rule)}
+.lt s{position:absolute;top:-3px;bottom:-3px;border-left:1px solid var(--rule)}
+.lt i{position:absolute;top:3px;height:8px;background:var(--ink)}
+.lt i.g{background:var(--mut)}
+.lt i.pre{background:linear-gradient(90deg,transparent,var(--ink) 18px)}
+.lt b{position:absolute;top:1px;width:12px;height:12px;margin-left:-6px;border-radius:50%;background:var(--mark);border:1px solid var(--ink)}
+.lt em{position:absolute;right:0;top:-1px;font-style:normal;color:var(--red);font-size:11px;background:#fff;padding-left:4px}
+@media(max-width:640px){.ln{grid-template-columns:1fr;gap:1px;padding:5px 0}.ln:first-child .ll{display:none}}

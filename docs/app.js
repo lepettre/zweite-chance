@@ -367,18 +367,22 @@
     const defs = defsOf(tab), box = (d) => `<div class="fg"><h4>${esc(d.l)}${on(f[d.k]) ? `<button class="on" data-reset="${d.k}">zurücksetzen</button>` : ""}</h4>${optList(d, tab, f, "side", 7)}</div>`;
     return `<aside class="side" aria-label="Filter">${defs.filter((d) => d.base).map(box).join("")}${["Was", "Preis", "Zeit", "Wo"].map((g) => [g, defs.filter((d) => !d.base && d.g === g)]).filter(([, l]) => l.length).map(([g, l]) => `<div class="grp">${g}</div>${l.map(box).join("")}`).join("")}</aside>`;
   }
-  function filterSentence(tab, f) {
-    const slot = (d) => { const set = on(f[d.k]); return `<span class="slot">${d.pre ? esc(d.pre) + " " : ""}<button class="${set ? "set" : ""}" data-pop="${d.k}" aria-expanded="${S.open === d.k}">${esc(set ? valTxt(d, f[d.k]) : d.any || "…")}</button>${set && !d.base ? `<button class="x" data-reset="${d.k}" aria-label="Angabe entfernen">entfernen</button>` : ""}${d.post ? " " + esc(d.post) : ""}${S.open === d.k ? `<div class="pop">${optList(d, tab, f)}</div>` : ""}</span>`; };
-    const defs = defsOf(tab), base = defs.filter((d) => d.base), extra = defs.filter((d) => !d.base && (on(f[d.k]) || S.open === d.k)), rest = defs.filter((d) => !d.base && !on(f[d.k]) && S.open !== d.k);
-    const groups = ["Was", "Preis", "Zeit", "Wo"].map((g) => [g, rest.filter((d) => d.g === g)]).filter(([, l]) => l.length);
-    return `<div class="q">${base.map(slot).join(" ")}${extra.length ? ", " + extra.map(slot).join(", ") : ""}. <span class="slot"><button class="add" data-pop="__add" aria-expanded="${S.open === "__add"}">+ Angabe</button>${S.open === "__add" ? `<div class="pop">${groups.map(([g, l]) => `<h4>${g}</h4>${l.map((d) => `<button class="opt" style="width:100%;text-align:left" data-addk="${d.k}"><span>${esc(d.l)}</span></button>`).join("")}`).join("")}</div>` : ""}</span></div>`;
+  // Filterleiste: ein Knopf je Angabe; Tippen öffnet die Auswahl, jede Auswahl wirkt sofort. Aktive Angaben darunter als Marken.
+  function filterBar(tab, f) {
+    const defs = defsOf(tab), short = (d) => { const v = f[d.k]; if (!on(v)) return ""; if (d.t === "multi") return v.length === 1 ? (d.lab ? d.lab(v[0]) : v[0]) : `${v.length}`; if (d.t === "range") return valTxt(d, v); if (d.t === "toggle") return "ja"; return d.opts.find((x) => x[0] === v)?.[1] || ""; };
+    const btn = (d) => `<span class="fb"><button class="${on(f[d.k]) ? "set" : ""}" data-pop="${d.k}" aria-expanded="${S.open === d.k}">${esc(d.l)}${on(f[d.k]) ? `: <b>${esc(String(short(d)).slice(0, 24))}</b>` : ""}</button>${S.open === d.k ? `<div class="pop"><div class="poph"><b>${esc(d.l)}</b><button class="lnk" data-shut>fertig</button></div>${optList(d, tab, f)}</div>` : ""}</span>`;
+    const toks = [];
+    for (const d of defs) { const v = f[d.k]; if (!on(v)) continue; if (d.t === "multi") v.forEach((x) => toks.push([d.k, x, `${d.l}: ${d.lab ? d.lab(x) : x}`])); else toks.push([d.k, "", `${d.l}: ${valTxt(d, v)}`]); }
+    if (f.q) toks.unshift(["q", "", `Suche: „${f.q}“`]);
+    return `<div class="fbar">${defs.map(btn).join("")}</div>${toks.length ? `<div class="toks">${toks.map(([k, v, l]) => `<button data-untok="${k}" data-v="${esc(v)}" title="entfernen">${esc(l)} <span aria-hidden="true">×</span></button>`).join("")}<button class="lnk" data-clear>alle entfernen</button></div>` : ""}`;
   }
 
   /* ================= Diagramme ================= */
   const X0 = () => ms(S.t0 || dIso(180)), X1 = () => ms(TODAY);
+  const NARROW = () => innerWidth < 700, VW = () => (NARROW() ? 400 : 760);
   function axisMonths(x, h) { const out = [], t0 = new Date(X0()); for (let d = new Date(Date.UTC(t0.getUTCFullYear(), t0.getUTCMonth() + 1, 1)); +d <= X1(); d.setUTCMonth(d.getUTCMonth() + 1)) { const xx = x(d.toISOString().slice(0, 10)); out.push(`<line x1="${xx}" x2="${xx}" y1="0" y2="${h}" stroke="var(--rule)"/><text x="${xx + 4}" y="${h - 4}">${["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"][d.getUTCMonth()]}</text>`); } return out.join(""); }
   function timeline(a, offs) {
-    const W = 760, pl = 58, pr_ = 16, h1 = 150, gap = 18, h2 = 46, H = h1 + gap + h2 + 22;
+    const W = VW(), pl = NARROW() ? 44 : 58, pr_ = NARROW() ? 44 : 16, h1 = 150, gap = 18, h2 = 46, H = h1 + gap + h2 + 22;
     const x = (d) => pl + (Math.min(Math.max(ms(d), X0()), X1()) - X0()) / Math.max(1, X1() - X0()) * (W - pl - pr_);
     const ph = a ? a.ph.map(([t, v]) => [day(t), v]).filter((p) => p[1] != null) : [];
     let line = "";
@@ -395,31 +399,30 @@
       ${offs.map((o) => { const x1 = x(o.base ? S.t0 : o.start), x2 = x(o.end || TODAY), yy = fy + 6 + ((o.disc ?? 0) / 75) * (h2 - 12); return `<line x1="${x1}" x2="${Math.max(x2, x1 + 3)}" y1="${yy}" y2="${yy}" stroke="${isMine(o.mid) ? "var(--blue)" : "var(--blue2)"}" stroke-width="${isMine(o.mid) ? 5 : 3}" stroke-linecap="round"><title>${esc(o.market)}: ${eur(o.price)} (−${o.disc ?? "?"} %), ${o.base ? "seit Beginn" : fD(o.start)}${o.end ? " bis " + fD(o.end) : " bis heute"}</title></line>`; }).join("")}
     </svg><div class="legend"><span><i style="background:var(--ink)"></i>regulärer Preis</span><span><i style="background:var(--blue)"></i>Fundgrube in meinen Märkten</span><span><i style="background:var(--blue2)"></i>Fundgrube anderswo</span><span>je höher im Band, desto mehr Rabatt</span></div>`;
   }
-  function lanes(list, cur, label) {
-    const W = 760, pl = 210, pr_ = 12, rh = 24, H = list.length * rh + 22, x = (d) => pl + (Math.min(Math.max(ms(d), X0()), X1()) - X0()) / Math.max(1, X1() - X0()) * (W - pl - pr_);
-    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Wann jede Farbe oder Größe im Sortiment war">${axisMonths(x, H)}${list.map((a, i) => { const y = i * rh + 4, s = a.first || S.t0, e = a.gone || TODAY; return `<g data-go="#/artikel?id=${encodeURIComponent(a.id)}" style="cursor:pointer"><text x="0" y="${y + 13}" class="lab" style="font-weight:${a.id === cur ? 700 : 500}">${esc(label(a)).slice(0, 34)}</text>
-      ${a.first ? "" : `<rect x="${pl - 14}" y="${y + 4}" width="14" height="10" fill="url(#fade)"/>`}<rect x="${x(s)}" y="${y + 4}" width="${Math.max(3, x(e) - x(s))}" height="10" fill="${a.gone ? "var(--mut)" : "var(--ink)"}"/>
-      ${a.first ? `<circle cx="${x(a.first)}" cy="${y + 9}" r="4" fill="var(--mark)" stroke="var(--ink)"/>` : ""}${a.gone ? `<text x="${Math.min(x(e) + 5, W - 90)}" y="${y + 13}" style="fill:var(--red)">ausgelistet ${fS(a.gone)}</text>` : ""}</g>`; }).join("")}
-      <defs><linearGradient id="fade"><stop offset="0" stop-color="var(--ink)" stop-opacity="0"/><stop offset="1" stop-color="var(--ink)"/></linearGradient></defs></svg>
+  function lanes(list, cur, label) {      // HTML statt SVG: am Handy Name über der Bahn, immer lesbar
+    const pc = (d) => ((Math.min(Math.max(ms(d), X0()), X1()) - X0()) / Math.max(1, X1() - X0()) * 100).toFixed(2);
+    const months = []; const t0 = new Date(X0()); for (let d = new Date(Date.UTC(t0.getUTCFullYear(), t0.getUTCMonth() + 1, 1)); +d <= X1(); d.setUTCMonth(d.getUTCMonth() + 1)) months.push([pc(d.toISOString().slice(0, 10)), ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"][d.getUTCMonth()]]);
+    const axis = `<div class="lt ax">${months.map(([x, l]) => `<span style="left:${x}%">${l}</span>`).join("")}</div>`;
+    return `<div class="lanes"><div class="ln"><div class="ll"></div>${axis}</div>${list.map((a) => { const s0 = a.first || S.t0, e = a.gone || TODAY; return `<div class="ln" data-go="#/artikel?id=${encodeURIComponent(a.id)}"><div class="ll" style="font-weight:${a.id === cur ? 700 : 500}">${esc(label(a))}</div><div class="lt">${months.map(([x]) => `<s style="left:${x}%"></s>`).join("")}<i class="${a.gone ? "g" : ""} ${a.first ? "" : "pre"}" style="left:${pc(s0)}%;width:${Math.max(0.8, pc(e) - pc(s0))}%"></i>${a.first ? `<b style="left:${pc(a.first)}%"></b>` : ""}${a.gone ? `<em>ausgelistet ${fS(a.gone)}</em>` : ""}</div></div>`; }).join("")}</div>
       <div class="legend"><span><i style="background:var(--ink)"></i>im Sortiment</span><span><i style="background:var(--mark);border:1px solid var(--ink);border-radius:50%"></i>neu erschienen</span><span><i style="background:var(--mut)"></i>ausgelistet</span><span>verblasst links: schon vor Beginn der Erfassung</span></div>`;
   }
   function bars(rows, { fmt = nf, hl = () => false, max, pre = () => "", go } = {}) { const mx = max || Math.max(...rows.map((r) => r[1]), 1); return `<table style="width:100%"><tbody>${rows.map(([l, v, extra]) => `<tr ${go ? `data-go="${esc(go(l))}" style="cursor:pointer"` : ""}><td style="width:38%;padding:4px 12px 4px 0;font-size:13px;border:0;${hl(l) ? "font-weight:700" : ""}">${pre(l)}${esc(l)}</td><td style="padding:4px 12px 4px 0;border:0"><div class="trk"><i class="${hl(l) ? "hl" : ""}" style="width:${Math.max(0, v / mx * 100).toFixed(1)}%"></i></div></td><td class="r tn" style="padding:4px 0;font-size:13px;width:90px;border:0">${fmt(v)}${extra ? ` <span class="kd">${extra}</span>` : ""}</td></tr>`).join("")}</tbody></table>`; }
   function thumbs(rows, fmt = nf) { const mx = Math.max(...rows.map((r) => r.v), 1); return rows.map((r) => `<div class="tb" data-go="${esc(r.go)}"><img src="${esc(r.img)}" alt="" loading="lazy"><span><b>${esc(r.l)}</b><br><span class="kd">${esc(r.s || "")}</span></span><div class="trk"><i style="width:${(r.v / mx * 100).toFixed(1)}%"></i></div><span class="r tn">${fmt(r.v)}</span></div>`).join(""); }
   function strip(groups) {
-    const W = 760, pl = 210, pr_ = 16, rh = 30, H = groups.length * rh + 26, ticks = [5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000], lo = Math.log10(2), hi = Math.log10(6000), x = (v) => pl + (Math.log10(Math.max(v, 2)) - lo) / (hi - lo) * (W - pl - pr_);
+    const W = VW(), pl = NARROW() ? 120 : 210, pr_ = 16, rh = 30, H = groups.length * rh + 26, ticks = NARROW() ? [10, 100, 1000] : [5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000], lo = Math.log10(2), hi = Math.log10(6000), x = (v) => pl + (Math.log10(Math.max(v, 2)) - lo) / (hi - lo) * (W - pl - pr_);
     return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Preise je Bereich">${ticks.map((t) => `<line x1="${x(t)}" x2="${x(t)}" y1="0" y2="${H - 18}" stroke="var(--rule)"/><text x="${x(t)}" y="${H - 4}" text-anchor="middle">${nf(t)} €</text>`).join("")}
-      ${groups.map((g, i) => { const y = i * rh + 14, ps = g.items.map((a) => a.price).filter((p) => p != null), med = qn(ps, 0.5), sample = g.items.length > 400 ? g.items.filter((_, j) => j % Math.ceil(g.items.length / 400) === 0) : g.items; return `<text x="0" y="${y + 4}" class="lab">${esc(g.l)}</text><text x="${pl - 10}" y="${y + 4}" text-anchor="end">${nf(g.items.length)}</text>${sample.map((a, j) => `<circle cx="${x(a.price)}" cy="${y + ((j % 3) - 1) * 4}" r="2.6" fill="var(--blue)" fill-opacity=".35"/>`).join("")}${med != null ? `<line x1="${x(med)}" x2="${x(med)}" y1="${y - 10}" y2="${y + 10}" stroke="var(--ink)" stroke-width="2"/>` : ""}`; }).join("")}</svg><div class="legend"><span><i style="background:var(--blue);opacity:.5;border-radius:50%"></i>ein Artikel</span><span><i style="background:var(--ink);width:2px"></i>Median</span><span>Achse logarithmisch</span></div>`;
+      ${groups.map((g, i) => { const y = i * rh + 14, ps = g.items.map((a) => a.price).filter((p) => p != null), med = qn(ps, 0.5), sample = g.items.length > 400 ? g.items.filter((_, j) => j % Math.ceil(g.items.length / 400) === 0) : g.items; return `<text x="0" y="${y + 4}" class="lab">${esc(NARROW() ? g.l.slice(0, 16) : g.l)}</text>${NARROW() ? "" : `<text x="${pl - 10}" y="${y + 4}" text-anchor="end">${nf(g.items.length)}</text>`}${sample.map((a, j) => `<circle cx="${x(a.price)}" cy="${y + ((j % 3) - 1) * 4}" r="2.6" fill="var(--blue)" fill-opacity=".35"/>`).join("")}${med != null ? `<line x1="${x(med)}" x2="${x(med)}" y1="${y - 10}" y2="${y + 10}" stroke="var(--ink)" stroke-width="2"/>` : ""}`; }).join("")}</svg><div class="legend"><span><i style="background:var(--blue);opacity:.5;border-radius:50%"></i>ein Artikel</span><span><i style="background:var(--ink);width:2px"></i>Median</span><span>Achse logarithmisch</span></div>`;
   }
   function weekBars(up, down, labels, { a = "neu", b = "ausgelistet" } = {}) {
-    const W = 760, pl = 34, pr_ = 6, H = 190, mid = 90, n = up.length, bw = (W - pl - pr_) / n, mx = Math.max(...up, ...down, 1), sc = 78 / mx;
+    const W = VW(), pl = 34, pr_ = 6, H = 190, mid = 90, n = up.length, bw = (W - pl - pr_) / n, mx = Math.max(...up, ...down, 1), sc = 78 / mx;
     return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${a} und ${b}"><line x1="${pl}" x2="${W}" y1="${mid}" y2="${mid}" stroke="var(--ink)"/>
-      ${up.map((v, i) => `<rect x="${pl + i * bw + 1}" y="${mid - v * sc}" width="${Math.max(1, bw - 2)}" height="${v * sc}" fill="var(--ink)"><title>${labels[i]}: ${v} ${a}</title></rect>${v && n <= 30 ? `<text x="${pl + i * bw + bw / 2}" y="${mid - v * sc - 4}" text-anchor="middle">${v}</text>` : ""}`).join("")}
-      ${down.map((v, i) => `<rect x="${pl + i * bw + 1}" y="${mid + 1}" width="${Math.max(1, bw - 2)}" height="${v * sc}" fill="var(--red)"><title>${labels[i]}: ${v} ${b}</title></rect>${v && n <= 30 ? `<text x="${pl + i * bw + bw / 2}" y="${mid + v * sc + 12}" text-anchor="middle">${v}</text>` : ""}`).join("")}
-      ${labels.map((l, i) => (i % Math.ceil(n / 9) ? "" : `<text x="${pl + i * bw + 2}" y="${H - 2}">${l}</text>`)).join("")}<text x="${pl - 6}" y="${mid - 70}" text-anchor="end">${a}</text><text x="${pl - 6}" y="${mid + 78}" text-anchor="end">${b}</text></svg>`;
+      ${up.map((v, i) => `<rect x="${pl + i * bw + 1}" y="${mid - v * sc}" width="${Math.max(1, bw - 2)}" height="${v * sc}" fill="var(--ink)"><title>${labels[i]}: ${v} ${a}</title></rect>${v && n <= (NARROW() ? 13 : 30) ? `<text x="${pl + i * bw + bw / 2}" y="${mid - v * sc - 4}" text-anchor="middle">${v}</text>` : ""}`).join("")}
+      ${down.map((v, i) => `<rect x="${pl + i * bw + 1}" y="${mid + 1}" width="${Math.max(1, bw - 2)}" height="${v * sc}" fill="var(--red)"><title>${labels[i]}: ${v} ${b}</title></rect>${v && n <= (NARROW() ? 13 : 30) ? `<text x="${pl + i * bw + bw / 2}" y="${mid + v * sc + 12}" text-anchor="middle">${v}</text>` : ""}`).join("")}
+      ${labels.map((l, i) => (i % Math.ceil(n / (NARROW() ? 5 : 9)) ? "" : `<text x="${pl + i * bw + 2}" y="${H - 2}">${l}</text>`)).join("")}<text x="${pl - 6}" y="${mid - 70}" text-anchor="end">${a}</text><text x="${pl - 6}" y="${mid + 78}" text-anchor="end">${b}</text></svg>`;
   }
   function areaDays(vals, labels) {
-    const W = 760, H = 170, pl = 40, mx = Math.max(...vals, 1), n = vals.length, x = (i) => pl + i / Math.max(1, n - 1) * (W - pl - 8), y = (v) => 10 + (1 - v / mx) * (H - 34), pts = vals.map((v, i) => `${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join("L");
-    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Verlauf">${[0.5, 1].map((k) => `<line x1="${pl}" x2="${W}" y1="${y(mx * k)}" y2="${y(mx * k)}" stroke="var(--rule)"/><text x="${pl - 6}" y="${y(mx * k) + 4}" text-anchor="end">${nf(Math.round(mx * k))}</text>`).join("")}<path d="M${pts}L${x(n - 1)} ${H - 24}L${pl} ${H - 24}Z" fill="var(--blue)" fill-opacity=".08"/><path d="M${pts}" fill="none" stroke="var(--blue)" stroke-width="2"/>${labels.map((l, i) => (i % Math.ceil(n / 7) ? "" : `<text x="${x(i)}" y="${H - 4}">${l}</text>`)).join("")}</svg>`;
+    const W = VW(), H = 170, pl = 40, mx = Math.max(...vals, 1), n = vals.length, x = (i) => pl + i / Math.max(1, n - 1) * (W - pl - 8), y = (v) => 10 + (1 - v / mx) * (H - 34), pts = vals.map((v, i) => `${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join("L");
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Verlauf">${[0.5, 1].map((k) => `<line x1="${pl}" x2="${W}" y1="${y(mx * k)}" y2="${y(mx * k)}" stroke="var(--rule)"/><text x="${pl - 6}" y="${y(mx * k) + 4}" text-anchor="end">${nf(Math.round(mx * k))}</text>`).join("")}<path d="M${pts}L${x(n - 1)} ${H - 24}L${pl} ${H - 24}Z" fill="var(--blue)" fill-opacity=".08"/><path d="M${pts}" fill="none" stroke="var(--blue)" stroke-width="2"/>${labels.map((l, i) => (i % Math.ceil(n / (NARROW() ? 4 : 7)) ? "" : `<text x="${x(i)}" y="${H - 4}">${l}</text>`)).join("")}</svg>`;
   }
   const spark = (a) => { const W = 70, H = 18, t0 = X0(), t1 = X1(), xs = (d) => (Math.min(Math.max(ms(d), t0), t1) - t0) / Math.max(1, t1 - t0) * W, ph = a.ph.filter((p) => p[1] != null), vs = ph.map((p) => p[1]); if (!vs.length) return ""; const lo = Math.min(...vs), hi = Math.max(...vs), y = (v) => (hi === lo ? H / 2 : 2 + (1 - (v - lo) / (hi - lo)) * (H - 4)); let d = ""; ph.forEach(([t, v], i) => { d += i ? `H${xs(t).toFixed(1)}V${y(v).toFixed(1)}` : `M${xs(t).toFixed(1)} ${y(v).toFixed(1)}`; }); d += `H${xs(a.gone || TODAY).toFixed(1)}`; const c = lastChg(a); return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" aria-hidden="true"><path d="${d}" fill="none" stroke="${c ? (c.to < c.from ? "var(--green)" : "var(--red)") : "var(--mut)"}" stroke-width="1.5"/></svg>`; };
 
@@ -438,7 +441,7 @@
   function rowsSort(list, grp = "aus", sortable = true) {
     const th = (k, l, c = "") => (sortable ? `<th class="${c}" data-sortby="${k}" ${S.sort.sort === k ? 'aria-sort="descending"' : ""}>${l}</th>` : `<th class="${c}">${l}</th>`);
     const head = `<thead><tr><th></th>${th("name", "Artikel")}<th class="hide">Bereich</th>${th("preis", "Preis", "r")}${th("chg", "Verlauf", "hide")}${S.rng ? th("verb", "Märkte", "hide") : ""}<th class="hide">Fundgrube</th><th></th></tr></thead>`;
-    const r = (a) => { const c = lastChg(a); return `<tr data-go="#/artikel?id=${encodeURIComponent(a.id)}"><td class="im">${img(a.thumb)}</td><td><div class="nm">${esc(a.name)} <span style="font-weight:400">${esc(a.kind)}</span>${a.first && day(a.first) >= dIso(30) ? ` <span class="chip">neu</span>` : ""}${a.gone ? ` <span class="chip up">ausgelistet</span>` : ""}${a.last && !a.gone ? ` <span class="chip">letzte Chance</span>` : ""}</div><div class="kd">${esc(ausOf(a))}</div></td><td class="hide kd">${esc(a.sub || a.top)}</td><td class="r">${pr(a.price)}${a.prev ? `<div class="kd"><s>${eur(a.prev)}</s></div>` : c ? `<div class="kd tn ${c.to < c.from ? "dn" : "up"}">${c.to < c.from ? "▼" : "▲"} ${Math.abs(Math.round((c.to / c.from - 1) * 100))} % am ${fS(c.d)}</div>` : ""}</td><td class="hide">${spark(a)}</td>${S.rng ? `<td class="hide tn">${a.nMk != null ? `<span class="bar5"><i style="width:${a.nMk / Math.max(1, a.nKn) * 100}%"></i></span>${a.nMk}` : "–"}</td>` : ""}<td class="hide">${fundHint(a)}</td><td>${favBtn(a.no, a.name)}</td></tr>`; };
+    const r = (a) => { const c = lastChg(a); return `<tr data-go="#/artikel?id=${encodeURIComponent(a.id)}"><td class="im">${img(a.thumb)}</td><td><div class="nm">${esc(a.name)} <span style="font-weight:400">${esc(a.kind)}</span>${a.first && day(a.first) >= dIso(30) ? ` <span class="chip">neu</span>` : ""}${a.gone ? ` <span class="chip up">ausgelistet</span>` : ""}${a.last && !a.gone ? ` <span class="chip">letzte Chance</span>` : ""}</div><div class="kd vh">${esc(ausOf(a))}</div></td><td class="hide kd">${esc(a.sub || a.top)}</td><td class="r">${pr(a.price)}${a.prev ? `<div class="kd"><s>${eur(a.prev)}</s></div>` : c ? `<div class="kd tn ${c.to < c.from ? "dn" : "up"}" title="am ${fD(c.d)}" style="white-space:nowrap">${c.to < c.from ? "−" : "+"}${Math.abs(Math.round((c.to / c.from - 1) * 100))} % <span class="hide">am ${fS(c.d)}</span></div>` : ""}</td><td class="hide">${spark(a)}</td>${S.rng ? `<td class="hide tn">${a.nMk != null ? `<span class="bar5"><i style="width:${a.nMk / Math.max(1, a.nKn) * 100}%"></i></span>${a.nMk}` : "–"}</td>` : ""}<td class="hide">${fundHint(a)}</td><td>${favBtn(a.no, a.name)}</td></tr>`; };
     const cols = S.rng ? 8 : 7;
     if (grp === "aus") return `<div class="tw"><table>${head}<tbody>${list.map(r).join("")}</tbody></table></div>`;
     if (grp === "koll") list = list.filter((a) => a.coll);
@@ -448,7 +451,7 @@
       const a = vs.find((x) => !x.gone) || vs[0], ps = vs.map((x) => x.price), cols = [...new Set(vs.flatMap((x) => x.cols.slice(0, 1)))], sizes = new Set(vs.map((x) => x.measure).filter(Boolean)).size;
       const total = Math.max(vs.length, ...vs.map((x) => x.nvar || 0)), offers = vs.reduce((n, x) => n + (fundNow().get(x.no)?.length || 0), 0), mk = Math.max(...vs.map((x) => x.nMk ?? -1));
       return `<tr data-go="#/artikel?id=${encodeURIComponent(a.id)}"><td class="im">${img(a.thumb)}</td><td><div class="nm">${esc(a.name)} <span style="font-weight:400">${esc(a.kind)}</span>${vs.every((x) => x.gone) ? ` <span class="chip up">ausgelistet</span>` : ""}</div>
-        <div class="kd">${cols.length ? `${cols.slice(0, 10).map(sq_).join("")} ${cols.length} ${cols.length === 1 ? "Farbe" : "Farben"}` : ""}${sizes > 1 ? `${cols.length ? ", " : ""}${sizes} Größen` : ""}${total > vs.length ? ` · ${total - vs.length} weitere bei IKEA, hier noch nicht erfasst` : ""}</div></td>
+        <div class="kd vh">${cols.length ? `${cols.slice(0, 10).map(sq_).join("")} ${cols.length} ${cols.length === 1 ? "Farbe" : "Farben"}` : ""}${sizes > 1 ? `${cols.length ? ", " : ""}${sizes} Größen` : ""}${total > vs.length ? ` · ${total - vs.length} weitere bei IKEA, hier noch nicht erfasst` : ""}</div></td>
         <td class="hide kd">${esc(a.sub || a.top)}</td><td class="r">${Math.min(...ps) === Math.max(...ps) ? pr(ps[0]) : `<span class="kd">ab</span> ${pr(Math.min(...ps))}<div class="kd">bis ${eur(Math.max(...ps))}</div>`}</td><td class="hide">${spark(a)}</td>${S.rng ? `<td class="hide tn">${mk >= 0 ? mk : "–"}</td>` : ""}<td class="hide">${offers ? `<span class="fh"><b>${offers} ${offers === 1 ? "Angebot" : "Angebote"}</b></span>` : ""}</td><td>${favBtn(a.no, a.name)}</td></tr>`;
     };
     if (grp === "prod") return `<div class="tw"><table>${head}<tbody>${byProd(list).map(prodRow).join("")}</tbody></table></div>`;
@@ -470,7 +473,7 @@
       if (grp !== "prod" && a.name !== last) { last = a.name; out += `<div class="tg">${esc(grp === "koll" ? "Kollektion " : "Serie ")}${esc(a.name)}</div>`; }
       out += `<div data-go="#/artikel?id=${encodeURIComponent(a.id)}">${favBtn(a.no, a.name)}${img(a.thumb)}<div class="n">${esc(a.name)}</div><div class="k">${esc(a.kind)}</div>
         <div class="p">${Math.min(...ps) === Math.max(...ps) ? pr(ps[0]) : `<span class="kd">ab</span> ${pr(Math.min(...ps))}`}</div>
-        <div class="f">${cols.length ? cols.slice(0, 8).map(sq_).join("") + " " : ""}${vs.length} ${vs.length === 1 ? "Farbe/Größe" : "Farben/Größen"}${total > vs.length ? `, ${total - vs.length} weitere bei IKEA` : ""}${offers ? ` · <b>${offers} in der Fundgrube</b>` : ""}</div></div>`;
+        <div class="f vh">${cols.length ? cols.slice(0, 8).map(sq_).join("") + " " : ""}${vs.length} ${vs.length === 1 ? "Farbe/Größe" : "Farben/Größen"}${total > vs.length ? `, ${total - vs.length} weitere bei IKEA` : ""}${offers ? ` · <b>${offers} in der Fundgrube</b>` : ""}</div></div>`;
     }
     return `<div class="imgs">${out}</div>`;
   }
@@ -508,11 +511,15 @@
       ${mine.length ? `<div class="sec"><div class="h"><h2>Meine Märkte</h2><button data-go="#/analyse?b=maerkte">alle Märkte vergleichen</button></div><div class="two">${mine.map((m) => { const act = items.filter((a) => !a.gone), carr = S.rng ? act.filter((a) => carries(a, m)).length : null; return `<div data-go="#/markt?id=${encodeURIComponent(m)}" style="cursor:pointer;padding:8px 0;border-bottom:1px solid var(--rule)"><div style="font-size:21px;font-weight:700;letter-spacing:-.02em">${esc(nameOf(m))} <span class="lnk" style="font-size:14px">›</span></div><div class="kd">${nf(fa.filter((o) => o.mid === m).length)} Angebote in der Fundgrube, davon ${nf(fa.filter((o) => o.mid === m && isNewV(o)).length)} neu seit deinem letzten Besuch${carr != null ? ` · führt ${nf(carr)} von ${nf(act.length)} Artikeln (${Math.round(carr / act.length * 100)} %)` : ""}</div></div>`; }).join("")}</div></div>` : ""}`;
   }
   const SORTS = {
-    fund: { neu: (a, b) => (b.base ? "" : b.first_seen || "").localeCompare(a.base ? "" : a.first_seen || ""), preis: (a, b) => a.price - b.price, rabatt: (a, b) => (b.disc ?? -1) - (a.disc ?? -1), markt: (a, b) => (isMine(b.mid) - isMine(a.mid)) || a.market.localeCompare(b.market, "de") },
-    sort: { chg: (a, b) => (lastChg(b)?.d || day(b.first) || "").localeCompare(lastChg(a)?.d || day(a.first) || ""), preis: (a, b) => a.price - b.price, teuer: (a, b) => b.price - a.price, neu: (a, b) => (day(b.first) || "").localeCompare(day(a.first) || ""), verb: (a, b) => (a.nMk ?? 999) - (b.nMk ?? 999), bew: (a, b) => b.rating - a.rating || b.rcount - a.rcount, name: (a, b) => a.name.localeCompare(b.name, "de") || a.kind.localeCompare(b.kind, "de") },
+    fund: { neu: (a, b) => (b.base ? "" : b.first_seen || "").localeCompare(a.base ? "" : a.first_seen || ""), preis: (a, b) => a.price - b.price, teuer: (a, b) => b.price - a.price, rabatt: (a, b) => (b.disc ?? -1) - (a.disc ?? -1), spar: (a, b) => ((b.orig || 0) - b.price) - ((a.orig || 0) - a.price), zust: (a, b) => condRank(a) - condRank(b) || a.price - b.price, markt: (a, b) => (isMine(b.mid) - isMine(a.mid)) || a.market.localeCompare(b.market, "de") },
+    sort: { senk: (a, b) => chgPct(a) - chgPct(b), red: (a, b) => redPct(b) - redPct(a), bewn: (a, b) => b.rcount - a.rcount, chg: (a, b) => (lastChg(b)?.d || day(b.first) || "").localeCompare(lastChg(a)?.d || day(a.first) || ""), preis: (a, b) => a.price - b.price, teuer: (a, b) => b.price - a.price, neu: (a, b) => (day(b.first) || "").localeCompare(day(a.first) || ""), verb: (a, b) => (a.nMk ?? 999) - (b.nMk ?? 999), bew: (a, b) => b.rating - a.rating || b.rcount - a.rcount, name: (a, b) => a.name.localeCompare(b.name, "de") || a.kind.localeCompare(b.kind, "de") },
   };
-  const SORT_L = { fund: [["neu", "neueste zuerst"], ["preis", "günstigste zuerst"], ["rabatt", "höchster Rabatt zuerst"], ["markt", "nach Markt, meine zuerst"]], sort: [["chg", "letzte Änderung zuerst"], ["preis", "günstigste zuerst"], ["teuer", "teuerste zuerst"], ["neu", "neueste zuerst"], ["verb", "seltenste zuerst"], ["bew", "beste Bewertung zuerst"], ["name", "Name A–Z"]] };
-  function pageList(tab) {
+  const condRank = (o) => { const c = fold(o.condition || ""); return /neu|new/.test(c) ? 0 : /sehr gut/.test(c) ? 1 : /gut/.test(c) ? 2 : /ordnung|akzept/.test(c) ? 3 : 4; };
+  const chgPct = (a) => { const c = lastChg(a); return c && c.from ? (c.to / c.from - 1) * 100 : 0; };
+  const redPct = (a) => (a.prev ? (1 - a.price / a.prev) * 100 : 0);
+  const SORT_L = { fund: [["neu", "neueste zuerst"], ["preis", "günstigste zuerst"], ["teuer", "teuerste zuerst"], ["rabatt", "höchster Rabatt in % zuerst"], ["spar", "größte Ersparnis in € zuerst"], ["zust", "bester Zustand zuerst"], ["markt", "nach Markt, meine zuerst"]], sort: [["chg", "letzte Änderung zuerst"], ["neu", "neueste zuerst"], ["senk", "größte Preissenkung zuerst"], ["red", "höchste Reduzierung zuerst"], ["preis", "günstigste zuerst"], ["teuer", "teuerste zuerst"], ["bew", "beste Bewertung zuerst"], ["bewn", "meiste Bewertungen zuerst"], ["verb", "seltenste zuerst (Märkte)"], ["name", "Name A–Z"]] };
+  function pageList(tab, opts = {}) {
+    if (S.grp === "prod") S.grp = "aus";
     const f = S.f[tab]; let list = apply(tab, f).sort(SORTS[tab][S.sort[tab]] || SORTS[tab][Object.keys(SORTS[tab])[0]]);
     if (tab === "sort" && S.grp !== "aus") {          // Gruppen zusammenhalten, Reihenfolge nach erstem Auftreten in der gewählten Sortierung
       if (S.grp === "koll") list = list.filter((a) => a.coll);
@@ -520,18 +527,20 @@
       list.forEach((a, i) => { idx.set(a, i); if (!first.has(key(a))) first.set(key(a), i); });
       list.sort((a, b) => first.get(key(a)) - first.get(key(b)) || idx.get(a) - idx.get(b));
     }
-    const tmBar = `<div class="tm">${S.asof ? `<b>Zeitmaschine:</b> so war es am ${fD(S.asof)}. Preise, Erscheinen und Auslisten sind rekonstruiert${tab === "sort" && S.rng ? "; Verfügbarkeit je Markt zeigt die jüngste Messung" : ""}. <button class="lnk" data-asof-off>zurück zu heute</button>` : `<span class="kd">Stand am</span>`} <input type="date" id="asof-${tab}" data-asof min="${S.t0 || ""}" max="${TODAY}" value="${S.asof || ""}" aria-label="Stand an einem früheren Tag"></div>`;
+    const tmBar0 = `<div class="tm">${S.asof ? `<b>Zeitmaschine:</b> so war es am ${fD(S.asof)}. Preise, Erscheinen und Auslisten sind rekonstruiert${tab === "sort" && S.rng ? "; Verfügbarkeit je Markt zeigt die jüngste Messung" : ""}. <button class="lnk" data-asof-off>zurück zu heute</button>` : `<span class="kd">Stand am</span>`} <input type="date" id="asof-${tab}" data-asof min="${S.t0 || ""}" max="${TODAY}" value="${S.asof || ""}" aria-label="Stand an einem früheren Tag"></div>`;
     const title = tab === "fund" ? "Fundgrube" : "Sortiment", cnt = `${nf(list.length)} ${tab === "fund" ? "Angebote" : "Artikel"}`;
     const viewSeg = tab === "fund" ? `<button data-view="liste" aria-pressed="${S.view.fund !== "kacheln"}">Liste</button><button data-view="kacheln" aria-pressed="${S.view.fund === "kacheln"}">Kacheln</button>`
-      : `<span class="lab">gruppieren</span><button data-grp="aus" aria-pressed="${S.grp === "aus"}">keine</button><button data-grp="prod" aria-pressed="${S.grp === "prod"}">nach Produkt</button><button data-grp="serie" aria-pressed="${S.grp === "serie"}">nach Serie</button><button data-grp="koll" aria-pressed="${S.grp === "koll"}">nach Kollektion</button><span class="lab">·</span><button data-view="liste" aria-pressed="${S.view.sort !== "kacheln"}">Liste</button><button data-view="kacheln" aria-pressed="${S.view.sort === "kacheln"}">Kacheln</button>`;
+      : `<span class="lab">Ansicht</span><button data-grp="aus" aria-pressed="${S.grp !== "serie" && S.grp !== "koll"}">einzeln</button><button data-grp="serie" aria-pressed="${S.grp === "serie"}">Serien</button><button data-grp="koll" aria-pressed="${S.grp === "koll"}">Kollektionen</button><span class="lab">·</span><button data-view="liste" aria-pressed="${S.view.sort !== "kacheln"}">Liste</button><button data-view="kacheln" aria-pressed="${S.view.sort === "kacheln"}">Kacheln</button>`;
     const isCustom = Object.keys(f).some((k) => on(f[k]));
     const g = tab === "fund" && isCustom ? goodPrice(f) : null;
     const part = list.slice(0, S.shown);
     const body = !list.length ? `<div class="empty">Kein ${tab === "fund" ? "Angebot" : "Artikel"} passt zu diesem Satz. Entferne eine Angabe.</div>` : S.view[tab] === "kacheln" ? (tab === "sort" && S.grp !== "aus" ? tilesGrouped(part, S.grp) : tiles(part, tab === "fund")) : tab === "fund" ? rowsFund(part) : rowsSort(part, S.grp);
-    return `<h1>${title}<small class="tn">${cnt}</small></h1>${tab === "sort" ? `<p class="kd" style="margin:-4px 0 10px">alles, was IKEA Deutschland regulär verkauft · ${nf(S.kat.items.filter((a) => !a.stub && !a.gone).length)} Artikel erfasst</p>` : `<p class="kd" style="margin:-4px 0 10px">Einzelstücke mit Rabatt in den IKEA-Märkten</p>`}<div class="lay">${innerWidth >= 1000 ? sideFilters(tab, f) : ""}<div style="min-width:0">${filterSentence(tab, f)}
-      <div class="bar"><div class="l"><input type="search" id="q-${tab}" data-q="${tab}" placeholder="Name oder Artikelnummer" value="${esc(f.q || "")}" aria-label="Suchen">${isCustom ? `<button class="lnk" data-clear>zurücksetzen</button>` : ""}${tab === "fund" && isCustom ? `<button class="lnk" data-savesearch>Diese Suche merken</button>` : ""}<select class="srt" id="srt-${tab}" data-srt="${tab}" aria-label="Sortierung">${SORT_L[tab].map(([k, l]) => `<option value="${k}" ${S.sort[tab] === k ? "selected" : ""}>${l}</option>`).join("")}</select><button class="lnk" data-export="${tab}">als CSV</button></div><div class="seg">${viewSeg}</div></div>
+    if (opts.embedded) return `<div class="lay">${innerWidth >= 1000 ? sideFilters(tab, f) : ""}<div style="min-width:0"><p class="kd" style="margin:0 0 6px">${cnt} am ${fD(S.asof)}</p>${filterBar(tab, f)}
+      <div class="bar"><div class="l"><input type="search" id="q-tm" data-q="${tab}" placeholder="Name oder Artikelnummer" value="${esc(f.q || "")}" aria-label="Suchen"><label class="srtl">Sortierung <select class="srt" id="srt-tm" data-srt="${tab}">${SORT_L[tab].map(([k, l]) => `<option value="${k}" ${S.sort[tab] === k ? "selected" : ""}>${l}</option>`).join("")}</select></label></div><div class="seg">${viewSeg}</div></div>${body}${moreBtn(list.length)}</div></div>`;
+    return `<h1>${title}<small class="tn">${cnt}</small></h1>${tab === "sort" ? `<p class="kd" style="margin:-4px 0 10px">alles, was IKEA Deutschland regulär verkauft · ${nf(S.kat.items.filter((a) => !a.stub && !a.gone).length)} Artikel erfasst</p>` : `<p class="kd" style="margin:-4px 0 10px">Einzelstücke mit Rabatt in den IKEA-Märkten</p>`}<div class="lay">${innerWidth >= 1000 && !opts.noSide ? sideFilters(tab, f) : ""}<div style="min-width:0">${filterBar(tab, f)}
+      <div class="bar"><div class="l"><input type="search" id="q-${tab}" data-q="${tab}" placeholder="Name oder Artikelnummer" value="${esc(f.q || "")}" aria-label="Suchen"><label class="srtl">Sortierung <select class="srt" id="srt-${tab}" data-srt="${tab}">${SORT_L[tab].map(([k, l]) => `<option value="${k}" ${S.sort[tab] === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>${tab === "fund" && isCustom ? `<button class="lnk" data-savesearch>Diese Suche merken</button>` : ""}<button class="lnk" data-export="${tab}">als CSV</button></div><div class="seg">${viewSeg}</div></div>
       ${g ? `<div class="gp"><b>Was ist ein guter Preis?</b> ${g.full ? "Seit Beginn der Erfassung" : "Unter den aktuellen Angeboten"} passten ${nf(g.n)} Angebote zu dieser Suche. Das günstigste Viertel lag unter <b>${eur(g.q1)}</b>, das günstigste bei ${eur(g.lo)}.${g.dw != null ? ` Ein Angebot war meist nach ${g.dw} Tagen weg.` : ""}</div>` : ""}
-      ${tmBar}${body}${moreBtn(list.length)}</div></div>`;
+      ${body}${moreBtn(list.length)}</div></div>`;
   }
   // Kern-Details eines Sortimentsartikels – auf jeder Artikel-, Angebots- und Produktseite gleich
   function coreFacts(a, extra = "") {
@@ -755,7 +764,40 @@
   }
 
   /* ================= Rahmen, Wege, Ereignisse ================= */
-  const TABS = [["start", "Start"], ["fundgrube", "Fundgrube"], ["sortiment", "Sortiment"], ["analyse", "Analyse"], ["daten", "Daten"], ["einstellungen", "Einstellungen"]];
+  const TABS = [["start", "Start"], ["fundgrube", "Fundgrube"], ["sortiment", "Sortiment"], ["timemachine", "Time Machine"], ["analyse", "Analyse"], ["daten", "Daten"], ["einstellungen", "Einstellungen"]];
+  // Time Machine: Tage mit Änderungen im Sortiment, je Tag die wichtigsten Änderungen, darunter das Sortiment an diesem Tag
+  function tmDays() {
+    if (memo.has("tmd")) return memo.get("tmd");
+    const items = S.kat.items.filter((a) => !a.stub), m = new Map(), put = (d, k, a, x) => { d = day(d); if (!d || d > TODAY) return; const e = m.get(d) || { neu: [], var: [], down: [], up: [], gone: [] }; e[k].push(x ? { a, ...x } : { a }); m.set(d, e); };
+    const firstOfPk = new Map(); for (const a of items) { const f0 = a.first ? day(a.first) : ""; const cur = firstOfPk.get(a.pk); if (cur === undefined || f0 < cur) firstOfPk.set(a.pk, f0); }
+    for (const a of items) {
+      if (a.first) put(a.first, firstOfPk.get(a.pk) < day(a.first) ? "var" : "neu", a);
+      a.ph.forEach(([t, v], i) => { if (i && v != null && a.ph[i - 1][1] != null && v !== a.ph[i - 1][1]) put(t, v < a.ph[i - 1][1] ? "down" : "up", a, { from: a.ph[i - 1][1], to: v }); });
+      if (a.gone) put(a.gone, "gone", a);
+    }
+    const out = [...m].map(([d, e]) => ({ d, e, n: e.neu.length + e.var.length + e.down.length + e.up.length + e.gone.length })).filter((x) => x.n).sort((x, y) => y.d.localeCompare(x.d));
+    memo.set("tmd", out); return out;
+  }
+  function pageTM() {
+    const days = tmDays();
+    if (!days.length) return `<h1>Time Machine</h1><p class="kd">Noch keine Änderungen seit Beginn der Erfassung.</p>`;
+    const sel = days.find((x) => x.d === S.tmDay) || days[0]; S.tmDay = sel.d; S.asof = sel.d < TODAY ? sel.d : null;
+    const wd = (d) => ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"][new Date(d + "T12:00:00Z").getUTCDay()];
+    const strip_ = days.map((x) => { const pics = [...x.e.neu, ...x.e.var, ...x.e.down, ...x.e.up, ...x.e.gone].map((y) => y.a).filter((a) => a.thumb).slice(0, 4);
+      const parts = [x.e.neu.length && `${x.e.neu.length} neu`, x.e.var.length && `${x.e.var.length} Varianten`, (x.e.down.length + x.e.up.length) && `${x.e.down.length + x.e.up.length} Preise`, x.e.gone.length && `${x.e.gone.length} weg`].filter(Boolean);
+      return `<button class="tmd ${x.d === sel.d ? "on" : ""}" data-tmday="${x.d}"><span class="tmh">${wd(x.d)} ${fS(x.d)}</span><span class="tmp">${pics.map((a) => img(a.thumb)).join("")}</span><span class="tmc">${parts.join(" · ")}</span></button>`; }).join("");
+    const block = (title, arr, fmt) => (arr.length ? `<div class="sec"><div class="h"><h2>${title}</h2><span class="kd">${arr.length}</span></div><div class="tw"><table><tbody>${arr.slice(0, S.more["tm" + title] ? 500 : 12).map((y) => `<tr data-go="#/artikel?id=${encodeURIComponent(y.a.id)}"><td class="im">${img(y.a.thumb)}</td><td><div class="nm">${esc(y.a.name)} <span style="font-weight:400">${esc(y.a.kind)}</span></div><div class="kd vh">${esc(ausOf(y.a))}</div></td><td class="r tn">${fmt(y)}</td><td>${favBtn(y.a.no, y.a.name)}</td></tr>`).join("")}</tbody></table></div>${arr.length > 12 ? `<button class="lnk" data-more="tm${esc(title)}">${S.more["tm" + title] ? "weniger" : `alle ${arr.length} zeigen`}</button>` : ""}</div>` : "");
+    const e = sel.e, big = (y) => Math.abs((y.to / y.from - 1) * 100);
+    return `<h1>Time Machine</h1><p class="kd" style="margin:-4px 0 10px">Jeder Tag, an dem sich im Sortiment etwas geändert hat. Seitlich wischen, Tag antippen.</p>
+      <div class="tmstrip">${strip_}</div>
+      <h2 style="margin-top:18px;font-size:15px;text-transform:none;letter-spacing:0">Änderungen am ${wd(sel.d)}, ${fD(sel.d)}</h2>
+      ${block("Neue Produkte", e.neu, (y) => pr(y.a.price))}
+      ${block("Neue Farben und Größen", e.var, (y) => pr(y.a.price))}
+      ${block("Preis gesenkt", e.down.slice().sort((x, y) => big(y) - big(x)), (y) => `<span class="dn">${eur(y.from)} → ${eur(y.to)}</span><div class="kd">−${Math.round(big(y))} %</div>`)}
+      ${block("Preis erhöht", e.up.slice().sort((x, y) => big(y) - big(x)), (y) => `<span class="up">${eur(y.from)} → ${eur(y.to)}</span><div class="kd">+${Math.round(big(y))} %</div>`)}
+      ${block("Ausgelistet", e.gone, (y) => pr(y.a.price))}
+      <div class="sec"><div class="h"><h2>Sortiment am ${fD(sel.d)}</h2><span class="kd">rekonstruiert aus Preisverlauf, Erscheinen und Auslisten</span></div>${pageList("sort", { embedded: true })}</div>`;
+  }
   function parseHash() {
     let h = location.hash.replace(/^#\/?/, "") || "start"; const [name, qs] = h.split("?"); const p = new URLSearchParams(qs || "");
     const map = { aktuell: "fundgrube", archiv: "fundgrube", gemerkt: "start", katalog: "sortiment", katalogstat: "analyse", statistik: "analyse", maerkte: "analyse", merkliste: "start" };
@@ -767,7 +809,7 @@
     rendering = true;
     try {
       const { name, orig, p } = parseHash(), app = $("#app"), y = scrollY;
-      const tab = ["start", "fundgrube", "sortiment", "analyse", "daten", "einstellungen"].includes(name) ? name : ["artikel", "produkt"].includes(name) ? "sortiment" : ["angebot"].includes(name) ? "fundgrube" : name === "markt" ? "analyse" : "start";
+      const tab = ["start", "fundgrube", "sortiment", "timemachine", "analyse", "daten", "einstellungen"].includes(name) ? name : ["artikel", "produkt"].includes(name) ? "sortiment" : ["angebot"].includes(name) ? "fundgrube" : name === "markt" ? "analyse" : "start";
       // alte Links übernehmen
       if (orig === "archiv") S.f.fund = { ...S.f.fund, zeit: "weg" };
       if ((orig === "aktuell" || orig === "archiv") && p.get("s")) S.f.fund = { ...S.f.fund, markt: [p.get("s")] };
@@ -778,7 +820,7 @@
       const katNow = await loadKatalog();
       if (katNow.failed) { S.kat = katNow; for (const o of FALL()) linkOffer(o); } else if (S.kat?.failed) S.kat = katNow;
       const detailPage = ["artikel", "angebot", "produkt"].includes(name);
-      const needR = ["sortiment", "markt", "analyse", "start"].includes(name) || detailPage, needF = ["sortiment", "analyse", "start"].includes(name) || detailPage;
+      const needR = ["sortiment", "timemachine", "markt", "analyse", "start"].includes(name) || detailPage, needF = ["sortiment", "timemachine", "analyse", "start"].includes(name) || detailPage;
       const needI = ["sortiment", "artikel"].includes(name) || (name === "analyse" && p.get("b") === "laender");
       await Promise.all([needR ? loadRange() : null, needF ? loadFacets() : null, detailPage ? loadDetails() : null, needI ? loadIntl() : null]);
       const needArch = (name === "fundgrube" && S.f.fund.zeit) || ["artikel", "produkt", "angebot"].includes(name) || (name === "analyse" && p.get("b") === "fundgrube") || (name === "start" && !S.repo.archive);
@@ -789,14 +831,15 @@
       else if (name === "angebot") { const o = FALL().find((x) => x.id === p.get("id")); page = o ? pageOffer(o) : S.repo.archive ? `<button class="back" data-back>← zurück</button><h1>Angebot nicht gefunden</h1>` : `<p class="wait">Archiv lädt …</p>`; }
       else if (name === "markt") page = pageMarket(p.get("id"));
       else if (tab === "start") page = pageStart();
-      else if (tab === "fundgrube") page = pageList("fund");
-      else if (tab === "sortiment") page = pageList("sort");
+      else if (tab === "fundgrube") { if (S.asof) { S.asof = null; memo.clear(); } page = pageList("fund"); }
+      else if (tab === "sortiment") { if (S.asof) { S.asof = null; memo.clear(); } page = pageList("sort"); }
+      else if (tab === "timemachine") page = pageTM();
       else if (tab === "analyse") page = pageAna(p.get("b") || "uebersicht");
       else if (tab === "daten") page = await pageDaten();
       else page = await pageEinst();
       if (S.kat?.failed) page = `<div class="err">Die Sortimentsdaten konnten nicht geladen werden (Verbindung?). Ohne sie fehlen Sortiment, Artikeldetails und die Zuordnung der Fundgrube-Angebote. <button class="lnk" data-retry>Erneut versuchen</button></div>` + page;
       app.innerHTML = frame(tab, page);
-      document.title = { start: "Start", fundgrube: "Fundgrube", sortiment: "Sortiment", analyse: "Analyse", daten: "Daten", einstellungen: "Einstellungen" }[tab] + " · Zweite Chance";
+      document.title = { start: "Start", fundgrube: "Fundgrube", sortiment: "Sortiment", timemachine: "Time Machine", analyse: "Analyse", daten: "Daten", einstellungen: "Einstellungen" }[tab] + " · Zweite Chance";
       const want = scrollMem.get(location.hash); scrollTo(0, want != null ? want : keepScroll ? y : 0); keepScroll = false;
     } catch (e) { console.error(e); $("#app").innerHTML = frame("start", `<div class="err"><b>Fehler beim Anzeigen:</b> ${esc(e.message || e)}</div>`); }
     finally { rendering = false; if (again) { again = false; keepScroll = true; render(); } }
@@ -804,11 +847,11 @@
   const scrollMem = new Map(); let keepScroll = false;
   function frame(tab, page) {
     const meta = S.repo.meta, age = meta ? (Date.now() - new Date(meta.updated)) / 36e5 : 99;
-    return `<header class="wx"><div class="hd"><div class="brand">Zweite Chance</div><nav class="tabs" aria-label="Hauptnavigation">${TABS.map(([k, l]) => `<button data-go="#/${k}" ${tab === k ? 'aria-current="page"' : ""}>${l}${k === "fundgrube" && meta ? `<sup>${nf(FA().length)}</sup>` : ""}</button>`).join("")}</nav><div class="mine">${meta ? `<span class="${age > 3 ? "up" : ""}">Stand ${rel(meta.updated)}</span>` : "keine Daten"}${MINE().length ? ` · Meine Märkte: ${MINE().map((m) => `<button data-go="#/markt?id=${encodeURIComponent(m)}">${esc(nameOf(m))}</button>`).join(", ")}` : ""}</div></div></header><main class="wx">${page}</main>`;
+    return `<header class="wx"><div class="hd"><div class="brand">Zweite Chance</div><nav class="tabs" aria-label="Hauptnavigation">${TABS.map(([k, l]) => `<button data-go="#/${k}" ${tab === k ? 'aria-current="page"' : ""}>${l}${k === "fundgrube" && meta ? `<sup>${nf(FA().length)}</sup>` : ""}</button>`).join("")}</nav><div class="mine">${meta ? `<span class="${age > 3 ? "up" : ""}">Stand ${rel(meta.updated)}</span>` : "keine Daten"}${MINE().length && !["sortiment", "timemachine"].includes(tab) ? ` · Meine Märkte: ${MINE().map((m) => `<button data-go="#/markt?id=${encodeURIComponent(m)}">${esc(nameOf(m))}</button>`).join(", ")}` : ""}</div></div></header><main class="wx">${page}</main>`;
   }
   const rerender = () => { keepScroll = true; render(); };
   const setF = (tab, k, v) => { S.f[tab] = { ...S.f[tab], [k]: v }; S.shown = 150; };
-  const tabKey = () => (parseHash().name === "sortiment" ? "sort" : "fund");
+  const tabKey = () => (["sortiment", "timemachine"].includes(parseHash().name) ? "sort" : "fund");
   function exportCSV(tab) {
     const list = apply(tab, S.f[tab]);
     const cols = tab === "fund" ? [["Artikel", (o) => o.art ? o.art.name : o.title], ["Beschreibung", (o) => o.product_description], ["Artikelnummer", (o) => fNo(o.no)], ["Markt", (o) => o.market], ["Zustand", (o) => o.condition], ["Grund", (o) => o.reason_discount], ["Preis", (o) => o.price], ["Regulär", (o) => o.orig], ["Rabatt %", (o) => o.disc], ["eingestellt", (o) => (o.base ? "" : o.start)], ["weg", (o) => o.end || ""]]
@@ -840,6 +883,7 @@
     if (d.pop) { S.open = S.open === d.pop ? null : d.pop; S.sq = {}; return rerender(); }
     if (d.addk) { S.open = d.addk; return rerender(); }
     if (d.shut !== undefined) { S.open = null; return rerender(); }
+    if (d.untok) { if (d.untok === "q") setF(tab, "q", ""); else { const cur = S.f[tab][d.untok]; setF(tab, d.untok, Array.isArray(cur) ? cur.filter((x) => x !== d.v) : null); } return rerender(); }
     if (d.reset) { setF(tab, d.reset, null); S.open = null; return rerender(); }
     if (d.more) { S.more[d.more] = !S.more[d.more]; return rerender(); }
     if (d.clear !== undefined) { S.f[tab] = {}; S.shown = 150; return rerender(); }
@@ -847,6 +891,7 @@
     if (d.view) { S.view[tab] = d.view; lsSet(LS.view, S.view); return rerender(); }
     if (d.grp) { S.grp = d.grp; return rerender(); }
     if (d.ov) { S.ovIkea = d.ov === "1"; return rerender(); }
+    if (d.tmday) { S.tmDay = d.tmday; memo.clear(); return rerender(); }
     if (d.intl) { S.intlCc = d.intl; return rerender(); }
     if (d.heat) { S.heatSort = d.heat; return rerender(); }
     if (d.scroll) { document.getElementById(d.scroll)?.scrollIntoView({ behavior: "smooth" }); return; }
