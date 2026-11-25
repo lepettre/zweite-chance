@@ -223,3 +223,8 @@ input.inp{height:36px;border:0;border-bottom:1px solid var(--ink);padding:0 2px;
 .loc b{color:var(--blue)}
 .only-m{display:none}
 @media(max-width:640px){.only-m{display:inline}}
+.srt{border:0;border-bottom:1px solid var(--ink);background:none;padding:4px 2px;font-weight:600;font-size:13px;max-width:200px}
+@media(max-width:640px){
+  .pop{position:fixed;left:max(8px,env(safe-area-inset-left,0px));right:max(8px,env(safe-area-inset-right,0px));top:auto;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:auto;max-height:62vh;z-index:80;box-shadow:0 -6px 30px rgba(0,0,0,.25)}
+  .bar .l{gap:12px}
+}
