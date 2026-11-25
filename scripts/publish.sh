@@ -30,6 +30,9 @@ else
   mkdir -p out/pub/k
   for f in "$@"; do [ -f "site/k/$f" ] && cp -f "site/k/$f" "out/pub/k/$f"; done
 fi
+[ -d extra ] && cp -r extra/. out/pub/          # z. B. verschluesseltes Handbuch (d/handbuch.bin)
+# Verzeichnis aller Datendateien: Grundlage fuer das Komplett-Backup in der App (nur Dateinamen, Inhalte bleiben verschluesselt)
+( cd out/pub && find d k -type f -name '*.bin' 2>/dev/null | sort | python3 -c 'import sys,json;print(json.dumps({"files":[l.strip() for l in sys.stdin if l.strip()]}))' > files.json ) || true
 cd out/pub
 git init -q -b gh-pages
 git config user.name "bot"
