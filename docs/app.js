@@ -170,6 +170,8 @@
     const pm = ZC.designerPeople(Object.keys(d.designer || {}).filter((r) => !IOS.test(r)));
     for (const [raw, ids] of Object.entries(d.designer || {})) { const ps = pm.get(raw); if (!ps) continue; const names = [...new Set(ps.map((x) => x.name))]; for (const x of ps) pr_.set(x.name, x.resolved); for (const id of ids) ppl.set(id, names); for (const n of names) pc.set(n, (pc.get(n) || 0) + ids.length); }
     const persons = [...pc].map(([name, n]) => ({ name, n, resolved: pr_.get(name) })).sort((a, b) => ZC.sortByLast(a.name, b.name));
+    for (const [id, c] of Object.entries(d.cat || {})) { const a = S.kat?.byId.get(id); if (a && !a.cat) { a.cat = c; const cp = c.split(" › "); a.top = cp[0] || "–"; a.sub = cp[1] || ""; a.sub2 = cp[2] || ""; a._h = null; } }
+    for (const [id, c] of Object.entries(d.col || {})) { const a = S.kat?.byId.get(id); if (a && !a.col) { a.col = c; a.cols = c.split(/,\s*/).filter(Boolean); } }
     return (S.facets = { by, matBy, ppl, persons, materials: Object.keys(d.material || {}).sort((a, b) => a.localeCompare(b, "de")), n: d.n, raw: Object.keys(d.designer || {}) });
   }
   async function loadDetails() {
