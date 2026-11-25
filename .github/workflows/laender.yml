@@ -1,0 +1,43 @@
+name: Länder
+
+on:
+  schedule:
+    - cron: "20 6 * * *"        # täglich; misst nur Länder, deren letzte Messung älter als 6 Tage ist (also je Land wöchentlich)
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Nur diese Länder (z. B. dk,pl), leer = fällige"
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: katalog
+  cancel-in-progress: false
+
+jobs:
+  laender:
+    runs-on: ubuntu-latest
+    timeout-minutes: 130
+    env:
+      ZC_PASSWORD: ${{ secrets.ZC_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+      ONLY: ${{ inputs.only }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Passwort vorhanden?
+        run: '[ -n "$ZC_PASSWORD" ] || { echo "::error::Secret ZC_PASSWORD fehlt."; exit 1; }'
+      - name: Tests
+        run: python -m unittest tests.test_katalog -q
+      - name: Letzten Stand holen
+        run: bash scripts/fetch_site.sh
+      - name: Länder messen
+        run: python -m katalog.laender --only "${ONLY:-}" --budget-min 110
+      - name: Veröffentlichen
+        run: bash scripts/publish.sh k intl.bin intl-index.bin $(cd site/k && ls intl-??.bin 2>/dev/null)
