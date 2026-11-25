@@ -763,7 +763,54 @@
           ${rs.map((r) => `<div class="rulebox"><div class="s" style="font-size:14px">${isFavRule(r) ? `Gemerkt: <b>${esc(S.kat.byNo.get(ZC.normArticle(r.article_numbers[0]))?.name || r.name)}</b> <span class="kd">${fNo(r.article_numbers[0])}</span>` : esc(ruleText(r))}</div><span style="display:flex;gap:10px;align-items:center"><button class="sw" role="switch" aria-checked="${r.notify !== false && r.enabled !== false}" data-notify="${esc(r.id)}" aria-label="Benachrichtigung"></button>${S.rules.some((x) => x.id === r.id) ? `<button class="lnk" style="font-size:12.5px;color:var(--red)" data-delrule="${esc(r.id)}">entfernen</button>` : ""}</span></div>`).join("") || "<p class='kd'>Noch keine Einträge.</p>"}
           <form id="wurl" style="margin-top:16px"><label class="kd" for="wurl-i">Adresse des Hilfsdienstes (nur nötig, wenn sie nicht automatisch ankommt)</label><input class="inp" id="wurl-i" name="u" placeholder="https://…workers.dev" value="${esc(lsGet(LS.workerUrl, "") || "")}"></form></div></div>
       <div class="sec two"><div><h2>Merkliste: frühere Stände</h2><p class="sub">jede Änderung bleibt erhalten · Wiederherstellen fragt zweimal nach</p>${S.server.ok ? `<div class="feed">${(S.hist || []).slice(0, 12).map((h) => `<div style="grid-template-columns:120px minmax(0,1fr) auto;cursor:default"><span class="tn">${fDT(h.ts)}</span><span class="kd">${h.count ?? "?"} Einträge</span><button class="lnk" style="font-size:13px" data-restore="${esc(h.id)}">wiederherstellen</button></div>`).join("") || "<p class='kd'>Noch keine früheren Stände.</p>"}</div>` : `<p class="kd">Erst verfügbar, wenn der Hilfsdienst verbunden ist.</p>`}</div>
-        <div><h2>Zugang</h2><p class="sub">Passwort nur in diesem Browser gespeichert</p><div class="btns" style="margin-top:0"><button class="btn" data-logout>Abmelden</button><a class="btn" href="alt.html">Alte Ansicht</a></div></div></div>`;
+        <div><h2>Backup und Export</h2><p class="sub">alle Rohdaten entschlüsselt als JSON, dazu Fundgrube, Sortiment und Preisverläufe als CSV und das Handbuch – eine ZIP-Datei</p><div class="btns" style="margin-top:0"><button class="btn pri" data-backup>Komplett-Backup herunterladen</button></div><p class="kd" id="bk" style="margin-top:8px"></p>
+          <h2 style="margin-top:24px">Zugang</h2><p class="sub">Passwort nur in diesem Browser gespeichert</p><div class="btns" style="margin-top:0"><button class="btn" data-logout>Abmelden</button><a class="btn" href="alt.html">Alte Ansicht</a></div></div></div>`;
+  }
+
+  /* ================= Komplett-Backup: alle Rohdaten (entschlüsselt) + lesbare Tabellen, als ZIP ================= */
+  const crcT = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  const crc32 = (u8) => { let c = 0xFFFFFFFF; for (let i = 0; i < u8.length; i++) c = crcT[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+  async function deflateRaw(u8) { if (!window.CompressionStream) return null; try { return new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(new CompressionStream("deflate-raw"))).arrayBuffer()); } catch { return null; } }
+  async function makeZip(files) {
+    const enc = new TextEncoder(), parts = [], central = []; let off = 0;
+    for (const [name, text] of files) {
+      const data = enc.encode(text), nm = enc.encode(name), crc = crc32(data), comp = await deflateRaw(data), method = comp ? 8 : 0, body = comp || data;
+      const lh = new DataView(new ArrayBuffer(30)); [[0, 0x04034b50, 4], [4, 20, 2], [6, 0x0800, 2], [8, method, 2], [12, 0x21, 2], [14, crc, 4], [18, body.length, 4], [22, data.length, 4], [26, nm.length, 2]].forEach(([o, v, n]) => (n === 4 ? lh.setUint32(o, v, true) : lh.setUint16(o, v, true)));
+      const ch = new DataView(new ArrayBuffer(46)); [[0, 0x02014b50, 4], [4, 20, 2], [6, 20, 2], [8, 0x0800, 2], [10, method, 2], [14, 0x21, 2], [16, crc, 4], [20, body.length, 4], [24, data.length, 4], [28, nm.length, 2], [42, off, 4]].forEach(([o, v, n]) => (n === 4 ? ch.setUint32(o, v, true) : ch.setUint16(o, v, true)));
+      parts.push(new Uint8Array(lh.buffer), nm, body); central.push(new Uint8Array(ch.buffer), nm); off += 30 + nm.length + body.length;
+    }
+    const cd = central.reduce((a, b) => a + b.length, 0), end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true); end.setUint32(12, cd, true); end.setUint32(16, off, true);
+    return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: "application/zip" });
+  }
+  const csvOf = (rows, cols) => { const cell = (v) => { if (v == null) return ""; if (typeof v === "object") v = JSON.stringify(v); const t = String(v); return /[";\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; }; return "\ufeff" + [cols.join(";"), ...rows.map((r) => cols.map((c) => cell(r[c])).join(";"))].join("\n"); };
+  const DERIVED = new Set(["art", "thumb", "top", "base", "active", "mid", "market", "start", "end", "age", "disc", "orig", "sub", "sub2", "cols", "first", "gone", "stub", "pk", "varsKnown", "ri", "nMk", "nKn", "coll"]);
+  const rawCols = (list, skip = []) => { const set = new Set(); for (const o of list.slice(0, 2000)) for (const k of Object.keys(o)) if (!k.startsWith("_") && !DERIVED.has(k) && !skip.includes(k)) set.add(k); return [...set]; };
+  async function backup() {
+    const st = (t) => { const el = $("#bk"); if (el) el.textContent = t; };
+    st("Lade Dateiverzeichnis …");
+    let list = null; try { const r = await fetch("files.json", { cache: "no-cache" }); if (r.ok) list = (await r.json()).files; } catch { /* älterer Stand ohne Verzeichnis */ }
+    if (!list) list = ["d/meta.bin", "d/current.bin", "d/runs.bin", "d/state.bin", "d/watchlist.bin", ...(S.repo.meta?.archive_months || []).map((m) => `d/a-${m}.bin`), "k/meta.bin", "k/items.bin", "k/gaps.bin", "k/range.bin", "k/details.bin", "k/facets.bin", "k/intl.bin", "k/intl-index.bin", "k/subsent.bin"];
+    const files = [], ok = [], failed = [];
+    for (let i = 0; i < list.length; i++) {
+      st(`Rohdaten ${i + 1} von ${list.length}: ${list[i]}`);
+      try { files.push([`rohdaten/${list[i].replace(/\.bin$/, ".json")}`, JSON.stringify(await openFile(list[i]))]); ok.push(list[i]); } catch (e) { if (e instanceof AuthError) throw e; failed.push(list[i]); }
+    }
+    st("Tabellen erstellen …");
+    await loadArchive().catch(() => {});
+    const offers = FALL(), items = S.kat?.items || [];
+    files.push(["tabellen/fundgrube.csv", csvOf(offers, rawCols(offers, ["no"]))]);
+    files.push(["tabellen/sortiment.csv", csvOf(items, rawCols(items))]);
+    const ph = []; for (const a of items) for (const [t, v] of a.ph || []) ph.push({ id: a.id, artikelnummer: a.no, name: a.name, art: a.kind, datum: day(t), preis: v });
+    files.push(["tabellen/preisverlauf.csv", csvOf(ph, ["id", "artikelnummer", "name", "art", "datum", "preis"])]);
+    files.push(["tabellen/merkliste.json", JSON.stringify({ rules: allRules().map(({ _repo, ...r }) => r), maerkte_meine: MINE() }, null, 1)]);
+    const hb = await soft(getBin("handbuch.bin"));
+    for (const [n, t] of Object.entries(hb?.docs || {})) files.push([`handbuch/${n}.md`, t]);
+    files.push(["LIESMICH.txt", `Zweite Chance – Komplett-Backup vom ${new Date().toLocaleString("de-DE")}\n\nrohdaten/: jede Datendatei entschlüsselt als JSON, genau so, wie sie gespeichert ist (Quelle der Wahrheit).\ntabellen/: daraus abgeleitete, lesbare Tabellen (Auswertung, jederzeit neu erzeugbar).\nhandbuch/: Datenstandard, Changelog und Regeln.\n\nEnthalten: ${ok.length} Dateien${failed.length ? `\nNicht lesbar: ${failed.join(", ")}` : ""}\n`]);
+    st("ZIP packen …");
+    const blob = await makeZip(files), a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = `zweite-chance-backup_${TODAY}.zip`; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+    st(`Fertig: ${ok.length} Dateien, ${Math.round(blob.size / 1e6)} MB${failed.length ? ` · nicht lesbar: ${failed.join(", ")}` : ""}`);
   }
 
   /* ================= Rahmen, Wege, Ereignisse ================= */
@@ -923,6 +970,7 @@
     if (d.restore) { if (!confirmTwice("Diesen früheren Stand der Merkliste wiederherstellen?")) return; try { const snap = await worker.call("GET", null, { path: `/api/history?id=${encodeURIComponent(d.restore)}` }); S.rules = ZC.dedupeRules(snap.rules || []).map(withId); S.hist = null; await persistRules(true); memo.clear(); toast("Früherer Stand wiederhergestellt."); rerender(); } catch (err) { toast(`Nicht möglich: ${esc(err.message)}`); } return; }
     if (d.asofOff !== undefined) { S.asof = null; memo.clear(); return rerender(); }
     if (d.retry !== undefined) { S.kat = null; memo.clear(); return render(); }
+    if (d.backup !== undefined) { t.disabled = true; backup().catch((err) => { const el = $("#bk"); if (el) el.textContent = `Fehler: ${err.message || err}`; }).finally(() => { t.disabled = false; }); return; }
     if (d.logout !== undefined) { lsSet(LS.key, null); lsSet(LS.pw, null); location.reload(); }
   });
   document.addEventListener("change", (e) => {

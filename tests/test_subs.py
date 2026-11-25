@@ -46,3 +46,17 @@ class TestRuleKeys(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHandbuch(unittest.TestCase):
+    def test_schreiben_ohne_passwort_lesen_mit(self):
+        import base64
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+        from tracker import docsec
+        k = X25519PrivateKey.generate()
+        raw = k.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
+        pub = base64.b64encode(k.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)).decode()
+        blob = docsec.seal_text("Datenstandard äöü", pub)
+        self.assertNotIn(b"Datenstandard", blob)
+        self.assertEqual(docsec.open_text(blob, raw), "Datenstandard äöü")
