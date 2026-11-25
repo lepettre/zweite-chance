@@ -6,3 +6,4 @@
   vorher prüfen, dass alles andernorts erhalten ist; wo möglich bleibt ein früherer Stand wiederherstellbar.
 - Datenerhalt und Zuverlässigkeit gehen vor Geschwindigkeit; trotzdem schlank und schnell bauen.
 - Öffentlich so wenig wie möglich: veröffentlichte Daten sind verschlüsselt, README bleibt neutral.
+- Antworten an den Nutzer immer maximal kurz.

@@ -11,7 +11,7 @@ URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 fresh="$(mktemp -d)"
 git clone -q --depth 1 -b gh-pages "$URL" "$fresh" 2>/dev/null || mkdir -p "$fresh/d" "$fresh/k"
 rm -rf out/pub && mkdir -p out/pub
-cp docs/index.html docs/app.js docs/core.js docs/styles.css docs/bookmarklet.src.js out/pub/
+cp docs/index.html docs/app.js docs/core.js docs/styles.css docs/alt.html docs/app-alt.js docs/styles-alt.css docs/bookmarklet.src.js out/pub/
 cp docs/manifest.webmanifest out/pub/
 cp -r docs/icons out/pub/icons
 touch out/pub/.nojekyll

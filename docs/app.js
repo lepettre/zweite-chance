@@ -1,108 +1,166 @@
-/* Zweite-Chance-Monitor – Web-App (ohne Build, ohne Abhängigkeiten). */
+/* Zweite Chance – Web-App (ohne Build). Start · Fundgrube · Sortiment · Analyse · Daten · Einstellungen.
+   Datenschicht wie bisher (verschlüsselte Dateien unter d/ und k/, Merkliste über den Worker). Die alte Oberfläche liegt unter alt.html. */
 (function () {
   "use strict";
+  /* ================= Grundlagen ================= */
   const $ = (s, el = document) => el.querySelector(s);
-  const $$ = (s, el = document) => [...el.querySelectorAll(s)];
-  const view = $("#view");
-  const TZ = "Europe/Berlin";
-  const LS = { rules: "zc.rules", lastVisit: "zc.lastVisit", prevVisit: "zc.prevVisit", source: "zc.source", layout: "zc.layout", notify: "zc.notify", seenHits: "zc.seenHits", key: "zc.k", pw: "zc.p", savedSort: "zc.ss", workerUrl: "zc.w" };
-
-  /* ---------- Formatierung ---------- */
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const nf0 = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
-  const nf2 = new Intl.NumberFormat("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const eur = (v) => v === null || v === undefined ? "–" : `${nf2.format(v)} €`;
-  const eur0 = (v) => v === null || v === undefined ? "–" : `${nf0.format(Math.round(v))} €`;
-  const pct = (v) => v === null || v === undefined ? "–" : `${nf0.format(Math.round(v))} %`;
-  const dtf = new Intl.DateTimeFormat("de-DE", { timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
-  const df = new Intl.DateTimeFormat("de-DE", { timeZone: TZ, day: "2-digit", month: "2-digit", year: "numeric" });
-  const dayFmt = new Intl.DateTimeFormat("sv-SE", { timeZone: TZ }), dayMemo = new Map();
-  // Berliner Tag; je volle Stunde nur einmal berechnet (Zeitzonen-Versatz ist stundengenau)
-  const dayKey = (ts) => { if (typeof ts !== "string") return dayFmt.format(new Date(ts)); const h = ts.slice(0, 13); let d = dayMemo.get(h); if (!d) dayMemo.set(h, d = dayFmt.format(new Date(ts))); return d; };
-  const fmtDT = (ts) => ts ? dtf.format(new Date(ts)) : "–";
-  const fmtD = (ts) => ts ? df.format(new Date(ts)) : "–";
-  function rel(ts) {
-    if (!ts) return "–";
-    const s = (Date.now() - new Date(ts)) / 1000;
-    if (s < 90) return "gerade eben";
-    if (s < 3600) return `vor ${Math.round(s / 60)} Min.`;
-    if (s < 86400 * 1.5) return `vor ${Math.round(s / 3600)} Std.`;
-    if (s < 86400 * 60) return `vor ${Math.round(s / 86400)} Tagen`;
-    return fmtD(ts);
-  }
-  const days = (a, b) => a && b ? (new Date(b) - new Date(a)) / 864e5 : null;
-  const dur = (d) => d === null ? "–" : d < 1 ? `${Math.max(1, Math.round(d * 24))} Std.` : `${nf0.format(Math.round(d))} Tag${Math.round(d) === 1 ? "" : "e"}`;
-  const median = (a) => { const s = a.filter((x) => x !== null && !Number.isNaN(x)).sort((x, y) => x - y); if (!s.length) return null; const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
-  const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
-  function toast(msg, ms = 4200) { const t = document.createElement("div"); t.className = "toast"; t.innerHTML = msg; $("#toasts").appendChild(t); setTimeout(() => t.remove(), ms); }
+  const NF = new Intl.NumberFormat("de-DE"), NF2 = new Intl.NumberFormat("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const nf = (v) => (v == null ? "–" : NF.format(v));
+  const eur = (v) => (v == null ? "–" : `${NF2.format(v)} €`);
+  const eur0 = (v) => (v == null ? "–" : `${NF.format(Math.round(v))} €`);
+  const pr = (v) => { if (v == null) return "–"; const [e, c] = Number(v).toFixed(2).split("."); return `<span class="pr">${NF.format(+e)}<sup>,${c === "00" ? "–" : c}</sup><small>€</small></span>`; };
+  const day = (ts) => (ts ? String(ts).slice(0, 10) : "");
+  const TODAY = new Date().toISOString().slice(0, 10);
+  const ms = (d) => Date.parse(day(d) + "T12:00:00Z");
+  const dIso = (n) => new Date(ms(TODAY) - n * 864e5).toISOString().slice(0, 10);
+  const daysBetween = (a, b) => Math.round((ms(b) - ms(a)) / 864e5);
+  const fD = (d) => (d ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : "–");
+  const fS = (d) => (d ? `${+d.slice(8, 10)}.${+d.slice(5, 7)}.` : "–");
+  const fDT = (ts) => (ts ? new Intl.DateTimeFormat("de-DE", { timeZone: "Europe/Berlin", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(ts)) : "–");
+  const fNo = (n) => ZC.fmtArticle(n);
+  const ago = (n) => (n == null ? "–" : n <= 0 ? "heute" : n === 1 ? "gestern" : `vor ${n} Tagen`);
+  const rel = (ts) => { if (!ts) return "–"; const s = (Date.now() - new Date(ts)) / 1000; return s < 90 ? "gerade eben" : s < 3600 ? `vor ${Math.round(s / 60)} Min.` : s < 129600 ? `vor ${Math.round(s / 3600)} Std.` : `vor ${Math.round(s / 86400)} Tagen`; };
+  const qn = (arr, p) => { const a = arr.filter((x) => x != null && !Number.isNaN(x)).sort((x, y) => x - y); if (!a.length) return null; const i = (a.length - 1) * p, l = Math.floor(i); return a[l] + (a[Math.ceil(i)] - a[l]) * (i - l); };
   const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } };
-  const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* privat-Modus */ } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* privat */ } };
+  function toast(msg, t = 4500) { const el = document.createElement("div"); el.className = "toast"; el.innerHTML = msg; $("#toasts").appendChild(el); setTimeout(() => el.remove(), t); }
+  const fold = (t) => ZC.fold(String(t || ""));
+  const LS = { key: "zc.k", pw: "zc.p", rules: "zc.rules", lastVisit: "zc.lastVisit", mine: "zc.mymarkets", workerUrl: "zc.w", view: "zc.v2.view" };
+  const K_IMG = "https://www.ikea.com/de/de/images/products/", K_P = "https://www.ikea.com/de/de/p/";
+  const IOS = /ikea of sweden/i;
+  const HEART = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7.2-4.5-9.1-8.7C1.5 8.2 3.4 5 6.7 5c2.1 0 3.4 1.2 4.3 2.5C11.9 6.2 13.2 5 15.3 5c3.3 0 5.2 3.2 3.8 6.3C19.2 15.5 12 20 12 20z"/></svg>';
+  const COLHEX = { weiß: "#F3F2EE", beige: "#D8C6A8", grau: "#8F9194", schwarz: "#262626", braun: "#7A5A40", grün: "#5E7B5A", blau: "#3E5F8A", rot: "#A8322D", gelb: "#E2B93B", lila: "#7A5C8A", rosa: "#E1B2AE", orange: "#D9822B", türkis: "#3AA39A", silberfarben: "#C0C0C0", goldfarben: "#C9A54A", transparent: "#FFFFFF", mehrfarbig: "linear-gradient(90deg,#d33,#3a3,#33d)", natur: "#D3B58E", anthrazit: "#3A3D40" };
+  const sq_ = (c) => `<i class="sq" style="background:${COLHEX[c] || "#ccc"}"></i>`;
 
-  function csvCell(v) { if (v === null || v === undefined) return ""; if (Array.isArray(v)) v = v.join("|"); const s = String(v); return /[",;\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }
-  function download(name, text, type = "text/csv;charset=utf-8") {
-    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([type.startsWith("text/csv") ? "\ufeff" + text : text], { type }));
-    a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
-  }
-  function toCSV(rows, cols) { return [cols.join(","), ...rows.map((r) => cols.map((c) => csvCell(r[c])).join(","))].join("\n"); }
-  function parseCSV(text) {
-    const rows = []; let row = [], cell = "", q = false;
-    for (let i = 0; i < text.length; i++) {
-      const c = text[i];
-      if (q) { if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; }
-      else if (c === '"') q = true; else if (c === ",") { row.push(cell); cell = ""; }
-      else if (c === "\n") { row.push(cell); rows.push(row); row = []; cell = ""; } else if (c !== "\r") cell += c;
-    }
-    if (cell || row.length) { row.push(cell); rows.push(row); }
-    const [h, ...rest] = rows; return h ? rest.filter((r) => r.length > 1).map((r) => Object.fromEntries(h.map((k, i) => [k, r[i] ?? ""]))) : [];
-  }
-
-  /* ---------- Datenhaltung ---------- */
-  const S = {
-    repo: { meta: null, current: [], archive: {}, watch: [], runs: null, history: null },
-    archiveMonth: null,
-    local: { db: {}, events: [], runs: [], updated: null, stores: [] },
-    source: lsGet(LS.source, "auto"),
-    rules: ZC.dedupeRules(lsGet(LS.rules, [])),
-    prevVisit: null,
-    filters: {},
-    layout: lsGet(LS.layout, "list"),
-    savedSort: lsGet(LS.savedSort, "treffer"),
-    shown: 120,
-  };
-
-  async function getText(url, cache = "no-cache") { const r = await fetch(url, { cache }); if (!r.ok) throw new Error(`${r.status} ${url}`); return r.text(); }
-
-  // IndexedDB (lokaler Bestand aus Lesezeichen-Importen)
-  const idb = {
-    open() { return new Promise((res, rej) => { const r = indexedDB.open("zweite-chance", 1); r.onupgradeneeded = () => r.result.createObjectStore("kv"); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
-    async get(k) { const db = await this.open(); return new Promise((res, rej) => { const t = db.transaction("kv").objectStore("kv").get(k); t.onsuccess = () => res(t.result); t.onerror = () => rej(t.error); }); },
-    async set(k, v) { const db = await this.open(); return new Promise((res, rej) => { const t = db.transaction("kv", "readwrite"); t.objectStore("kv").put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); },
-  };
-  async function loadLocal() { try { const v = await idb.get("state"); if (v) S.local = v; } catch (e) { console.warn("IndexedDB nicht verfügbar", e); } }
-  const saveLocal = () => idb.set("state", S.local);
-  const hasLocal = () => Object.keys(S.local.db).length > 0;
-  const hasRepo = () => !!S.repo.meta;
-
-  /* ---------- Zugang: alle Daten liegen verschlüsselt auf dem Server ---------- */
+  /* ================= Zugang und Daten ================= */
   class AuthError extends Error {}
   const AUTH = { key: null, pw: null };
-  async function getBin(name, version) {
-    const r = await fetch(`d/${name}${version ? "?v=" + encodeURIComponent(version) : ""}`, { cache: version ? "force-cache" : "no-cache" });
-    if (!r.ok) throw new Error(`${r.status} ${name}`);
-    try { return await ZC.openBlob(await r.arrayBuffer(), AUTH.key); }
-    catch (e) { throw new AuthError("Passwort stimmt nicht"); }
+  async function openFile(path, version) {
+    const r = await fetch(`${path}${version ? "?v=" + encodeURIComponent(version) : ""}`, { cache: version ? "force-cache" : "no-cache" });
+    if (!r.ok) throw new Error(`${r.status} ${path}`);
+    try { return await ZC.openBlob(await r.arrayBuffer(), AUTH.key); } catch { throw new AuthError("Passwort stimmt nicht"); }
   }
-  const storeIndex = () => Object.fromEntries((S.repo.meta?.stores || []).map((s) => [s.id, s]));
-  // Der große Erst-Import: alle Angebote, die beim allerersten Abruf schon da waren, tragen denselben Zeitstempel.
-  // Er sagt nichts darüber, wann sie eingestellt wurden - deshalb wird er in "neu"-Zahlen, Verweildauern und Datumsanzeigen ausgeblendet.
-  const findBase = (list) => { const m = new Map(); for (const o of list) m.set(o.first_seen, (m.get(o.first_seen) || 0) + 1); let best = null; for (const [k, n] of m) if (n >= 1000 && n >= list.length * 0.05 && (!best || k < best)) best = k; return best; };
-  const markBase = (list) => { for (const o of list) o.base = !!S.baseTs && o.first_seen === S.baseTs; return list; };
-  const unpack = (d) => markBase(ZC.unpackOffers(d, storeIndex(), Object.fromEntries((S.repo.meta?.stores || []).map((s) => [s.id, s.last_ok])), S.repo.meta?.updated));
-  const dwellOf = (o) => (o.base ? null : days(o.first_seen, o.gone_at));
-  const sinceTxt = (o, withDate) => (o.base ? "seit Beginn der Erfassung" : withDate ? `seit ${fmtD(o.first_seen)}` : `seit ${rel(o.first_seen)}`);
+  const getBin = (n, v) => openFile(`d/${n}`, v), getK = (n, v) => openFile(`k/${n}`, v);
+  const soft = (p) => p.catch((e) => { if (e instanceof AuthError) throw e; return null; });
 
+  const S = {
+    repo: { meta: null, current: [], archive: null, watch: [], runs: null },
+    rules: ZC.dedupeRules(lsGet(LS.rules, [])), server: { ok: false, groups: {} },
+    kat: null, rng: undefined, facets: undefined, details: undefined, state: undefined,
+    tab: "start", f: { fund: {}, sort: {} }, sort: { fund: "neu", sort: "chg" }, view: lsGet(LS.view, { fund: "liste", sort: "liste" }), grp: "aus",
+    open: null, sq: {}, more: {}, heatSort: "anteil", cmp: null, shown: 150, prevVisit: lsGet(LS.lastVisit, null),
+  };
+  const storeList = () => (S.repo.meta?.stores || []).slice().sort((a, b) => a.name.localeCompare(b.name, "de"));
+  const nameOf = (id) => (S.repo.meta?.stores || []).find((s) => s.id === id)?.name || S.rng?.byId?.[id]?.name || id;
+  const MINE = () => lsGet(LS.mine, []);
+  const isMine = (id) => MINE().includes(id);
+
+  // Startbestand: Angebote, die beim ersten Abruf schon da waren, tragen denselben Zeitstempel – nie als „neu“ zählen.
+  const findBase = (list) => { const m = new Map(); for (const o of list) m.set(o.first_seen, (m.get(o.first_seen) || 0) + 1); let best = null; for (const [k, n] of m) if (n >= 1000 && n >= list.length * 0.05 && (!best || k < best)) best = k; return best; };
+  const unpackOffers = (d) => ZC.unpackOffers(d, Object.fromEntries((S.repo.meta?.stores || []).map((s) => [s.id, s])), Object.fromEntries((S.repo.meta?.stores || []).map((s) => [s.id, s.last_ok])), S.repo.meta?.updated);
+  function adaptOffer(o) {
+    if (o._a) return o;
+    o.no = ZC.normArticle(o.article_number || (o.article_numbers || [])[0] || "");
+    o.base = !!S.baseTs && o.first_seen === S.baseTs;
+    o.active = o.status === "active";
+    o.mid = o.store_id; o.market = o.store || nameOf(o.store_id);
+    o.start = day(o.first_seen); o.end = o.active ? null : day(o.gone_at || o.last_seen);
+    o.age = daysBetween(o.start, TODAY);
+    o.disc = o.discount_pct != null ? Math.round(o.discount_pct) : null; o.orig = o.original_price;
+    o._a = 1;
+    return o;
+  }
+  const linkOffer = (o) => { o.art = S.kat?.byNo.get(o.no) || null; o.top = o.art?.top || "ohne Zuordnung"; o.thumb = o.image ? `${o.image}?f=xs` : o.art ? o.art.thumb : ""; return o; };
+  async function loadRepo() {
+    const meta = await soft(getBin("meta.bin"));
+    if (!meta) { S.repo.meta = null; return; }
+    S.repo.meta = meta;
+    const cur = unpackOffers(await soft(getBin("current.bin", meta.current_version)));
+    S.baseTs = findBase(cur); S.repo.current = cur.map(adaptOffer); S.repo.archive = null;
+    await loadRules();
+  }
+  async function loadArchive() {
+    if (S.repo.archive || !S.repo.meta) return;
+    const months = (S.repo.meta.archive_months || []).slice().sort();
+    const parts = await Promise.all(months.map((m) => soft(getBin(`a-${m}.bin`, (S.repo.meta.archive_hash || {})[m] || S.repo.meta.updated)).then((d) => (d ? unpackOffers(d) : []))));
+    const seen = new Set(S.repo.current.map((o) => o.id));
+    S.repo.archive = parts.flat().filter((o) => !seen.has(o.id)).map(adaptOffer);
+  }
+  const FA = () => S.repo.current.filter((o) => o.active);
+  const FALL = () => (S.repo.archive ? [...S.repo.current, ...S.repo.archive] : S.repo.current);
+
+  // Sortiment (k/items.bin) – Gegenstück zu katalog/model.py
+  function unpackK(d) {
+    if (!d) return [];
+    const T = d.s, ix = Object.fromEntries(d.f.map((f, i) => [f, i])), STR = ["id", "no", "type", "name", "kind", "measure", "slug", "img", "cat", "vfrom", "vto", "tag", "first_seen", "last_seen", "status", "ph", "log", "col", "ctx"], out = [];
+    for (const row of d.r) {
+      const o = {};
+      for (const f of STR) o[f] = ix[f] === undefined ? "" : T[row[ix[f]]];
+      for (const f of ["price", "prev", "last", "online", "missing", "rating", "rcount"]) o[f] = ix[f] === undefined ? 0 : row[ix[f]];
+      o.top = (o.cat || "").split(" › ")[0] || "–"; o.sub = (o.cat || "").split(" › ")[1] || "";
+      o.ph = o.ph ? JSON.parse(o.ph) : [[o.first_seen, o.price]];
+      o.log = o.log ? JSON.parse(o.log) : [];
+      o.cols = (o.col || "").split(", ").filter(Boolean);
+      o.thumb = o.img ? `${K_IMG}${o.img}?f=xs` : "";
+      out.push(o);
+    }
+    return out;
+  }
+  async function loadKatalog() {
+    if (S.kat) return S.kat;
+    const meta = await soft(getK("meta.bin"));
+    const items = meta ? unpackK(await soft(getK("items.bin", meta.items_version))) : [];
+    const first = items.reduce((m, o) => (o.first_seen && o.first_seen < m ? o.first_seen : m), "9999");
+    const firstN = items.filter((o) => o.first_seen === first).length;
+    for (const o of items) {
+      o.base = firstN >= 1000 && o.first_seen === first;
+      o.first = o.base ? null : o.first_seen;
+      o.gone = o.status === "gone" ? o.last_seen : null;
+      o.stub = o.status === "stub";
+    }
+    S.kat = { meta, items, first, byId: new Map(items.map((o) => [o.id, o])), byNo: new Map(items.filter((o) => !o.stub).map((o) => [o.no, o])) };
+    S.t0 = [first, day(S.baseTs)].filter((x) => x && x !== "9999").sort()[0] || dIso(180);
+    for (const o of FALL()) linkOffer(o);
+    return S.kat;
+  }
+  const b64bits = (s) => (s ? Uint8Array.from(atob(s), (c) => c.charCodeAt(0)) : new Uint8Array(0));
+  const bitAt = (arr, i) => (arr[i >> 3] >> (i & 7)) & 1;
+  async function loadRange() {
+    if (S.rng !== undefined) return S.rng;
+    const d = await soft(getK("range.bin"));
+    if (!d) return (S.rng = null);
+    const N = d.ids.length, st = d.stores.filter((s) => d.range[s.id]).map((s) => ({ ...s, r: b64bits(d.range[s.id]), k: b64bits((d.stock || {})[s.id]), n: Math.min(s.n || 0, N) }));
+    const cnt = new Uint16Array(N), known = new Uint16Array(N);
+    for (const s of st) for (let i = 0; i < s.n; i++) { known[i]++; if (bitAt(s.r, i)) cnt[i]++; }
+    S.rng = { ids: d.ids, N, st, cnt, known, idx: new Map(d.ids.map((x, i) => [x, i])), updated: d.updated, byId: Object.fromEntries(st.map((s) => [s.id, s])) };
+    for (const o of S.kat?.items || []) { const i = S.rng.idx.get(o.id); o.ri = i; o.nMk = i != null && known[i] ? cnt[i] : null; o.nKn = i != null ? known[i] : 0; }
+    return S.rng;
+  }
+  const carries = (o, sid) => { const R = S.rng, s = R?.byId[sid]; if (!s || o.ri == null || o.ri >= s.n) return null; return bitAt(s.r, o.ri) === 1; };
+  async function loadFacets() {
+    if (S.facets !== undefined) return S.facets;
+    const d = await soft(getK("facets.bin"));
+    if (!d) return (S.facets = null);
+    const by = new Map(), matBy = new Map(), ppl = new Map(), pc = new Map(), pr_ = new Map();
+    for (const [n, ids] of Object.entries(d.designer || {})) for (const id of ids) by.set(id, n);
+    for (const [n, ids] of Object.entries(d.material || {})) for (const id of ids) matBy.set(id, n);
+    const pm = ZC.designerPeople(Object.keys(d.designer || {}).filter((r) => !IOS.test(r)));
+    for (const [raw, ids] of Object.entries(d.designer || {})) { const ps = pm.get(raw); if (!ps) continue; const names = [...new Set(ps.map((x) => x.name))]; for (const x of ps) pr_.set(x.name, x.resolved); for (const id of ids) ppl.set(id, names); for (const n of names) pc.set(n, (pc.get(n) || 0) + ids.length); }
+    const persons = [...pc].map(([name, n]) => ({ name, n, resolved: pr_.get(name) })).sort((a, b) => ZC.sortByLast(a.name, b.name));
+    return (S.facets = { by, matBy, ppl, persons, materials: Object.keys(d.material || {}).sort((a, b) => a.localeCompare(b, "de")), n: d.n, raw: Object.keys(d.designer || {}) });
+  }
+  async function loadDetails() {
+    if (S.details !== undefined) return S.details;
+    const d = await soft(getK("details.bin"));
+    if (!d) return (S.details = null);
+    const T = d.s, ix = Object.fromEntries(d.f.map((f, i) => [f, i])), m = new Map();
+    for (const row of d.r) m.set(row[0], Object.fromEntries(d.f.slice(1).map((f) => [f, T[row[ix[f]]]])));
+    return (S.details = m);
+  }
+
+  /* ================= Merkliste (gemerkte Artikel und gespeicherte Suchen) ================= */
   const worker = {
-    // Adresse kommt aus dem Abruf (GitHub-Secret WORKER_URL); notfalls hier im Browser eingetragen (Daten-Seite)
     get url() { const u = (S.repo.meta?.worker || lsGet(LS.workerUrl, "") || "").trim().replace(/\/+$/, ""); return u ? (/^https?:\/\//i.test(u) ? u : "https://" + u) : null; },
     async call(method, body, { path = "/api/watchlist", confirmDelete = false } = {}) {
       const r = await fetch(`${this.url}${path}`, { method, headers: { "x-key": AUTH.pw, "content-type": "application/json", ...(confirmDelete ? { "x-confirm-delete": "2" } : {}) }, body: body ? JSON.stringify(body) : undefined });
@@ -110,1974 +168,605 @@
       return r.json();
     },
   };
+  const hashStr = (t) => { let h = 2166136261; for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
+  const withId = (r) => (r.id ? r : { ...r, id: "r" + hashStr(ZC.ruleKey(r)) });
+  const newId = () => "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
   async function loadRules() {
     S.server = { ok: false, groups: {} };
     if (worker.url && AUTH.pw) {
       try {
         const w = await worker.call("GET");
         S.server = { ok: true, groups: w.groups || {}, dupFix: ZC.dedupeRules(w.rules || []).length < (w.rules || []).length };
-        const old = lsGet(LS.rules, []);                       // frühere, nur lokal gespeicherte Regeln einmalig übernehmen
+        const old = lsGet(LS.rules, []);
         let base = w.rules || [], seed = false;
-        if (!base.length) {                                    // Server noch leer: mit der letzten Sicherung befüllen, nichts geht verloren
-          const saved = await getBin("watchlist.bin").catch((e) => { if (e instanceof AuthError) throw e; return { rules: [] }; });
-          base = saved.rules || []; seed = base.length > 0;
-        }
-        const merged = ZC.dedupeRules([...base, ...old]);
-        S.rules = merged.map(withId); S.repo.watch = []; resetRules();
-        if ((old.length || seed) && await persistRules() && old.length) lsSet(LS.rules, []);
+        if (!base.length) { const saved = await soft(getBin("watchlist.bin")); base = saved?.rules || []; seed = base.length > 0; }
+        S.rules = ZC.dedupeRules([...base, ...old]).map(withId); S.repo.watch = [];
+        if ((old.length || seed) && (await persistRules()) && old.length) lsSet(LS.rules, []);
         return;
       } catch (e) { console.warn("Merkliste vom Server nicht lesbar", e); }
     }
-    const saved = await getBin("watchlist.bin").catch((e) => { if (e instanceof AuthError) throw e; return { rules: [] }; });
-    S.repo.watch = ZC.dedupeRules((saved.rules || []).map((r, i) => ({ ...r, name: r.name || `Regel ${i + 1}`, _repo: true }))).map(withId);
-    S.rules = S.rules.map(withId); resetRules();
+    const saved = await soft(getBin("watchlist.bin"));
+    S.repo.watch = ZC.dedupeRules((saved?.rules || []).map((r, i) => ({ ...r, name: r.name || `Suche ${i + 1}`, _repo: true }))).map(withId);
+    S.rules = S.rules.map(withId);
   }
-  // Entfernen nur nach doppelter Bestätigung; der Server behält jeden früheren Stand.
-  const confirmTwice = (what) => confirm(`${what}\n\nBestätigung 1 von 2.`) && confirm(`Wirklich? ${what}\n\nBestätigung 2 von 2 – danach ist es aus der Liste entfernt (früherer Stand bleibt wiederherstellbar).`);
+  const confirmTwice = (what) => confirm(`${what}\n\nBestätigung 1 von 2.`) && confirm(`Wirklich? ${what}\n\nBestätigung 2 von 2. Der frühere Stand bleibt wiederherstellbar.`);
   async function persistRules(confirmDelete = false) {
-    S.rules = ZC.dedupeRules(S.rules); resetRules();
+    S.rules = ZC.dedupeRules(S.rules); memo.clear();
     if (S.server?.ok) {
-      try { await worker.call("PUT", { rules: S.rules.map(withId).map(({ _localIndex, _repo, ...r }) => r), groups: S.server.groups }, { confirmDelete: confirmDelete || S.server.dupFix }); S.server.dupFix = false; return true; }
+      try { await worker.call("PUT", { rules: S.rules.map(withId).map(({ _repo, ...r }) => r), groups: S.server.groups }, { confirmDelete: confirmDelete || S.server.dupFix }); S.server.dupFix = false; return true; }
       catch (e) { toast(`<b>Merkliste nicht gespeichert:</b> ${esc(e.message)}`, 7000); return false; }
     }
     lsSet(LS.rules, S.rules); return true;
   }
-
-  async function loadRepo() {
-    let meta;
-    try { meta = await getBin("meta.bin"); }
-    catch (e) { if (e instanceof AuthError) throw e; S.repo.meta = null; return; }
-    S.repo.meta = meta;
-    const cur = ZC.unpackOffers(await getBin("current.bin", meta.current_version).catch((e) => { if (e instanceof AuthError) throw e; return null; }), storeIndex(), Object.fromEntries((meta.stores || []).map((s) => [s.id, s.last_ok])), meta.updated);
-    S.baseTs = findBase(cur); S.repo.current = markBase(cur);
-    await loadRules();
-  }
-  // Archiv: je Monat eine Datei, nur bei Bedarf geladen (Standard: der neueste Monat)
-  const archiveMonths = () => (S.repo.meta?.archive_months || []).slice().sort();
-  async function loadArchive(months) {
-    if (!hasRepo()) return;
-    const want = (months || archiveMonths()).filter((m) => !(m in S.repo.archive));
-    const parts = await Promise.all(want.map((m) => getBin(`a-${m}.bin`, (S.repo.meta.archive_hash || {})[m] || S.repo.meta.updated).then(unpack)));
-    want.forEach((m, i) => { S.repo.archive[m] = parts[i]; });
-  }
-  const archiveFullyLoaded = () => archiveMonths().every((m) => m in S.repo.archive);
-
-  function activeSource() { if (S.source === "repo" && hasRepo()) return "repo"; if (S.source === "local" && hasLocal()) return "local"; if (S.source === "both" && hasRepo() && hasLocal()) return "both"; return hasRepo() ? (hasLocal() && S.source === "auto" ? "both" : "repo") : hasLocal() ? "local" : "none"; }
-  function allOffers(includeArchive) {
-    const src = activeSource(); const map = new Map();
-    const put = (o) => { const p = map.get(o.id); if (!p || (o.last_seen || "") > (p.last_seen || "")) map.set(o.id, o); };
-    if (src === "repo" || src === "both") { S.repo.current.forEach(put); if (includeArchive) Object.values(S.repo.archive).flat().forEach(put); }
-    if (src === "local" || src === "both") Object.values(S.local.db).forEach((o) => { if (includeArchive || o.status === "active") put(o); });
-    return [...map.values()];
-  }
-  function stores() {
-    const m = new Map();
-    for (const s of S.repo.meta?.stores || []) m.set(s.id, s);
-    for (const s of S.local.stores || []) if (!m.has(s.id)) m.set(s.id, s);
-    return [...m.values()].sort((a, b) => a.name.localeCompare(b.name, "de"));
-  }
-  const updatedAt = () => [S.repo.meta?.updated, S.local.updated].filter(Boolean).sort().pop() || null;
-  // Lokal bearbeitete Fassung ersetzt die gleichnamige (gleiche ID) aus der Sicherung
   const allRules = () => { const own = new Set(S.rules.map((r) => r.id)); return ZC.dedupeRules([...S.repo.watch.filter((r) => !own.has(r.id)), ...S.rules]); };
-  // Stabile Kennung je gemerkter Suche (bleibt beim Bearbeiten erhalten)
-  const hashStr = (t) => { let h = 2166136261; for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
-  const withId = (r) => (r.id ? r : { ...r, id: "r" + hashStr(ZC.ruleKey(r)) });
-  const newId = () => "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
-  let rulesMemo = null, savedMemo = null;                 // vorbereitete Regeln; bei jeder Änderung verwerfen
-  const resetRules = () => { rulesMemo = null; savedMemo = null; };
-  // "Merkliste"-Markierung und Telegram: nur aktive Suchen mit Benachrichtigung
-  const compiledRules = () => rulesMemo || (rulesMemo = allRules().filter((r) => r.enabled !== false && r.notify !== false).map((r) => ({ r, f: ZC.compileRule(r) })));
-  // Alle gemerkten Suchen (auch pausierte / ohne Telegram) mit Trefferzahlen
-  function savedSearches() {
-    if (savedMemo) return savedMemo;
-    const act = allOffers(false).filter((o) => o.status === "active");
-    savedMemo = allRules().map((r) => {
-      const f = ZC.compileRule({ ...r, enabled: true });
-      let n = 0, nNew = 0;
-      for (const o of act) if (f(o)) { n++; if (isNew(o)) nNew++; }
-      return { r, f, n, nNew, editable: S.rules.some((x) => x.id === r.id) };
-    });
-    return savedMemo;
+  const isFavRule = (r) => (r.article_numbers || []).length === 1 && !(r.keywords || []).length && !(r.stores || []).length && !r.ui;
+  const favRules = () => allRules().filter(isFavRule), searchRules = () => allRules().filter((r) => !isFavRule(r));
+  const FAVS = () => { if (!memo.has("favs")) memo.set("favs", new Set(favRules().map((r) => ZC.normArticle(r.article_numbers[0])))); return memo.get("favs"); };
+  const memo = new Map();
+  async function toggleFav(no, label) {
+    const key = ZC.normArticle(no), mine = S.rules.filter((r) => isFavRule(r) && ZC.normArticle(r.article_numbers[0]) === key);
+    if (FAVS().has(key)) {
+      if (!mine.length) { toast("Dieser Eintrag stammt aus der Sicherung. Entfernen geht erst, wenn der Hilfsdienst verbunden ist."); return; }
+      if (!confirmTwice(`„${label}“ nicht mehr merken?`)) return;
+      S.rules = S.rules.filter((r) => !mine.includes(r)); await persistRules(true); toast("Entfernt. Früherer Stand unter Einstellungen wiederherstellbar.");
+    } else {
+      S.rules.push({ id: newId(), name: `${label} ${fNo(key)}`, enabled: true, notify: true, article_numbers: [fNo(key)] });
+      await persistRules(); toast(`„${esc(label)}“ gemerkt. Du bekommst eine Nachricht, sobald er in einer Fundgrube auftaucht.`);
+    }
+    memo.clear(); render();
   }
-  const savedById = (id) => savedSearches().find((x) => x.r.id === id);
-  const SAVED_SORT = { treffer: ["Meiste Treffer", (a, b) => b.n - a.n], neu: ["Neue Treffer", (a, b) => b.nNew - a.nNew || b.n - a.n], name: ["Name", (a, b) => (a.r.name || "").localeCompare(b.r.name || "", "de")] };
-  const isNew = (o) => S.prevVisit && !o.base && o.first_seen > S.prevVisit;
-  function hitRules(o) { const out = []; for (const { r, f } of compiledRules()) if (f(o)) out.push(r); return out; }
+  function ruleMatcher(r) {
+    const k = "rm" + r.id + (r.ui ? JSON.stringify(r.ui) : ZC.ruleKey(r));
+    if (!memo.has(k)) memo.set(k, r.ui ? (o) => passAll(o, "fund", r.ui) : ZC.compileRule({ ...r, enabled: true }));
+    return memo.get(k);
+  }
+  const ruleHits = (r, list = FA()) => { const f = ruleMatcher(r); return list.filter((o) => (r.ui ? o.active || r.ui.zeit : true) && f(o)); };
+  const ruleText = (r) => (r.ui ? sentence("fund", r.ui).replace(/^Zeige aktuelle /, "").replace(/^./, (c) => c.toUpperCase()) : r.name || "Suche");
+  function goodPrice(f, r) {
+    const list = FALL(), fx = r ? (r.ui ? { ...r.ui, zeit: "alle" } : null) : { ...f, zeit: "alle" };
+    const all = fx ? list.filter((o) => passAll(o, "fund", fx)) : list.filter(ZC.compileRule({ ...r, enabled: true }));
+    if (all.length < 3) return null;
+    const past = all.filter((o) => !o.active && !o.base);
+    return { n: all.length, q1: qn(all.map((o) => o.price), 0.25), lo: Math.min(...all.map((o) => o.price)), dw: past.length >= 3 ? Math.round(qn(past.map((o) => daysBetween(o.start, o.end)), 0.5)) : null, full: !!S.repo.archive };
+  }
 
-  /* ---------- Filter ---------- */
-  const SORTS = {
-    neu: ["Neueste zuerst", (a, b) => (b.base ? "" : b.first_seen || "").localeCompare(a.base ? "" : a.first_seen || "")],
-    rabattpct: ["Höchster Rabatt (%)", (a, b) => (b.discount_pct ?? -1) - (a.discount_pct ?? -1)],
-    rabatteur: ["Höchster Rabatt (€)", (a, b) => (b.discount_eur ?? -1) - (a.discount_eur ?? -1)],
-    preis: ["Preis aufsteigend", (a, b) => (a.price ?? 1e9) - (b.price ?? 1e9)],
-    preisab: ["Preis absteigend", (a, b) => (b.price ?? -1) - (a.price ?? -1)],
-    weg: ["Zuletzt verschwunden", (a, b) => (b.gone_at || b.last_seen || "").localeCompare(a.gone_at || a.last_seen || "")],
-    dauer: ["Längste Verweildauer", (a, b) => (b.base ? -1 : days(b.first_seen, b.gone_at || b.last_seen) ?? 0) - (a.base ? -1 : days(a.first_seen, a.gone_at || a.last_seen) ?? 0)],
-    markt: ["Markt A–Z", (a, b) => (a.store || "").localeCompare(b.store || "", "de") || (a.title || "").localeCompare(b.title || "", "de")],
-    titel: ["Produkt A–Z", (a, b) => (a.title || "").localeCompare(b.title || "", "de")],
+  /* ================= Filter: Sätze, innerhalb einer Angabe ODER, zwischen Angaben UND ================= */
+  const sameSet = (a, b) => Array.isArray(a) && a.length === b.length && b.every((x) => a.includes(x));
+  const lastChg = (a) => (a.ph.length > 1 ? { d: day(a.ph[a.ph.length - 1][0]), from: a.ph[a.ph.length - 2][1], to: a.ph[a.ph.length - 1][1] } : null);
+  const DEF = {
+    fund: [
+      { k: "zeit", l: "Zeitraum", base: 1, pre: "Zeige", any: "aktuelle", t: "single", opts: [["alle", "aktuelle und vergangene"], ["weg", "vergangene"]], test: (o, v) => (v === "weg" ? !o.active : true), post: "Fundgrube-Angebote", arch: 1 },
+      { k: "markt", l: "Markt", base: 1, pre: "in", any: "allen Märkten", t: "multi", get: (o) => [o.mid], lab: nameOf, ord: (a, b) => (isMine(b) - isMine(a)) || nameOf(a).localeCompare(nameOf(b), "de"), search: true, mine: true },
+      { k: "bereich", l: "Bereich", base: 1, pre: "aus", any: "allen Bereichen", t: "multi", get: (o) => [o.top] },
+      { k: "preis", l: "Preis", base: 1, pre: "für", any: "jeden Preis", t: "range", get: (o) => o.price },
+      { k: "zust", g: "Was", l: "Zustand", pre: "im Zustand", t: "multi", get: (o) => [o.condition || "ohne Angabe"] },
+      { k: "grund", g: "Was", l: "Grund", pre: "mit Grund", t: "multi", get: (o) => [o.reason_discount || "ohne Angabe"], search: true },
+      { k: "regulaer", g: "Was", l: "Noch im Sortiment?", t: "single", opts: [["ja", "noch im Sortiment"], ["nein", "nicht mehr im Sortiment"]], test: (o, v) => (v === "ja") === !!(o.art && !o.art.gone) },
+      { k: "gemerkt", g: "Was", l: "Nur gemerkte Artikel", t: "toggle", txt: "nur gemerkte Artikel", test: (o) => FAVS().has(o.no) },
+      { k: "rabatt", g: "Preis", l: "Rabatt", pre: "mit", t: "single", opts: [["30", "mind. 30 % Rabatt"], ["40", "mind. 40 % Rabatt"], ["50", "mind. 50 % Rabatt"]], test: (o, v) => (o.disc ?? 0) >= +v },
+      { k: "seit", g: "Zeit", l: "Eingestellt", pre: "eingestellt", t: "single", opts: [["1", "heute"], ["3", "in den letzten 3 Tagen"], ["7", "in den letzten 7 Tagen"], ["30", "in den letzten 30 Tagen"]], test: (o, v) => !o.base && o.age < +v },
+      { k: "besuch", g: "Zeit", l: "Neu seit letztem Besuch", t: "toggle", txt: "neu seit meinem letzten Besuch", test: (o) => isNewV(o) },
+    ],
+    sort: [
+      { k: "stand", l: "Sortiment", base: 1, pre: "Zeige Artikel", any: "im Sortiment", t: "single", opts: [["auch", "im Sortiment und ausgelistet"], ["weg", "die ausgelistet sind"]], test: (o, v) => (v === "weg" ? !!o.gone : true), dflt: (o) => !o.gone },
+      { k: "bereich", l: "Bereich", base: 1, pre: "aus", any: "allen Bereichen", t: "multi", get: (o) => [o.top] },
+      { k: "farbe", l: "Farbe", base: 1, pre: "in", any: "jeder Farbe", t: "multi", get: (o) => (o.cols.length ? o.cols : ["ohne Angabe"]) },
+      { k: "preis", l: "Preis", base: 1, pre: "für", any: "jeden Preis", t: "range", get: (o) => o.price },
+      { k: "wo", l: "Verfügbarkeit", base: 1, need: "R", pre: "", any: "egal wo erhältlich", t: "single", opts: [["mine", "erhältlich in meinen Märkten"], ["notmine", "nicht in meinen Märkten erhältlich"], ["selten", "in höchstens 5 Märkten erhältlich"], ["fast", "in fast allen Märkten erhältlich"]],
+        test: (o, v) => { if (o.nMk == null) return false; if (v === "selten") return o.nMk >= 1 && o.nMk <= 5; if (v === "fast") return o.nKn >= 10 && o.nMk / o.nKn >= 0.9; const c = MINE().map((m) => carries(o, m)).filter((x) => x !== null); if (!c.length) return false; return v === "mine" ? c.some(Boolean) : !c.some(Boolean); } },
+      { k: "des", g: "Was", l: "Designer", pre: "von", need: "F", t: "multi", get: (o) => S.facets.ppl.get(o.id) || (S.facets.by.has(o.id) ? ["ohne Namen (IKEA of Sweden)"] : ["noch unbekannt"]), ord: (a, b) => ((a.startsWith("ohne") || a.startsWith("noch")) - (b.startsWith("ohne") || b.startsWith("noch"))) || ZC.sortByLast(a, b), search: true },
+      { k: "mat", g: "Was", l: "Material", pre: "aus", need: "F", t: "multi", get: (o) => [S.facets.matBy.get(o.id) || "noch unbekannt"], search: true },
+      { k: "typ", g: "Was", l: "Einzelartikel oder Set", t: "single", opts: [["ART", "nur Einzelartikel"], ["SPR", "nur Sets"]], test: (o, v) => o.type === v },
+      { k: "bew", g: "Was", l: "Bewertung", t: "single", opts: [["4", "mit mind. 4 Sternen"], ["4.5", "mit mind. 4,5 Sternen"]], test: (o, v) => o.rcount >= 5 && o.rating >= +v },
+      { k: "gemerkt", g: "Was", l: "Nur gemerkte Artikel", t: "toggle", txt: "nur gemerkte", test: (o) => FAVS().has(o.no) },
+      { k: "chg", g: "Preis", l: "Preisänderung", pre: "deren Preis", t: "single", opts: [["d30", "in 30 Tagen gesunken"], ["u30", "in 30 Tagen gestiegen"], ["any", "sich seit Beginn geändert hat"]], test: (o, v) => { const c = lastChg(o); if (!c) return false; if (v === "any") return true; return c.d >= dIso(30) && (v[0] === "d" ? c.to < c.from : c.to > c.from); } },
+      { k: "rabattk", g: "Preis", l: "Reduziert", t: "toggle", txt: "mit durchgestrichenem Vorher-Preis", test: (o) => !!o.prev },
+      { k: "neu", g: "Zeit", l: "Neu im Sortiment", pre: "neu seit", t: "single", opts: [["7", "7 Tagen"], ["30", "30 Tagen"], ["90", "90 Tagen"]], test: (o, v) => !!o.first && day(o.first) >= dIso(+v) },
+      { k: "fehlt", g: "Wo", l: "Fehlt in Markt", pre: "die fehlen in", need: "R", t: "multi", get: (o) => (S.rng ? S.rng.st.filter((s) => carries(o, s.id) === false).map((s) => s.id) : []), lab: nameOf, ord: (a, b) => (isMine(b) - isMine(a)) || nameOf(a).localeCompare(nameOf(b), "de"), search: true },
+      { k: "fund", g: "Wo", l: "Gerade in der Fundgrube", t: "toggle", txt: "gerade auch in der Fundgrube", test: (o) => fundNow().has(o.no) },
+    ],
   };
-  const F_KEYS = ["m", "q", "s", "c", "r", "pmin", "pmax", "dmin", "neu", "sort", "von", "bis", "art"];
-  function parseQuery(qs) {
-    const p = new URLSearchParams(qs || ""); const f = {};
-    for (const k of F_KEYS) if (p.get(k)) f[k] = p.get(k);
-    if (p.get("hit") && !f.m) f.m = "all";                 // alte Links ("Nur Merklisten-Treffer")
-    return f;
-  }
-  function writeQuery(route, f) { const p = new URLSearchParams(); for (const k of F_KEYS) if (f[k]) p.set(k, f[k]); const qs = p.toString(); history.replaceState(null, "", `#/${route}${qs ? "?" + qs : ""}`); }
-  const setOf = (v) => new Set((v || "").split("~").filter(Boolean));
-
-  function applyFilters(list, f, mode) {
-    const q = ZC.fold(f.q || "").trim(); const terms = q.split(/\s+/).filter(Boolean);
-    const S_ = setOf(f.s), C_ = setOf(f.c), R_ = setOf(f.r);
-    const pmin = f.pmin ? Number(f.pmin) : null, pmax = f.pmax ? Number(f.pmax) : null, dmin = f.dmin ? Number(f.dmin) : null;
-    const art = f.art ? ZC.normArticle(f.art) : "";
-    const mf = !f.m ? null : f.m === "all" ? (o) => hitRules(o).length > 0 : (savedById(f.m)?.f || (() => false));
-    return list.filter((o) => {
-      if (mode === "archiv" && o.status !== "gone") return false;
-      if (mode === "aktuell" && o.status !== "active") return false;
-      if (S_.size && !S_.has(o.store_id)) return false;
-      if (C_.size && !C_.has(o.condition || "–")) return false;
-      if (R_.size && !R_.has(o.reason_discount || "–")) return false;
-      if (pmin !== null && (o.price ?? 0) < pmin) return false;
-      if (pmax !== null && (o.price ?? 1e9) > pmax) return false;
-      if (dmin !== null && (o.discount_pct ?? -1) < dmin) return false;
-      if (art && !(o.article_numbers || [o.article_number]).includes(art)) return false;
-      if (f.neu && !isNew(o)) return false;
-      if (mf && !mf(o)) return false;
-      if (mode === "archiv") { if (f.von && dayKey(o.gone_at) < f.von) return false; if (f.bis && dayKey(o.gone_at) > f.bis) return false; }
-      if (terms.length) {
-        const hay = o._hay || (o._hay = ZC.fold([o.title, o.product_description, o.offer_description, o.article_number, ZC.fmtArticle(o.article_number), o.offer_number, o.condition, o.reason_discount, o.additional_info, o.store].join(" ")));
-        if (!terms.every((t) => hay.includes(t))) return false;
-      }
-      return true;
-    });
-  }
-  function counts(list, key) { const m = new Map(); for (const o of list) { const k = o[key] || "–"; m.set(k, (m.get(k) || 0) + 1); } return [...m.entries()].sort((a, b) => b[1] - a[1]); }
-
-
-  /* ---------- Bausteine ---------- */
-  function img(o, cls = "offer__img") { return o.image ? `<img class="${cls}" src="${esc(o.image)}?f=xs" alt="" loading="lazy" decoding="async" onerror="this.outerHTML='<div class=&quot;${cls} offer__img--none&quot;>▢</div>'">` : `<div class="${cls} offer__img--none" aria-hidden="true">▢</div>`; }
-  function badges(o) {
-    let b = "";
-    if (o.status === "gone") b += `<span class="badge badge--gone">weg</span>`;
-    else if (isNew(o)) b += `<span class="badge badge--new">neu</span>`;
-    if (o.reappear_count > 0 && o.status === "active") b += ` <span class="badge badge--back" title="War schon einmal verschwunden">wieder da</span>`;
-    const ph = o.price_history || []; if (ph.length > 1 && ph[ph.length - 1][1] < ph[0][1]) b += ` <span class="badge badge--drop">billiger</span>`;
-    if (hitRules(o).length) b += ` <span class="badge badge--hit">Merkliste</span>`;
-    return b;
-  }
-  function offerRow(o) {
-    const life = o.status === "gone" ? `weg seit ${fmtD(o.gone_at)}${o.base ? "" : ` · ${dur(days(o.first_seen, o.gone_at))} gelistet`}` : sinceTxt(o);
-    return `<li class="offer" tabindex="0" role="button" data-id="${esc(o.id)}" aria-label="${esc(o.title)} – ${esc(eur(o.price))}, ${esc(o.store)}">
-      ${img(o)}
-      <div style="min-width:0">
-        <div class="offer__t">${esc(o.title)} ${badges(o)}</div>
-        <div class="offer__d">${esc(o.product_description)}</div>
-        <div class="offer__why">${o.condition ? `<span class="chip chip--cond">${esc(o.condition)}</span>` : ""}${o.reason_discount ? `<span class="chip" title="${esc(o.reason_discount)}">${esc(o.reason_discount)}</span>` : ""}</div>
-      </div>
-      <div class="offer__meta"><b>${esc(o.store)}</b><br>${life}<br><span class="mono">${esc(ZC.fmtArticle(o.article_number))} · #${esc(o.offer_number)}</span></div>
-      <div class="offer__price"><div class="price">${esc(eur(o.price))}</div>${o.original_price ? `<div class="was">${esc(eur(o.original_price))}</div>` : ""}${o.discount_pct !== null && o.discount_pct !== undefined ? `<span class="tag">−${esc(pct(o.discount_pct))}</span>` : ""}</div>
-    </li>`;
-  }
-  function offerCard(o) {
-    return `<li class="card" tabindex="0" role="button" data-id="${esc(o.id)}">${img(o)}
-      <div class="offer__t" style="font-size:14.5px">${esc(o.title)} ${badges(o)}</div>
-      <div class="offer__d" style="white-space:normal;font-size:13px">${esc(o.product_description)}</div>
-      <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:auto"><div><div class="price">${esc(eur(o.price))}</div><div class="was">${esc(eur(o.original_price))}</div></div>${o.discount_pct != null ? `<span class="tag">−${esc(pct(o.discount_pct))}</span>` : ""}</div>
-      <div class="muted" style="font-size:12.5px">${esc(o.store)} · ${o.status === "gone" ? "weg " + fmtD(o.gone_at) : o.base ? "seit Beginn der Erfassung" : rel(o.first_seen)}</div></li>`;
-  }
-  const EXPORT_COLS = ["id", "offer_uuid", "offer_number", "status", "store_id", "store", "title", "product_description", "offer_description", "article_number", "condition", "condition_description", "reason_discount", "additional_info", "price", "original_price", "discount_eur", "discount_pct", "first_seen", "last_seen", "gone_at", "reappear_count", "link"];
-
-  function checkList(name, entries, selected, labelFn = (k) => k) {
-    if (!entries.length) return `<p class="muted" style="font-size:13px;margin:4px 0">Keine Werte</p>`;
-    return `<div class="checks">${entries.map(([k, n]) => `<label class="check"><input type="checkbox" name="${name}" value="${esc(k)}" ${selected.has(k) ? "checked" : ""}><span title="${esc(labelFn(k))}">${esc(labelFn(k))}</span><small>${nf0.format(n)}</small></label>`).join("")}</div>`;
-  }
-
-  /* ---------- Ansicht: Aktuell / Archiv ---------- */
-  async function renderList(mode, query) {
-    const f = S.filters = parseQuery(query);
-    if (!f.sort) f.sort = mode === "archiv" ? "weg" : "neu";
-    if (mode === "archiv" && hasRepo()) {
-      const ms = archiveMonths();
-      if (!S.archiveMonth || (S.archiveMonth !== "alle" && !ms.includes(S.archiveMonth))) S.archiveMonth = ms[ms.length - 1] || "alle";
-      view.innerHTML = `<div class="toolbar"><h2>Archiv</h2></div>${'<div class="skeleton"></div>'.repeat(5)}`;
-      await loadArchive(S.archiveMonth === "alle" ? ms : [S.archiveMonth]);
-    }
-    const inView = (o) => mode !== "archiv" || S.archiveMonth === "alle" || (o.gone_at || "").slice(0, 7) === S.archiveMonth;
-    const base = allOffers(mode === "archiv").filter(inView);
-    const scoped = base.filter((o) => mode === "archiv" ? o.status === "gone" : o.status === "active");
-    if (activeSource() === "none") return renderOnboarding();
-    const st = stores();
-    const nameOf = Object.fromEntries(st.map((s) => [s.id, s.name]));
-    const newCount = mode === "aktuell" && S.prevVisit ? scoped.filter(isNew).length : 0;
-
-    view.innerHTML = `
-      <div class="layout">
-        <form class="filters" id="filters" role="search" aria-label="Filter">
-          <label class="sr" for="f-q">Suche</label>
-          <input id="f-q" class="inp search" name="q" type="search" placeholder="Produkt, Artikelnr., Mangel …" value="${esc(f.q || "")}" autocomplete="off">
-          <button type="button" class="btn mobile-filter-toggle" id="filter-toggle" aria-expanded="false">Filter</button>
-          ${savedCard(f)}
-          <fieldset><legend>Markt</legend>
-            <input class="inp" id="store-find" placeholder="Markt suchen" style="min-height:30px;padding:4px 8px;font-size:13px" aria-label="Märkte durchsuchen">
-            <div id="store-checks">${checkList("s", counts(scoped, "store_id").sort((a, b) => (nameOf[a[0]] || a[0]).localeCompare(nameOf[b[0]] || b[0], "de")), setOf(f.s), (k) => nameOf[k] || k)}</div>
-            <button type="button" class="linkbtn" data-clear="s">Auswahl aufheben</button>
-          </fieldset>
-          <fieldset><legend>Preis &amp; Rabatt</legend>
-            <div class="row"><input class="inp" name="pmin" type="number" min="0" inputmode="decimal" placeholder="ab €" value="${esc(f.pmin || "")}" aria-label="Preis ab"><input class="inp" name="pmax" type="number" min="0" inputmode="decimal" placeholder="bis €" value="${esc(f.pmax || "")}" aria-label="Preis bis"></div>
-            <label class="muted" style="font-size:12.5px;display:block;margin-top:8px">Rabatt mindestens <b id="dmin-v">${esc(f.dmin || 0)} %</b>
-              <input name="dmin" type="range" min="0" max="90" step="5" value="${esc(f.dmin || 0)}" style="width:100%;accent-color:var(--blue)"></label>
-          </fieldset>
-          <fieldset><legend>Zustand</legend>${checkList("c", counts(scoped, "condition"), setOf(f.c))}</fieldset>
-          <fieldset><legend>Grund für den Rabatt</legend>${checkList("r", counts(scoped, "reason_discount").slice(0, 60), setOf(f.r))}</fieldset>
-          ${mode === "archiv" ? `<fieldset><legend>Verschwunden zwischen</legend><div class="row"><input class="inp" type="date" name="von" value="${esc(f.von || "")}" aria-label="von"><input class="inp" type="date" name="bis" value="${esc(f.bis || "")}" aria-label="bis"></div></fieldset>` : ""}
-          <fieldset><legend>Markierungen</legend>
-            ${mode === "aktuell" ? `<label class="switch"><input type="checkbox" name="neu" value="1" ${f.neu ? "checked" : ""} ${S.prevVisit ? "" : "disabled"}> Nur neu seit letztem Besuch</label>` : ""}
-            ${f.art ? `<label class="switch"><input type="checkbox" name="art" value="${esc(f.art)}" checked> Artikel ${esc(ZC.fmtArticle(f.art))}</label>` : ""}
-          </fieldset>
-          <button type="button" class="btn" id="reset" style="width:100%">Alle Filter zurücksetzen</button>
-          <button type="button" class="btn btn--primary filters__done" id="filter-done">Ergebnisse anzeigen</button>
-        </form>
-        <section aria-labelledby="list-h">
-          <div class="toolbar">
-            <h2 id="list-h">${mode === "archiv" ? "Archiv" : f.m === "all" ? "Gemerkt" : f.m ? esc(savedById(f.m)?.r.name || "Gemerkte Suche") : "Aktuelle Angebote"} <small id="list-count"></small></h2>
-            ${mode === "archiv" ? `<label class="sr" for="arch-month">Monat</label><select id="arch-month" class="inp" style="width:auto">${archiveMonths().slice().reverse().map((m) => `<option value="${m}" ${S.archiveMonth === m ? "selected" : ""}>${m}</option>`).join("")}<option value="alle" ${S.archiveMonth === "alle" ? "selected" : ""}>Alle Monate (lädt mehr)</option></select>` : ""}
-            <div class="toolbar__r">
-              <label class="sr" for="sort">Sortierung</label>
-              <select id="sort" class="inp" style="width:auto">${Object.entries(SORTS).filter(([k]) => mode === "archiv" || !["weg"].includes(k)).map(([k, [l]]) => `<option value="${k}" ${f.sort === k ? "selected" : ""}>${l}</option>`).join("")}</select>
-              <div class="seg" role="group" aria-label="Darstellung"><button type="button" data-layout="list" aria-pressed="${S.layout === "list"}">Liste</button><button type="button" data-layout="grid" aria-pressed="${S.layout === "grid"}">Kacheln</button></div>
-              <button type="button" class="btn" id="csv" title="Gefilterte Angebote als CSV">⤓ CSV</button>
-              ${mode === "aktuell" ? `<button type="button" class="btn btn--primary" id="save-search" title="Aktuelle Suche und Filter merken">☆ Merken</button>` : ""}
-            </div>
-          </div>
-          ${mode === "aktuell" ? chipBar(f) : ""}
-          ${newCount && !f.neu ? `<div class="notice"><span><b>${nf0.format(newCount)} neue Angebote</b> seit deinem letzten Besuch (${fmtDT(S.prevVisit)}).</span><button class="btn" id="show-new">Nur neue zeigen</button></div>` : ""}
-          <div id="results"></div>
-        </section>
-      </div>`;
-
-    const form = $("#filters");
-    let current = [];
-    const filterToggle = $("#filter-toggle");
-    const nActive = () => F_KEYS.filter((k) => k !== "sort" && k !== "m" && S.filters[k]).length;
-    const setOpen = (open) => {
-      form.classList.toggle("filters--open", open);
-      document.body.classList.toggle("filters-open", open);
-      filterToggle.setAttribute("aria-expanded", String(open));
-      filterToggle.textContent = open ? "Schließen" : `Filter${nActive() ? ` (${nActive()})` : ""}`;
-      if (open) form.scrollTop = 0;
-    };
-    filterToggle.addEventListener("click", () => setOpen(!form.classList.contains("filters--open")));
-    $("#filter-done").addEventListener("click", () => { setOpen(false); window.scrollTo({ top: 0 }); });
-    document.body.classList.remove("filters-open");
-    filterToggle.textContent = `Filter${nActive() ? ` (${nActive()})` : ""}`;
-    const draw = () => {
-      const res = applyFilters(scoped, S.filters, mode);
-      current = res;
-      const visible = ZC.topSorted(res, SORTS[S.filters.sort]?.[1] || SORTS.neu[1], Math.min(S.shown, res.length));
-      const sumDisc = res.reduce((a, o) => a + (o.discount_eur || 0), 0);
-      $("#filter-done").textContent = `${nf0.format(res.length)} Ergebnisse anzeigen`;
-      if (!form.classList.contains("filters--open")) filterToggle.textContent = `Filter${nActive() ? ` (${nActive()})` : ""}`;
-      $("#list-count").textContent = `${nf0.format(res.length)} von ${nf0.format(scoped.length)} · Ersparnis gesamt ${eur0(sumDisc)}`;
-      const box = $("#results");
-      if (!res.length) { box.innerHTML = `<div class="empty"><h3>Keine Angebote gefunden</h3><p>Filter lockern oder <button class="linkbtn" id="reset2">alle zurücksetzen</button>.</p></div>`; $("#reset2")?.addEventListener("click", reset); return; }
-      box.innerHTML = (S.layout === "grid" ? `<ul class="grid">${visible.map(offerCard).join("")}</ul>` : `<ul class="offers">${visible.map(offerRow).join("")}</ul>`)
-        + (res.length > S.shown ? `<div class="more"><button class="btn" id="more">${nf0.format(Math.min(240, res.length - S.shown))} weitere laden (${nf0.format(res.length - S.shown)} übrig)</button></div>` : "");
-      $("#more")?.addEventListener("click", () => { S.shown += 240; draw(); });
-    };
-    const sync = () => {
-      const fd = new FormData(form); const nf = { sort: S.filters.sort };
-      for (const k of ["q", "pmin", "pmax", "von", "bis"]) { const v = (fd.get(k) || "").toString().trim(); if (v) nf[k] = v; }
-      const d = Number(fd.get("dmin") || 0); if (d) nf.dmin = String(d); $("#dmin-v").textContent = `${d} %`;
-      for (const k of ["s", "c", "r"]) { const v = fd.getAll(k); if (v.length) nf[k] = v.join("~"); }
-      if (fd.get("neu")) nf.neu = "1"; if (fd.get("art")) nf.art = fd.get("art"); if (S.filters.m) nf.m = S.filters.m;
-      S.filters = nf; S.shown = 120; writeQuery(mode, nf); draw();
-    };
-    const reset = () => { const keep = { sort: S.filters.sort, ...(S.filters.m ? { m: S.filters.m } : {}) }; S.filters = keep; writeQuery(mode, keep); renderList(mode, new URLSearchParams(keep).toString()); };
-    form.addEventListener("input", debounce(sync, 140));
-    form.addEventListener("submit", (e) => e.preventDefault());
-    $("#store-find").addEventListener("input", (e) => { const q = ZC.fold(e.target.value); $$("#store-checks .check").forEach((l) => { l.hidden = q && !ZC.fold(l.textContent).includes(q); }); e.stopPropagation(); });
-    $$("[data-clear]").forEach((b) => b.addEventListener("click", () => { $$(`input[name=${b.dataset.clear}]`, form).forEach((i) => (i.checked = false)); sync(); }));
-    $("#reset").addEventListener("click", reset);
-    $("#arch-month")?.addEventListener("change", (e) => { S.archiveMonth = e.target.value; renderList(mode, query); });
-    $("#sort").addEventListener("change", (e) => { S.filters.sort = e.target.value; writeQuery(mode, S.filters); draw(); });
-    $$("[data-layout]").forEach((b) => b.addEventListener("click", () => { S.layout = b.dataset.layout; lsSet(LS.layout, S.layout); $$("[data-layout]").forEach((x) => x.setAttribute("aria-pressed", x === b)); draw(); }));
-    $("#show-new")?.addEventListener("click", () => { $("input[name=neu]", form).checked = true; sync(); });
-    $("#save-search")?.addEventListener("click", () => openRuleDialog(null, ruleFromFilters(S.filters)));
-    bindSaved(view, mode);
-    $("#csv").addEventListener("click", () => {
-      const cmp = SORTS[S.filters.sort]?.[1] || SORTS.neu[1];
-      download(`zweite-chance_${mode}_${dayKey(Date.now())}.csv`, toCSV(current.slice().sort(cmp), EXPORT_COLS));
-    });
-    draw();
-  }
-
-  /* ---------- Detail ---------- */
-  const EV_LABEL = { new: "Erstmals gesehen", reappeared: "Wieder aufgetaucht", price_change: "Preis geändert", changed: "Angaben geändert", gone: "Nicht mehr gelistet" };
-  function sparkline(ph) {
-    const pts = (ph || []).filter((p) => p[1] !== null); if (pts.length < 2) return "";
-    const W = 300, H = 60, t0 = +new Date(pts[0][0]), t1 = Math.max(+new Date(), t0 + 1);
-    const vs = pts.map((p) => p[1]), lo = Math.min(...vs), hi = Math.max(...vs), sp = hi - lo || 1;
-    const x = (t) => ((+new Date(t) - t0) / (t1 - t0)) * (W - 8) + 4, y = (v) => H - 6 - ((v - lo) / sp) * (H - 16);
-    let d = `M${x(pts[0][0])},${y(pts[0][1])}`; for (let i = 1; i < pts.length; i++) d += `H${x(pts[i][0])}V${y(pts[i][1])}`; d += `H${W - 4}`;
-    return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px" role="img" aria-label="Preisverlauf von ${eur(vs[0])} bis ${eur(vs[vs.length - 1])}"><path d="${d}" fill="none" stroke="var(--blue)" stroke-width="2"/><text x="4" y="10" font-size="10" fill="var(--muted)">${eur(hi)}</text><text x="4" y="${H - 0}" font-size="10" fill="var(--muted)">${eur(lo)}</text></svg>`;
-  }
-  async function openDetail(id) {
-    const all = allOffers(true); let o = all.find((x) => x.id === id);
-    if (!o && !archiveFullyLoaded()) { await loadArchive(); o = allOffers(true).find((x) => x.id === id); }
-    if (!o) { toast("Angebot nicht gefunden."); return; }
-    const dlg = $("#detail");
-    const siblings = allOffers(true).filter((x) => x.id !== o.id && o.article_number && (x.article_numbers || [x.article_number]).includes(o.article_number))
-      .sort((a, b) => (a.status === b.status ? (a.price ?? 0) - (b.price ?? 0) : a.status === "active" ? -1 : 1));
-    const hits = hitRules(o);
-    const listed = o.base ? null : days(o.first_seen, o.gone_at || o.last_seen);
-    dlg.innerHTML = `<button class="dlg__close" aria-label="Schließen" data-close>×</button>
-      <div class="dlg">
-        <div class="dlg__img">${o.image ? `<img src="${esc(o.image)}?f=m" alt="${esc(o.title)}">` : `<span class="muted">kein Bild</span>`}</div>
-        <div class="dlg__body">
-          <div>${badges(o)}</div>
-          <h2 id="detail-title">${esc(o.title)}</h2>
-          <div class="muted">${esc(o.product_description)}</div>
-          <div class="priceblock">
-            <div><div class="price">${esc(eur(o.price))}</div><div class="was">statt ${esc(eur(o.original_price))}</div></div>
-            ${o.discount_eur != null ? `<div><span class="tag" style="font-size:16px">−${esc(pct(o.discount_pct))}</span><div class="muted" style="font-size:13px;margin-top:4px">${esc(eur(o.discount_eur))} gespart</div></div>` : ""}
-            <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">
-              <a class="btn btn--blue" href="${esc(o.link)}" target="_blank" rel="noopener">Bei IKEA ansehen / reservieren ↗</a>
-            </div>
-          </div>
-          <dl class="kv">
-            <dt>Zustand</dt><dd>${esc(o.condition || "–")}${o.condition_description ? `<br><span class="muted">${esc(o.condition_description)}</span>` : ""}</dd>
-            <dt>Grund / Mangel</dt><dd>${esc(o.reason_discount || "–")}</dd>
-            ${o.offer_description ? `<dt>Angebotstext</dt><dd>${esc(o.offer_description)}</dd>` : ""}
-            ${o.additional_info ? `<dt>Zusatzinfo</dt><dd>${esc(o.additional_info)}</dd>` : ""}
-            <dt>Markt</dt><dd>${esc(o.store)} <span class="muted mono">(ID ${esc(o.store_id)})</span> · <a href="${marktHref(o.store_id)}" data-close>Markt-Statistik</a></dd>
-            <dt>Artikelnummer</dt><dd class="mono">${esc(ZC.fmtArticle(o.article_number) || "–")}${(o.article_numbers || []).length > 1 ? ` <span class="muted">(+${o.article_numbers.length - 1} weitere: ${esc(o.article_numbers.slice(1).map(ZC.fmtArticle).join(", "))})</span>` : ""}</dd>
-            <dt>Angebotsnummer</dt><dd class="mono">${esc(o.offer_number || "–")}</dd>
-            <dt>Tracker-ID</dt><dd class="mono">${esc(o.id)}</dd>
-            <dt>Erstmals gesehen</dt><dd>${o.base ? "schon beim Start der Erfassung im Angebot (Einstelldatum unbekannt)" : esc(fmtDT(o.first_seen))}</dd>
-            <dt>Zuletzt gesehen</dt><dd>${esc(fmtDT(o.last_seen))}${o.status === "gone" ? ` · <b>nicht mehr gelistet</b>` : ""}</dd>
-            <dt>Gelistet</dt><dd>${esc(dur(listed))}${o.reappear_count ? ` · ${o.reappear_count}× wieder aufgetaucht` : ""}${o.missing_runs ? ` · im letzten Abruf nicht gelistet` : ""}</dd>
-            ${hits.length ? `<dt>Merkliste</dt><dd>${hits.map((r) => esc(r.name)).join(", ")}</dd>` : ""}
-          </dl>
-          ${(o.price_history || []).length > 1 ? `<div class="section"><h3>Preisverlauf</h3>${sparkline(o.price_history)}</div>` : ""}
-          <div class="section"><h3>Verlauf</h3><ul class="timeline" id="tl"><li class="muted">lädt …</li></ul></div>
-          <div class="section"><h3>Gleicher Artikel (${nf0.format(siblings.length)})</h3>
-            ${siblings.length ? `<ul class="minilist">${siblings.slice(0, 12).map((x) => `<li><a href="#" data-open="${esc(x.id)}">${esc(x.store)} · ${esc(x.condition || "")}</a><span class="mono">${esc(eur(x.price))} ${x.status === "gone" ? `<span class="badge badge--gone">weg</span>` : ""}</span></li>`).join("")}</ul>` : `<p class="muted" style="font-size:13.5px">Kein weiteres Angebot dieses Artikels erfasst.</p>`}
-          </div>
-          <div class="section" style="display:flex;gap:8px;flex-wrap:wrap">
-            ${o.article_number ? `<a class="btn btn--primary" href="${prodHref(o.article_number)}" data-close>Produkt-Statistik</a><button class="btn" data-watch-art>＋ Artikel auf die Merkliste</button><a class="btn" href="#/archiv?art=${esc(o.article_number)}" data-close>Artikel im Archiv</a>` : ""}
-            <button class="btn" data-copy>Daten kopieren (JSON)</button>
-          </div>
-        </div>
-      </div>`;
-    if (!dlg.open) dlg.showModal();
-    dlg.querySelector(".dlg__body").scrollTop = 0;
-    $$("[data-close]", dlg).forEach((b) => b.addEventListener("click", () => dlg.close()));
-    $$("[data-open]", dlg).forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); openDetail(a.dataset.open); }));
-    $("[data-copy]", dlg)?.addEventListener("click", () => { const clean = Object.fromEntries(Object.entries(o).filter(([k]) => !k.startsWith("_"))); navigator.clipboard?.writeText(JSON.stringify(clean, null, 2)).then(() => toast("JSON kopiert.")); });
-    $("[data-watch-art]", dlg)?.addEventListener("click", async () => {
-      const r = { id: newId(), name: `${o.title} ${ZC.fmtArticle(o.article_number)}`, enabled: true, article_numbers: [ZC.fmtArticle(o.article_number)] };
-      if (ZC.dedupeRules([...S.repo.watch, ...S.rules]).some((x) => ZC.ruleKey(x) === ZC.ruleKey(r))) {
-        toast("Der Artikel steht bereits auf deiner Merkliste.");
-      } else {
-        S.rules.push(r); await persistRules();
-        toast(S.server?.ok ? `„${esc(o.title)}“ steht auf der Merkliste.` : `„${esc(o.title)}“ beobachtet (nur in diesem Browser).`);
-      }
-      updateBadges();
-    });
-    // Verlauf aus dem Angebot selbst (Preisverlauf, erstes/letztes Sehen) + lokale Importe
-    const ph = o.price_history || [];
-    let evs = o.base ? [] : [{ ts: o.first_seen, type: "new" }];
-    for (let i = 1; i < ph.length; i++) evs.push({ ts: ph[i][0], type: "price_change", old_price: ph[i - 1][1], new_price: ph[i][1] });
-    const LOGTYPE = { gone: "gone", back: "reappeared", chg: "changed" };
-    for (const [ts, k, fields] of o.log || []) evs.push({ ts, type: LOGTYPE[k] || k, fields, detected: true });
-    if (o.gone_at && !(o.log || []).some((l) => l[1] === "gone")) evs.push({ ts: o.gone_at, type: "gone" });
-    evs.push(...S.local.events.filter((e) => e.id === o.id));
-    const seen = new Set(); evs = evs.filter((e) => { const k = e.ts + e.type; if (seen.has(k)) return false; seen.add(k); return true; }).sort((a, b) => a.ts.localeCompare(b.ts));
-    const tl = $("#tl", dlg); if (!tl) return;
-    tl.innerHTML = evs.length ? evs.map((e) => `<li><b>${esc(EV_LABEL[e.type] || e.type)}</b> · ${esc(fmtDT(e.type === "gone" && !e.detected ? o.gone_at || e.ts : e.ts))}${e.type === "price_change" ? ` · ${esc(eur(Number(e.old_price)))} → ${esc(eur(Number(e.new_price)))}` : ""}${e.fields ? ` <span class="muted">(${esc(e.fields)})</span>` : ""}</li>`).join("")
-      : `<li>${o.base ? "Beim Start der Erfassung schon im Angebot" : `Erstmals gesehen · ${esc(fmtDT(o.first_seen))}`}</li>`;
-  }
-
-  /* ---------- Merkliste ---------- */
-  const splitList = (s) => String(s || "").split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
-  function ruleSummary(r) {
-    const p = [];
-    if (r.keywords?.length) p.push(`Stichwort: <b>${r.keywords.map(esc).join(" / ")}</b>`);
-    if (r.article_numbers?.length) p.push(`Art.-Nr.: <span class="mono">${r.article_numbers.map(esc).join(", ")}</span>`);
-    if (r.exclude?.length) p.push(`ohne: ${r.exclude.map(esc).join(", ")}`);
-    if (r.stores?.length) p.push(`Märkte: ${r.stores.map((s) => esc(stores().find((x) => x.id === String(s))?.name || s)).join(", ")}`);
-    if (r.min_discount_pct) p.push(`ab ${esc(r.min_discount_pct)} % Rabatt`);
-    if (r.min_price) p.push(`ab ${esc(eur(Number(r.min_price)))}`);
-    if (r.max_price) p.push(`bis ${esc(eur(Number(r.max_price)))}`);
-    if (r.conditions?.length) p.push(`Zustand/Grund: ${r.conditions.map(esc).join(", ")}`);
-    return p.join(" · ") || "<span class='muted'>ohne Einschränkung (trifft alles)</span>";
-  }
-  /* ---------- Gemerkte Suchen auf der Startseite ---------- */
-  // Eine gemerkte Suche = Regel. Mit Telegram (notify) = Merkliste, ohne = gespeicherte Ansicht (Preset).
-  const hrefWith = (f, patch) => {
-    const nf = { ...f, ...patch };
-    for (const k of Object.keys(nf)) if (!nf[k] || k === "sort") delete nf[k];
-    const qs = new URLSearchParams(nf).toString();
-    return `#/aktuell${qs ? "?" + qs : ""}`;
-  };
-  function chipBar(f) {
-    const all = savedSearches();
-    const nHits = allOffers(false).filter((o) => o.status === "active" && hitRules(o).length).length;
-    const top = all.filter((x) => x.r.enabled !== false).sort(SAVED_SORT.treffer[1]).slice(0, 10);
-    const chip = (href, label, on, title = "") => `<a class="chip2 ${on ? "chip2--on" : ""}" href="${href}" ${title ? `title="${esc(title)}"` : ""}>${label}</a>`;
-    const toggle = (k, v) => hrefWith(f, { [k]: f[k] === v ? "" : v });
-    return `<nav class="chips2" aria-label="Schnellauswahl">
-      ${chip("#/aktuell", "Alle", !f.m && !f.neu && !f.dmin && !f.pmax && !f.c)}
-      ${chip(hrefWith(f, { m: f.m === "all" ? "" : "all" }), `⭐ Gemerkt <small>${nf0.format(nHits)}</small>`, f.m === "all", "Treffer aller gemerkten Suchen mit Telegram")}
-      ${S.prevVisit ? chip(toggle("neu", "1"), "Neu seit Besuch", !!f.neu) : ""}
-      ${chip(toggle("dmin", "50"), "≥ 50 %", f.dmin === "50")}
-      ${chip(toggle("pmax", "10"), "bis 10 €", f.pmax === "10")}
-      ${chip(toggle("c", "Wie neu"), "Wie neu", f.c === "Wie neu")}
-      ${top.map((x) => chip(hrefWith(f, { m: f.m === x.r.id ? "" : x.r.id }), `${x.r.notify === false ? "" : "🔔 "}${esc(x.r.name)} <small>${nf0.format(x.n)}</small>`, f.m === x.r.id)).join("")}
-      ${all.length > top.length ? chip("#/aktuell?m=all", `alle ${all.length} gemerkten ›`, false) : ""}
-    </nav>`;
-  }
-  const savedRow = (x, f) => `<li class="saved-row ${x.r.enabled === false ? "saved-row--off" : ""} ${f.m === x.r.id ? "saved-row--on" : ""}">
-      <a href="${hrefWith(f, { m: x.r.id })}">${x.r.notify === false ? "" : "🔔 "}${esc(x.r.name)}</a>
-      <small>${nf0.format(x.n)}${x.nNew ? ` · <b>${nf0.format(x.nNew)} neu</b>` : ""}</small>
-      <button type="button" class="iconbtn" data-edit-saved="${esc(x.r.id)}" aria-label="${esc(x.r.name)} bearbeiten">✎</button></li>`;
-  function savedCard(f) {
-    if (!f.m) return "";
-    const all = savedSearches();
-    if (f.m === "all") {
-      const sorted = all.slice().sort((SAVED_SORT[S.savedSort] || SAVED_SORT.treffer)[1]);
-      return `<div class="saved-card saved-card--list">
-        <div class="saved-card__h"><b>Gemerkte Suchen</b> <small class="muted">${all.length}</small>
-          <select class="inp" id="saved-sort" aria-label="Gemerkte Suchen sortieren">${Object.entries(SAVED_SORT).map(([k, [l]]) => `<option value="${k}" ${S.savedSort === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-        ${all.length ? `<ul class="saved-list">${sorted.map((x) => savedRow(x, f)).join("")}</ul>` : `<p class="muted">Noch nichts gemerkt. Suche oder Filter einstellen, dann „☆ Merken“.</p>`}
-        <button type="button" class="btn" data-new-saved style="width:100%">＋ Neue Suche merken</button>
-      </div>`;
-    }
-    const x = savedById(f.m);
-    if (!x) return `<div class="saved-card"><p>Diese gemerkte Suche gibt es nicht (mehr). <a href="#/aktuell?m=all">Alle gemerkten</a></p></div>`;
-    const r = x.r;
-    return `<div class="saved-card">
-      <a href="${hrefWith(f, { m: "all" })}" class="linkbtn">← alle gemerkten</a>
-      <h3>${esc(r.name)}</h3>
-      <p class="muted" style="font-size:13px;margin:4px 0">${ruleSummary(r)}</p>
-      <p style="font-size:13px;margin:4px 0">${r.notify === false ? "🔕 ohne Telegram" : "🔔 Telegram an"}${r.enabled === false ? " · <b>pausiert</b>" : ""} · ${nf0.format(x.n)} Treffer</p>
-      <div class="saved-card__act">
-        <button type="button" class="btn" data-edit-saved="${esc(r.id)}">✎ Bearbeiten</button>
-        <button type="button" class="btn" data-notify-saved="${esc(r.id)}">${r.notify === false ? "🔔 Telegram an" : "🔕 Telegram aus"}</button>
-      </div>
-      <p class="muted" style="font-size:12px;margin:6px 0 0">Die Filter darunter grenzen nur die Ansicht ein; die gemerkte Suche bleibt unverändert.</p>
-    </div>`;
-  }
-  // Neue gemerkte Suche aus der aktuellen Ansicht (Suche + Filter; ggf. auf Basis der gewählten Suche)
-  function ruleFromFilters(f) {
-    const nameOf = Object.fromEntries(stores().map((x) => [x.id, x.name]));
-    const base = f.m && f.m !== "all" ? savedById(f.m)?.r : null;
-    const sids = [...setOf(f.s)];
-    const conds = [...setOf(f.c), ...setOf(f.r)].filter((x) => x !== "–");
-    const where = sids.map((i) => nameOf[i] || i).slice(0, 3).join(", ");
-    const r = base ? { ...base } : { keywords: [], exclude: [], article_numbers: [], conditions: [], stores: [] };
-    delete r.id; delete r._repo; delete r._localIndex;
-    if (f.q) r.keywords = [f.q.trim()];
-    if (sids.length) r.stores = sids;
-    if (conds.length) r.conditions = conds;
-    if (f.art) r.article_numbers = [ZC.fmtArticle(f.art)];
-    if (f.dmin) r.min_discount_pct = Number(f.dmin);
-    if (f.pmin) r.min_price = Number(f.pmin);
-    if (f.pmax) r.max_price = Number(f.pmax);
-    r.name = ([base?.name || (f.q || "").trim() || "Meine Suche", where].filter(Boolean).join(" · ")).slice(0, 60);
-    r.enabled = true; if (r.notify === undefined) r.notify = true;
-    return r;
-  }
-  function openRuleDialog(rule, prefill) {
-    let dlg = $("#rule-dlg");
-    if (!dlg) {
-      dlg = document.createElement("dialog"); dlg.id = "rule-dlg"; dlg.className = "ruledlg"; document.body.appendChild(dlg);
-      dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
-    }
-    const r = rule || prefill || {};
-    const sel = new Set((r.stores || []).map(String));
-    const v = (k) => esc(r[k] ?? "");
-    dlg.innerHTML = `<form id="rd" class="form">
-      <h2 style="grid-column:1/-1">${rule ? "Gemerkte Suche bearbeiten" : "Suche merken"}</h2>
-      <label style="grid-column:1/-1">Name<input class="inp" name="name" required maxlength="60" value="${v("name")}"></label>
-      <label>Stichworte (Komma = oder)<input class="inp" name="keywords" value="${esc((r.keywords || []).join(", "))}" placeholder="hemnes kommode, malm"></label>
-      <label>Ausschließen<input class="inp" name="exclude" value="${esc((r.exclude || []).join(", "))}" placeholder="tür, front"></label>
-      <label>Artikelnummern<input class="inp" name="article_numbers" value="${esc((r.article_numbers || []).join(", "))}" placeholder="802.758.87"></label>
-      <label>Zustand / Grund enthält<input class="inp" name="conditions" value="${esc((r.conditions || []).join(", "))}" placeholder="wie neu, Ausstellungsstück"></label>
-      <label>Rabatt ab %<input class="inp" name="min_discount_pct" type="number" min="0" max="100" value="${v("min_discount_pct")}"></label>
-      <label>Preis ab €<input class="inp" name="min_price" type="number" min="0" step="any" value="${v("min_price")}"></label>
-      <label>Preis bis €<input class="inp" name="max_price" type="number" min="0" step="any" value="${v("max_price")}"></label>
-      <fieldset style="grid-column:1/-1" class="rd-stores"><legend>Märkte (keiner gewählt = alle) · <button type="button" class="linkbtn" data-rd-none>Auswahl aufheben</button></legend>
-        <input class="inp" placeholder="Markt suchen" data-rd-find aria-label="Märkte durchsuchen">
-        <div class="checks rd-checks">${stores().map((s) => `<label class="check"><input type="checkbox" name="stores" value="${esc(s.id)}" ${sel.has(s.id) ? "checked" : ""}><span>${esc(s.name)}</span></label>`).join("")}</div></fieldset>
-      <label class="switch" style="grid-column:1/-1"><input type="checkbox" name="notify" ${r.notify === false ? "" : "checked"}> Neue Treffer per Telegram melden (sonst nur gespeicherte Ansicht)</label>
-      <label class="switch" style="grid-column:1/-1"><input type="checkbox" name="enabled" ${r.enabled === false ? "" : "checked"}> Aktiv (sonst pausiert)</label>
-      <p class="muted" id="rd-preview" style="grid-column:1/-1;margin:0"></p>
-      <div style="grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn--primary" type="submit">Speichern</button>
-        <button class="btn" type="button" data-rd-cancel>Abbrechen</button>
-        ${rule ? `<button class="btn" type="button" data-rd-del style="margin-left:auto;color:var(--rust)">Entfernen …</button>` : ""}
-      </div></form>`;
-    const form = $("#rd", dlg);
-    const read = () => {
-      const fd = new FormData(form); const num = (k) => (fd.get(k) === "" || fd.get(k) === null ? null : Number(fd.get(k)));
-      const out = { ...(rule || {}), id: rule?.id || newId(), name: String(fd.get("name") || "").trim(), enabled: !!fd.get("enabled"), notify: !!fd.get("notify"),
-        keywords: splitList(fd.get("keywords")), exclude: splitList(fd.get("exclude")), article_numbers: splitList(fd.get("article_numbers")),
-        conditions: splitList(fd.get("conditions")), stores: fd.getAll("stores"), min_discount_pct: num("min_discount_pct"), min_price: num("min_price"), max_price: num("max_price") };
-      delete out._repo; delete out._localIndex;
-      return out;
-    };
-    const preview = () => { const f = ZC.compileRule({ ...read(), enabled: true }); $("#rd-preview", dlg).textContent = `→ aktuell ${nf0.format(allOffers(false).filter((o) => o.status === "active" && f(o)).length)} Treffer`; };
-    form.addEventListener("input", debounce(preview, 200)); preview();
-    $("[data-rd-find]", dlg).addEventListener("input", (e) => { const q = ZC.fold(e.target.value); $$(".rd-checks .check", dlg).forEach((l) => { l.hidden = q && !ZC.fold(l.textContent).includes(q); }); });
-    $("[data-rd-none]", dlg).addEventListener("click", () => { $$("input[name=stores]", dlg).forEach((c) => (c.checked = false)); preview(); });
-    $("[data-rd-cancel]", dlg).addEventListener("click", () => dlg.close());
-    $("[data-rd-del]", dlg)?.addEventListener("click", async () => {
-      if (!S.rules.some((y) => y.id === rule.id)) { toast("Diese Suche kommt aus der Sicherung und lässt sich nur mit verbundenem Worker entfernen."); return; }
-      if (!confirmTwice(`Gemerkte Suche „${rule.name}“ entfernen?`)) return;
-      S.rules = S.rules.filter((y) => y.id !== rule.id); await persistRules(true); updateBadges();
-      dlg.close(); toast("Entfernt. Der frühere Stand ist unter „Daten“ wiederherstellbar."); location.hash = "#/aktuell?m=all";
-    });
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault(); const x = read();
-      if (!x.name) { toast("Bitte einen Namen eingeben."); return; }
-      if (allRules().some((y) => y.id !== x.id && ZC.ruleKey(y) === ZC.ruleKey(x))) { toast("Eine gemerkte Suche mit genau diesen Kriterien gibt es schon."); return; }
-      const i = S.rules.findIndex((y) => y.id === x.id);
-      if (i >= 0) S.rules[i] = x; else S.rules.push(x);
-      await persistRules(); updateBadges(); dlg.close();
-      toast(S.server?.ok ? `„${esc(x.name)}“ gespeichert.` : `„${esc(x.name)}“ gespeichert (nur in diesem Browser – Worker nicht verbunden).`, 6000);
-      const target = `#/aktuell?m=${encodeURIComponent(x.id)}`;
-      if (location.hash === target) route(); else location.hash = target;
-    });
-    dlg.showModal();
-  }
-  function bindSaved(root) {
-    $("#saved-sort", root)?.addEventListener("change", (e) => { e.stopPropagation(); S.savedSort = e.target.value; lsSet(LS.savedSort, S.savedSort); route(); });
-    $$("[data-edit-saved]", root).forEach((b) => b.addEventListener("click", (e) => { e.preventDefault(); const x = savedById(b.dataset.editSaved); if (x) openRuleDialog(x.r); }));
-    $$("[data-new-saved]", root).forEach((b) => b.addEventListener("click", () => openRuleDialog(null, ruleFromFilters({}))));
-    $$("[data-notify-saved]", root).forEach((b) => b.addEventListener("click", async () => {
-      const x = savedById(b.dataset.notifySaved); if (!x) return;
-      const upd = { ...x.r, notify: x.r.notify === false }; delete upd._repo; delete upd._localIndex;
-      const i = S.rules.findIndex((y) => y.id === upd.id); if (i >= 0) S.rules[i] = upd; else S.rules.push(upd);
-      await persistRules(); updateBadges(); route();
-    }));
-  }
-  // Frühere Stände der Merkliste (Daten-Seite)
-  function bindHistory(root) {
-    $("#hist", root)?.addEventListener("toggle", async (e) => {
-      if (!e.target.open || S.repo.history) return;
-      const box = $("#hist-list", root);
-      try {
-        S.repo.history = await worker.call("GET", null, { path: "/api/history" });
-        box.innerHTML = S.repo.history.length ? `<ul class="minilist">${S.repo.history.map((h) => `<li><span>${esc(fmtDT(h.ts))} · ${h.count ?? "?"} Suchen</span><button class="btn" data-restore="${esc(h.id)}">Wiederherstellen</button></li>`).join("")}</ul>` : "Noch keine früheren Stände (entstehen bei jeder Änderung).";
-        $$("[data-restore]", box).forEach((b) => b.addEventListener("click", async () => {
-          if (!confirmTwice("Diesen früheren Stand wiederherstellen? Der aktuelle Stand bleibt als Version erhalten.")) return;
-          try {
-            const snap = await worker.call("GET", null, { path: `/api/history?id=${encodeURIComponent(b.dataset.restore)}` });
-            S.rules = ZC.dedupeRules(snap.rules || []).map(withId); S.repo.history = null; await persistRules(true); updateBadges(); toast("Früherer Stand wiederhergestellt."); renderDaten();
-          } catch (err) { toast(`<b>Nicht möglich:</b> ${esc(err.message)}`, 6000); }
-        }));
-      } catch (err) { box.textContent = `Nicht abrufbar: ${err.message}`; }
-    });
-  }
-
-  /* ---------- Statistik ---------- */
-  function bars(rows, { fmt = nf0.format, cls = "", max } = {}) {
-    const m = max ?? Math.max(1, ...rows.map((r) => r.v));
-    return `<div class="bars">${rows.map((r) => `<span class="l" title="${esc(r.l)}">${r.href ? `<a href="${r.href}">${esc(r.l)}</a>` : esc(r.l)}</span><span class="b"><i class="${cls}" style="width:${(r.v / m) * 100}%"></i></span><span class="v">${esc(fmt(r.v))}</span>`).join("")}</div>`;
-  }
-  function columns(series, labels, colors) {
-    const W = 640, H = 170, pad = 22, n = labels.length; if (!n) return "<p class='muted'>Keine Daten im Zeitraum.</p>";
-    const max = Math.max(1, ...series.flat()); const bw = (W - pad) / n; const sw = Math.max(1, bw / series.length - 1);
-    let g = "";
-    series.forEach((s, si) => s.forEach((v, i) => { const h = (v / max) * (H - 30); g += `<rect x="${pad + i * bw + si * sw}" y="${H - 18 - h}" width="${sw}" height="${h}" fill="${colors[si]}"><title>${labels[i]}: ${v}</title></rect>`; }));
-    const step = Math.ceil(n / 8); let ax = "";
-    labels.forEach((l, i) => { if (i % step === 0) ax += `<text x="${pad + i * bw}" y="${H - 4}" font-size="10" fill="#6B6F76">${l.slice(5).split("-").reverse().join(".")}</text>`; });
-    return `<div class="cols"><svg viewBox="0 0 ${W} ${H}" role="img"><text x="0" y="10" font-size="10" fill="#6B6F76">${nf0.format(max)}</text><line x1="${pad}" x2="${W}" y1="${H - 18}" y2="${H - 18}" stroke="#16181D"/>${g}${ax}</svg></div>`;
-  }
-  /* --- zusätzliche Auswertungen --- */
-  const fmtDays = (v) => (v == null ? "–" : v < 1 ? `${Math.max(1, Math.round(v * 24))} Std.` : `${nf2.format(Math.round(v * 10) / 10).replace(/,0+$/, "")} T`);
-  // Linie (eine Reihe) mit Hover je Punkt
-  function lineChart(points, { fmt = nf0.format, label = "" } = {}) {
-    if (points.length < 2) return "<p class='muted'>Noch zu wenige Abrufe.</p>";
-    const W = 1000, H = 190, padL = 52, padB = 20;
-    const t0 = +new Date(points[0].t), t1 = +new Date(points[points.length - 1].t) || t0 + 1;
-    const vs = points.map((p) => p.v), lo = Math.min(...vs), hi = Math.max(...vs), sp = hi - lo || 1;
-    const x = (t) => padL + ((+new Date(t) - t0) / (t1 - t0 || 1)) * (W - padL - 6);
-    const y = (v) => 8 + (1 - (v - lo) / sp) * (H - padB - 16);
-    const d = points.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join("");
-    const hits = points.map((p) => `<circle cx="${x(p.t).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="7" fill="transparent"><title>${esc(fmtDT(p.t))}: ${esc(fmt(p.v))}${label}</title></circle>`).join("");
-    return `<div class="cols"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Verlauf von ${esc(fmt(vs[0]))} bis ${esc(fmt(vs[vs.length - 1]))}">
-      <text x="0" y="12" font-size="10" fill="#6B6F76">${esc(fmt(hi))}</text><text x="0" y="${H - padB}" font-size="10" fill="#6B6F76">${esc(fmt(lo))}</text>
-      <line x1="${padL}" x2="${W}" y1="${H - padB + 2}" y2="${H - padB + 2}" stroke="#DFDBD1"/>
-      <text x="${padL}" y="${H - 4}" font-size="10" fill="#6B6F76">${esc(fmtD(points[0].t))}</text><text x="${W - 4}" y="${H - 4}" font-size="10" fill="#6B6F76" text-anchor="end">${esc(fmtD(points[points.length - 1].t))}</text>
-      <path d="${d}" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linejoin="round"/>${hits}</svg></div>`;
-  }
-  // Wochentag × Uhrzeit (Berlin): eine Farbe, hell -> dunkel
-  const hourFmt = new Intl.DateTimeFormat("de-DE", { timeZone: TZ, weekday: "short", hour: "2-digit", hourCycle: "h23" });
-  const WD = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
-  function heatmap(grid) {
-    const max = Math.max(1, ...grid.flat()), cw = 24, ch = 18, padL = 26, padT = 14;
-    const shade = (v) => (v ? 0.12 + 0.88 * (v / max) : 0);
-    let g = "";
-    grid.forEach((row, d) => row.forEach((v, h) => { g += `<rect x="${padL + h * cw + 1}" y="${padT + d * ch + 1}" width="${cw - 2}" height="${ch - 2}" rx="2" fill="${v ? "#0058A3" : "#ECE9E2"}" fill-opacity="${v ? shade(v).toFixed(2) : 1}"><title>${WD[d]} ${String(h).padStart(2, "0")}–${String(h + 1).padStart(2, "0")} Uhr: ${nf0.format(v)} neue Angebote</title></rect>`; }));
-    const ax = WD.map((w, d) => `<text x="0" y="${padT + d * ch + 13}" font-size="10" fill="#6B6F76">${w}</text>`).join("") + [0, 6, 12, 18, 23].map((h) => `<text x="${padL + h * cw + 4}" y="10" font-size="10" fill="#6B6F76">${h}</text>`).join("");
-    return `<div class="cols"><svg viewBox="0 0 ${padL + 24 * cw} ${padT + 7 * ch + 2}" role="img" aria-label="Neue Angebote nach Wochentag und Uhrzeit">${ax}${g}</svg></div>
-      <div class="legend"><span>wenige</span><span class="ramp"></span><span>viele (max. ${nf0.format(max)})</span></div>`;
-  }
-  function moreStats(every, gone, nameOf, tables, csvBtn) {
-    const runs = (S.repo.runs || []).filter((r) => r.ts && r.active);
-    const firstRun = runs[0]?.ts || "";
-    const now = Date.now(), d7 = new Date(now - 7 * 864e5).toISOString(), d14 = new Date(now - 14 * 864e5).toISOString(), d30 = new Date(now - 30 * 864e5).toISOString();
-    // 1) Bestand im Verlauf
-    const bestand = runs.map((r) => ({ t: r.ts, v: Number(r.active) }));
-    tables.bestand = bestand.map((p) => ({ zeit: p.t, aktiv: p.v }));
-    // 2) Wann kommen neue Angebote? (ohne den ersten Abruf – da war alles "neu")
-    const grid = Array.from({ length: 7 }, () => Array(24).fill(0));
-    let nObs = 0;
-    for (const o of every) {
-      if (!o.first_seen || o.first_seen <= firstRun || o.base) continue;
-      const parts = Object.fromEntries(hourFmt.formatToParts(new Date(o.first_seen)).map((p) => [p.type, p.value]));
-      const d = WD.indexOf(parts.weekday.replace(".", "").slice(0, 2)); const h = Number(parts.hour);
-      if (d >= 0 && h >= 0 && h < 24) { grid[d][h]++; nObs++; }
-    }
-    tables.wann = grid.flatMap((row, d) => row.map((v, h) => ({ wochentag: WD[d], stunde: h, neu: v })));
-    // 3) Preissenkungen
-    const drops = [];
-    for (const o of every) {
-      const ph = (o.price_history || []).filter((p) => p[1] !== null);
-      for (let i = 1; i < ph.length; i++) if (ph[i][1] < ph[i - 1][1]) drops.push({ o, ts: ph[i][0], from: ph[i - 1][1], to: ph[i][1], pct: (1 - ph[i][1] / ph[i - 1][1]) * 100 });
-    }
-    const recentDrops = drops.filter((x) => x.ts >= d14).sort((a, b) => b.pct - a.pct);
-    tables.preissenkungen = recentDrops.map((x) => ({ zeit: x.ts, produkt: x.o.title, markt: x.o.store, von: x.from, auf: x.to, minus_pct: Math.round(x.pct), id: x.o.id }));
-    // 4) Wie schnell weg – nach Rabatthöhe (nur verschwundene, Median Tage)
-    const dwellByDisc = Array.from({ length: 5 }, (_, i) => ({ l: ["unter 20 %", "20–39 %", "40–59 %", "60–79 %", "ab 80 %"][i], a: [] }));
-    for (const o of gone) { if (o.discount_pct == null) continue; const b = o.discount_pct < 20 ? 0 : o.discount_pct < 40 ? 1 : o.discount_pct < 60 ? 2 : o.discount_pct < 80 ? 3 : 4; if (!o.base) dwellByDisc[b].a.push(days(o.first_seen, o.gone_at)); }
-    const dwellDisc = dwellByDisc.filter((x) => x.a.length >= 5).map((x) => ({ l: x.l, v: Math.round(median(x.a) * 10) / 10, n: x.a.length }));
-    tables.tempo_rabatt = dwellDisc;
-    // 5) Märkte im Vergleich
-    const per = new Map();
-    for (const o of every) {
-      const k = o.store_id; if (!per.has(k)) per.set(k, { act: [], new7: 0, gone7: 0, dwell: [] });
-      const x = per.get(k);
-      if (o.status === "active") x.act.push(o);
-      if (o.first_seen >= d7 && o.first_seen > firstRun && !o.base) x.new7++;
-      if (o.status === "gone" && o.gone_at >= d7) x.gone7++;
-      if (o.status === "gone" && !o.base) x.dwell.push(days(o.first_seen, o.gone_at));
-    }
-    const markets = [...per.entries()].map(([id, x]) => ({ id, markt: nameOf[id] || id, aktiv: x.act.length, median_rabatt: median(x.act.map((o) => o.discount_pct)), neu_pro_tag: Math.round(x.new7 / 7 * 10) / 10, weg_pro_tag: Math.round(x.gone7 / 7 * 10) / 10, verweildauer_tage: x.dwell.length >= 5 ? Math.round(median(x.dwell) * 10) / 10 : null }))
-      .sort((a, b) => b.neu_pro_tag - a.neu_pro_tag);
-    tables.maerkte_vergleich = markets;
-    // 6) Gemerkte Suchen: was ist ein guter Preis?
-    const saved = savedSearches().map((x) => {
-      const all = every.filter((o) => x.f(o)), act = all.filter((o) => o.status === "active"), gn = all.filter((o) => o.status === "gone");
-      const prices = all.map((o) => o.price).filter((v) => v != null);
-      return { suche: x.r.name, aktiv: act.length, guenstigster_aktiv: act.length ? Math.min(...act.map((o) => o.price ?? 1e9)) : null, median_preis: median(prices), tiefster_preis: prices.length ? Math.min(...prices) : null, weg_30_tage: gn.filter((o) => o.gone_at >= d30).length, verweildauer_tage: gn.length >= 3 ? Math.round(median(gn.map((o) => days(o.first_seen, o.gone_at))) * 10) / 10 : null };
-    }).sort((a, b) => b.aktiv - a.aktiv);
-    tables.gemerkt_preise = saved;
-    const num = (v, f = nf0.format) => (v == null || Number.isNaN(v) ? "–" : f(v));
-    const sortTbl = (id) => `data-sorttable="${id}"`;
-    return `
-      <h2 style="margin:36px 0 14px">Mehr Einblick</h2>
-      <div class="charts">
-        ${productFinder(every)}
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Bestand im Verlauf</h3><p>Aktive Angebote je Abruf · Punkt antippen/überfahren für Details</p></div>${csvBtn("bestand")}</header>${lineChart(bestand)}</section>
-        <section class="chart"><header><div><h3>Wann kommen neue Angebote?</h3><p>Erstmals gesehen, nach Wochentag und Stunde (Berlin) · ${nf0.format(nObs)} Angebote seit Beobachtungsbeginn${nObs < 500 ? " · noch wenig Daten" : ""}</p></div>${csvBtn("wann")}</header>${heatmap(grid)}
-          <p class="muted" style="font-size:12px;margin:6px 0 0">Genauigkeit = Abrufabstand. Bei unregelmäßigem Takt wirken einzelne Stunden voller, als sie sind.</p></section>
-        <section class="chart"><header><div><h3>Wie schnell ist es weg?</h3><p>Median-Verweildauer nach Rabatthöhe, nur verschwundene Angebote</p></div>${csvBtn("tempo_rabatt")}</header>${dwellDisc.length ? bars(dwellDisc, { fmt: fmtDays, cls: "y" }) : "<p class='muted'>Noch zu wenige abgeschlossene Angebote.</p>"}</section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Preissenkungen der letzten 14 Tage</h3><p>${nf0.format(recentDrops.length)} Senkungen · insgesamt ${nf0.format(drops.length)} seit Beobachtungsbeginn · stärkste zuerst</p></div>${csvBtn("preissenkungen")}</header>
-          ${recentDrops.length ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Produkt</th><th>Markt</th><th class="n">vorher</th><th class="n">jetzt</th><th class="n">−</th><th>wann</th></tr></thead><tbody>${recentDrops.slice(0, 15).map((x) => `<tr data-id="${esc(x.o.id)}" style="cursor:pointer"><td>${esc(x.o.title)} <span class="muted">${esc(x.o.product_description)}</span></td><td>${esc(x.o.store)}</td><td class="n">${esc(eur(x.from))}</td><td class="n"><b>${esc(eur(x.to))}</b></td><td class="n">${nf0.format(Math.round(x.pct))} %</td><td>${esc(rel(x.ts))}</td></tr>`).join("")}</tbody></table></div>` : "<p class='muted'>Keine Preissenkungen im Zeitraum.</p>"}</section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Märkte im Vergleich</h3><p>Neu und weg je Tag (letzte 7 Tage) · Markt antippen = Markt-Statistik · Spaltenkopf = sortieren</p></div>${csvBtn("maerkte_vergleich")}</header>
-          <div class="tblwrap"><table class="tbl" ${sortTbl("m")}><thead><tr><th data-k="0">Markt</th><th class="n" data-k="1">aktiv</th><th class="n" data-k="2">Median-Rabatt</th><th class="n" data-k="3">neu/Tag</th><th class="n" data-k="4">weg/Tag</th><th class="n" data-k="5">Verweildauer</th></tr></thead><tbody>
-          ${markets.map((m) => `<tr><td><a href="${marktHref(m.id)}">${esc(m.markt)}</a></td><td class="n" data-v="${m.aktiv}">${nf0.format(m.aktiv)}</td><td class="n" data-v="${m.median_rabatt ?? -1}">${num(m.median_rabatt, pct)}</td><td class="n" data-v="${m.neu_pro_tag}">${num(m.neu_pro_tag, nf2.format)}</td><td class="n" data-v="${m.weg_pro_tag}">${num(m.weg_pro_tag, nf2.format)}</td><td class="n" data-v="${m.verweildauer_tage ?? -1}">${num(m.verweildauer_tage, fmtDays)}</td></tr>`).join("")}</tbody></table></div></section>
-        ${saved.length ? `<section class="chart" style="grid-column:1/-1"><header><div><h3>Gemerkte Suchen: Was ist ein guter Preis?</h3><p>Aktuell und über den ganzen Beobachtungszeitraum</p></div>${csvBtn("gemerkt_preise")}</header>
-          <div class="tblwrap"><table class="tbl" ${sortTbl("g")}><thead><tr><th data-k="0">Suche</th><th class="n" data-k="1">aktiv</th><th class="n" data-k="2">günstigster jetzt</th><th class="n" data-k="3">Median-Preis</th><th class="n" data-k="4">Tiefstpreis</th><th class="n" data-k="5">weg in 30 T</th><th class="n" data-k="6">Verweildauer</th></tr></thead><tbody>
-          ${saved.map((x) => `<tr><td>${esc(x.suche)}</td><td class="n" data-v="${x.aktiv}">${nf0.format(x.aktiv)}</td><td class="n" data-v="${x.guenstigster_aktiv ?? -1}">${num(x.guenstigster_aktiv, eur)}</td><td class="n" data-v="${x.median_preis ?? -1}">${num(x.median_preis, eur)}</td><td class="n" data-v="${x.tiefster_preis ?? -1}">${num(x.tiefster_preis, eur)}</td><td class="n" data-v="${x.weg_30_tage}">${nf0.format(x.weg_30_tage)}</td><td class="n" data-v="${x.verweildauer_tage ?? -1}">${num(x.verweildauer_tage, fmtDays)}</td></tr>`).join("")}</tbody></table></div></section>` : ""}
-      </div>`;
-  }
-  // Tabellen per Klick auf den Spaltenkopf sortieren
-  function bindSortTables(root) {
-    $$("[data-sorttable]", root).forEach((tbl) => $$("th[data-k]", tbl).forEach((th) => th.addEventListener("click", () => {
-      const k = +th.dataset.k, desc = th.dataset.dir !== "desc"; th.dataset.dir = desc ? "desc" : "asc";
-      const rows = $$("tbody tr", tbl);
-      const val = (tr) => { const td = tr.children[k]; return td.dataset.v !== undefined ? Number(td.dataset.v) : td.textContent; };
-      rows.sort((a, b) => { const x = val(a), y = val(b); const c = typeof x === "number" ? x - y : String(x).localeCompare(String(y), "de"); return desc ? -c : c; });
-      rows.forEach((tr) => tr.parentNode.appendChild(tr));
-    })));
-  }
-  /* ---------- Statistik je Produkt (Artikelnummer) und je Markt ---------- */
-  const artsOf = (o) => (o.article_numbers && o.article_numbers.length ? o.article_numbers : [o.article_number]).filter(Boolean);
-  const prodHref = (art) => `#/produkt?art=${encodeURIComponent(ZC.normArticle(art))}`;
-  const marktHref = (id) => `#/markt?id=${encodeURIComponent(id)}`;
-  const kpi = (v, l) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`;
-  const back = `<p style="margin:0 0 10px"><a href="#/statistik" class="linkbtn">← Statistik</a></p>`;
-
-  // Wie viele Angebote waren an jedem Tag gelistet? (aus erstem/letztem Sehen)
-  function listedPerDay(offers, maxDays = 120) {
-    if (!offers.length) return { labels: [], counts: [] };
-    const start = offers.reduce((m, o) => (o.first_seen < m ? o.first_seen : m), "9999");
-    const from = Math.max(+new Date(start), Date.now() - maxDays * 864e5);
-    const labels = []; for (let t = from; t <= Date.now(); t += 864e5) labels.push(dayKey(new Date(t)));
-    const idx = Object.fromEntries(labels.map((d, i) => [d, i])), counts = labels.map(() => 0);
-    for (const o of offers) {
-      const a = Math.max(+new Date(o.first_seen), from), b = +new Date(o.gone_at || o.last_seen || Date.now());
-      const seen = new Set();
-      for (let t = a; t <= b + 1; t += 864e5) { const k = dayKey(new Date(Math.min(t, b))); if (k in idx && !seen.has(k)) { seen.add(k); counts[idx[k]]++; } }
-    }
-    return { labels, counts };
-  }
-  // Preis über die Zeit: jeder Punkt = ein Preis eines Angebots (aktiv blau, verschwunden grau)
-  function priceDots(offers) {
-    const pts = [];
-    for (const o of offers) {
-      const ph = (o.price_history || []).filter((p) => p[1] != null);
-      ph.forEach(([t, v], i) => pts.push({ t, v, o, last: i === ph.length - 1 }));
-    }
-    if (!pts.length) return "<p class='muted'>Keine Preise erfasst.</p>";
-    const W = 1000, H = 220, padL = 60, padB = 22;
-    const ts = pts.map((p) => +new Date(p.t)), t0 = Math.min(...ts), t1 = Math.max(Date.now(), t0 + 864e5);
-    const vs = pts.map((p) => p.v), lo = Math.min(...vs), hi = Math.max(...vs), sp = hi - lo || Math.max(1, hi * 0.1);
-    const x = (t) => padL + ((+new Date(t) - t0) / (t1 - t0)) * (W - padL - 10);
-    const y = (v) => 10 + (1 - (v - lo) / sp) * (H - padB - 20);
-    const lines = offers.map((o) => {
-      const ph = (o.price_history || []).filter((p) => p[1] != null); if (!ph.length) return "";
-      let d = `M${x(ph[0][0]).toFixed(1)},${y(ph[0][1]).toFixed(1)}`;
-      for (let i = 1; i < ph.length; i++) d += `H${x(ph[i][0]).toFixed(1)}V${y(ph[i][1]).toFixed(1)}`;
-      d += `H${x(o.status === "active" ? new Date().toISOString() : o.gone_at || o.last_seen).toFixed(1)}`;
-      return `<path d="${d}" fill="none" stroke="${o.status === "active" ? "#0058A3" : "#9EA2A9"}" stroke-width="2" stroke-opacity=".55"/>`;
-    }).join("");
-    const dots = pts.map((p) => `<circle cx="${x(p.t).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="4" fill="${p.o.status === "active" ? "#0058A3" : "#9EA2A9"}" stroke="var(--paper)" stroke-width="2" data-id="${esc(p.o.id)}" style="cursor:pointer"><title>${esc(p.o.store)} · ${esc(eur(p.v))} · ${esc(fmtD(p.t))}${p.o.condition ? " · " + esc(p.o.condition) : ""}</title></circle>`).join("");
-    return `<div class="cols"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Preise von ${esc(eur(lo))} bis ${esc(eur(hi))}">
-      <text x="0" y="16" font-size="11" fill="#6B6F76">${esc(eur(hi))}</text><text x="0" y="${H - padB - 6}" font-size="11" fill="#6B6F76">${esc(eur(lo))}</text>
-      <line x1="${padL}" x2="${W}" y1="${H - padB}" y2="${H - padB}" stroke="#DFDBD1"/>
-      <text x="${padL}" y="${H - 4}" font-size="11" fill="#6B6F76">${esc(fmtD(new Date(t0)))}</text><text x="${W - 4}" y="${H - 4}" font-size="11" fill="#6B6F76" text-anchor="end">heute</text>
-      ${lines}${dots}</svg></div>
-      <div class="legend"><span><i style="background:#0058A3"></i>noch gelistet</span><span><i style="background:#9EA2A9"></i>verschwunden</span><span>Punkt antippen = Angebot öffnen</span></div>`;
-  }
-  const offerTable = (list, { showStore = true, showTitle = false } = {}) => {
-    const cols = [...(showTitle ? ["Produkt"] : []), ...(showStore ? ["Markt"] : []), "Preis", "Rabatt", "Ersparnis", "Zustand / Grund", "seit", "Status"];
-    const num = new Set(["Preis", "Rabatt", "Ersparnis"]);
-    return `<div class="tblwrap"><table class="tbl" data-sorttable="o"><thead><tr>${cols.map((c, i) => `<th data-k="${i}" ${num.has(c) ? 'class="n"' : ""}>${c}</th>`).join("")}</tr></thead><tbody>
-      ${list.map((o) => `<tr data-id="${esc(o.id)}" style="cursor:pointer">
-        ${showTitle ? `<td><b>${esc(o.title)}</b> <span class="muted">${esc(o.product_description)}</span></td>` : ""}${showStore ? `<td>${esc(o.store)}</td>` : ""}
-        <td class="n" data-v="${o.price ?? -1}"><b>${esc(eur(o.price))}</b> <span class="muted">${o.original_price ? esc(eur(o.original_price)) : ""}</span></td>
-        <td class="n" data-v="${o.discount_pct ?? -1}">${o.discount_pct != null ? `−${esc(pct(o.discount_pct))}` : "–"}</td>
-        <td class="n" data-v="${o.discount_eur ?? -1}">${o.discount_eur != null ? esc(eur(o.discount_eur)) : "–"}</td>
-        <td>${esc([o.condition, o.reason_discount].filter(Boolean).join(" · ") || "–")}</td>
-        <td data-v="${o.base ? 0 : +new Date(o.first_seen)}">${o.base ? `<span class="muted">vor Erfassungsbeginn</span>` : esc(fmtD(o.first_seen))}</td>
-        <td data-v="${o.status === "active" ? 0 : 1}">${o.status === "active" ? "gelistet" : `weg ${esc(fmtD(o.gone_at))}${o.base ? "" : ` · ${esc(fmtDays(days(o.first_seen, o.gone_at)))}`}`}</td></tr>`).join("")}
-      </tbody></table></div>`;
-  };
-
-  async function renderProdukt(query) {
-    const p = new URLSearchParams(query || ""); const art = ZC.normArticle(p.get("art") || "");
-    if (hasRepo() && !archiveFullyLoaded()) { view.innerHTML = `${back}<div class="skeleton"></div>`; await loadArchive(); }
-    const all = art ? allOffers(true).filter((o) => artsOf(o).includes(art)) : [];
-    if (!all.length) {
-      view.innerHTML = `${back}<div class="empty"><h3>Kein Angebot mit Artikelnummer ${esc(ZC.fmtArticle(art) || "?")} erfasst</h3><p>Suche ein Produkt unten in der Statistik oder öffne ein Angebot und tippe auf „Produkt-Statistik“.</p></div>`;
-      return;
-    }
-    const act = all.filter((o) => o.status === "active"), gone = all.filter((o) => o.status === "gone");
-    const ref = all.slice().sort((a, b) => (b.last_seen || "").localeCompare(a.last_seen || ""))[0];
-    const prices = all.map((o) => o.price).filter((v) => v != null);
-    const histPrices = all.flatMap((o) => (o.price_history || []).map((x) => x[1])).filter((v) => v != null);
-    const drops = all.reduce((n, o) => n + (o.price_history || []).filter((x, i, a) => i && x[1] < a[i - 1][1]).length, 0);
-    const dwell = gone.map(dwellOf).filter((v) => v !== null);
-    const { labels, counts } = listedPerDay(all);
-    // je Markt
-    const per = new Map();
-    for (const o of all) { const x = per.get(o.store_id) || { name: o.store, id: o.store_id, act: 0, n: 0, prices: [], disc: [], sav: [], last: "" }; x.n++; if (o.status === "active") x.act++; if (o.price != null) x.prices.push(o.price); if (o.discount_pct != null) x.disc.push(o.discount_pct); if (o.discount_eur != null) x.sav.push(o.discount_eur); if ((o.last_seen || "") > x.last) x.last = o.last_seen; per.set(o.store_id, x); }
-    const savings = all.map((o) => o.discount_eur).filter((v) => v != null);
-    const stores_ = [...per.values()].sort((a, b) => b.n - a.n);
-    const byWeekday = Array(7).fill(0);
-    for (const o of all) { if (o.base) continue; const wd = (new Date(o.first_seen).getDay() + 6) % 7; byWeekday[wd]++; }
-    view.innerHTML = `${back}
-      <div class="prodhead">${ref.image ? `<img src="${esc(ref.image)}?f=s" alt="" loading="lazy">` : ""}
-        <div><h2>${esc(ref.title)}</h2><p class="muted" style="margin:2px 0">${esc(ref.product_description)}</p>
-        <p class="mono" style="margin:0">Art. ${esc(ZC.fmtArticle(art))} · Neupreis ${esc(eur(ref.original_price))}</p>
-        <p style="margin:8px 0 0;display:flex;gap:8px;flex-wrap:wrap"><a class="btn" href="#/aktuell?art=${esc(art)}">Aktuelle Angebote (${nf0.format(act.length)})</a><a class="btn" href="#/archiv?art=${esc(art)}">Im Archiv</a><button class="btn" id="prod-merken">☆ Merken</button></p></div></div>
-      <div class="kpis">
-        ${kpi(nf0.format(act.length), "jetzt gelistet")}
-        ${kpi(nf0.format(all.length), "insgesamt im Angebot")}
-        ${kpi(prices.length ? `${eur(Math.min(...histPrices))} – ${eur(Math.max(...histPrices))}` : "–", "Preisspanne (alle Preise)")}
-        ${kpi(eur(median(prices)), "Median-Preis")}
-        ${kpi(pct(median(all.map((o) => o.discount_pct))), "Median-Rabatt")}
-        ${kpi(savings.length ? eur(savings.reduce((a, v) => a + v, 0) / savings.length) : "–", "Ersparnis Ø je Angebot")}
-        ${kpi(savings.length ? eur(Math.max(...savings)) : "–", "größte Ersparnis")}
-        ${kpi(dwell.length ? fmtDays(median(dwell)) : "–", `Verweildauer (Median, ${dwell.length} weg)`)}
-        ${kpi(nf0.format(drops), "Preissenkungen")}
-        ${kpi(nf0.format(per.size), "Märkte")}
-      </div>
-      <div class="charts">
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Preisverlauf</h3><p>Jede Linie ein Angebot, Stufe = Preisänderung</p></div></header>${priceDots(all)}</section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Wann im Angebot?</h3><p>Anzahl gleichzeitig gelisteter Angebote je Tag</p></div></header>${columns([counts], labels, ["#0058A3"])}</section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Wo war oder ist es im Angebot?</h3><p>je Markt: wie oft, Preise, Rabatt und Ersparnis · Markt antippen = Markt-Seite</p></div></header>
-          <div class="tblwrap"><table class="tbl" data-sorttable="w"><thead><tr><th data-k="0">Markt</th><th class="n" data-k="1">jetzt</th><th class="n" data-k="2">wie oft</th><th class="n" data-k="3">ab</th><th class="n" data-k="4">Ø Rabatt</th><th class="n" data-k="5">Ø Ersparnis</th><th class="n" data-k="6">max. Ersparnis</th><th data-k="7">zuletzt</th></tr></thead><tbody>
-          ${stores_.map((x) => { const avgD = x.disc.length ? x.disc.reduce((a, v) => a + v, 0) / x.disc.length : null, avgS = x.sav.length ? x.sav.reduce((a, v) => a + v, 0) / x.sav.length : null; return `<tr><td><a href="${marktHref(x.id)}">${esc(x.name)}</a></td><td class="n" data-v="${x.act}">${nf0.format(x.act)}</td><td class="n" data-v="${x.n}">${nf0.format(x.n)}×</td><td class="n" data-v="${Math.min(...x.prices, 1e9)}">${x.prices.length ? esc(eur(Math.min(...x.prices))) : "–"}</td><td class="n" data-v="${avgD ?? -1}">${esc(pct(avgD))}</td><td class="n" data-v="${avgS ?? -1}">${avgS != null ? esc(eur(avgS)) : "–"}</td><td class="n" data-v="${x.sav.length ? Math.max(...x.sav) : -1}">${x.sav.length ? esc(eur(Math.max(...x.sav))) : "–"}</td><td data-v="${+new Date(x.last || 0)}">${esc(rel(x.last))}</td></tr>`; }).join("")}</tbody></table></div></section>
-        <section class="chart"><header><div><h3>Neu eingestellt nach Wochentag</h3><p>Erstmals gesehen</p></div></header>${bars(WD.map((l, i) => ({ l, v: byWeekday[i] })), { cls: "bl" })}</section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Alle Angebote dieses Produkts</h3><p>jedes einzelne Angebot mit Preis, Rabatt und Ersparnis · Zeile antippen = Details · Spaltenkopf = sortieren</p></div></header>${offerTable(all.slice().sort((a, b) => (b.first_seen || "").localeCompare(a.first_seen || "")))}</section>
-      </div>`;
-    bindSortTables(view);
-    $("#prod-merken").addEventListener("click", () => openRuleDialog(null, { name: `${ref.title} ${ZC.fmtArticle(art)}`, enabled: true, notify: true, article_numbers: [ZC.fmtArticle(art)], keywords: [], stores: [] }));
-  }
-
-  /* ---------- Katalog: alle IKEA-Artikel Deutschland (eigene Daten unter k/) ---------- */
-  const K_IMG = "https://www.ikea.com/de/de/images/products/", K_P = "https://www.ikea.com/de/de/p/";
-  async function getK(name, version) {
-    const r = await fetch(`k/${name}${version ? "?v=" + encodeURIComponent(version) : ""}`, { cache: version ? "force-cache" : "no-cache" });
-    if (!r.ok) throw new Error(`${r.status} k/${name}`);
-    try { return await ZC.openBlob(await r.arrayBuffer(), AUTH.key); } catch (e) { throw new AuthError("Passwort stimmt nicht"); }
-  }
-  // Gegenstück zu katalog/model.py: pack/unpack
-  function unpackK(d) {
-    if (!d) return [];
-    const T = d.s, ix = Object.fromEntries(d.f.map((f, i) => [f, i])), STR = ["id", "no", "type", "name", "kind", "measure", "slug", "img", "cat", "vfrom", "vto", "tag", "first_seen", "last_seen", "status", "ph", "log", "col", "ctx"], out = [];
-    for (const row of d.r) {
-      const o = {};
-      for (const f of STR) o[f] = ix[f] === undefined ? "" : T[row[ix[f]]];       // ältere Dateien kennen neuere Spalten nicht
-      for (const f of ["price", "prev", "last", "online", "missing", "rating", "rcount"]) o[f] = ix[f] === undefined ? 0 : row[ix[f]];
-      o.top = (o.cat || "").split(" › ")[0] || "–"; o.sub = (o.cat || "").split(" › ")[1] || "";
-      o.ph = o.ph ? JSON.parse(o.ph) : [[o.first_seen, o.price]];
-      o.log = o.log ? JSON.parse(o.log) : [];
-      const vs = o.ph.map((p) => p[1]).filter((v) => v != null);
-      o.lo = Math.min(...vs); o.hi = Math.max(...vs);
-      const n = o.ph.length;
-      o.chg = n > 1 ? { date: o.ph[n - 1][0], from: o.ph[n - 2][1], to: o.ph[n - 1][1] } : null;
-      o.chgPct = o.chg && o.chg.from ? (o.chg.to / o.chg.from - 1) * 100 : 0;
-      out.push(o);
-    }
-    return out;
-  }
-  async function loadKatalog() {
-    if (S.kat) return S.kat;
-    try { const meta = await getK("meta.bin"); S.kat = { meta, items: unpackK(await getK("items.bin", meta.items_version)) }; }
-    catch (e) { if (e instanceof AuthError) throw e; S.kat = { meta: null, items: [] }; }
-    S.kat.byId = new Map(S.kat.items.map((o) => [o.id, o]));
-    S.kat.first = S.kat.items.reduce((m, o) => (o.first_seen < m ? o.first_seen : m), "9999");
-    const firstN = S.kat.items.filter((o) => o.first_seen === S.kat.first).length;
-    for (const o of S.kat.items) o.base = firstN >= 1000 && o.first_seen === S.kat.first;      // Erst-Import: Einstelldatum unbekannt
-    const fam = new Map(), vr = new Map();                       // Familie = gleicher Name; Variante = gleicher Name + Produkttyp (unterscheidet sich in Farbe/Maß)
-    for (const o of S.kat.items) { o.fk = o.name; o.vk = `${o.name}|${o.kind}`; (fam.get(o.fk) || fam.set(o.fk, []).get(o.fk)).push(o); (vr.get(o.vk) || vr.set(o.vk, []).get(o.vk)).push(o); }
-    S.kat.fam = fam; S.kat.vr = vr; S.kat.byNo = new Map(S.kat.items.map((o) => [o.no, o]));
-    return S.kat;
-  }
-  const fundCount = () => {                                   // Artikelnummer -> aktive Fundgrube-Angebote
-    if (S.fundMap && S.fundMap.n === S.repo.current.length) return S.fundMap.m;
-    const m = new Map(); for (const o of S.repo.current) for (const a of artsOf(o)) m.set(a, (m.get(a) || 0) + 1);
-    S.fundMap = { n: S.repo.current.length, m }; return m;
-  };
-  /* ---------- Gemeinsames Filtersystem (Katalog, Sortiment-Listen) ---------- */
-  // Jeder Filter: Schlüssel k, Beschriftung l (= "kein Filter"), Art t (select|number), optional needs (Daten, die vorhanden sein müssen), test(o, wert, ctx).
-  const MY_KEY = "zc.mymarkets";
-  const myMarkets = () => lsGet(MY_KEY, []);
-  const storeBits = (R, sid, o) => { const s = R.byId[sid], i = R.idx.get(o.id); return s && i != null && i < s.n ? bitAt(s.r, i) : null; };     // 1 / 0 / null (unbekannt)
-  const spread = (R, o) => { const i = R.idx.get(o.id); return i == null || R.known[i] < MIN_KNOWN ? null : { n: R.cnt[i], of: R.known[i] }; };
-  const selSet = (c, v) => { const m = c._ss || (c._ss = new Map()); let s = m.get(v); if (!s) m.set(v, (s = new Set(String(v).split("|").filter(Boolean)))); return s; };
-  function multiControl(d, c, st) {
-    const sel = new Set((st[d.k] || "").split("|").filter(Boolean)), opts = d.opts(c, st);
-    const label = sel.size ? `${[...sel].slice(0, 2).join(", ")}${sel.size > 2 ? ` +${sel.size - 2}` : ""}` : d.l;
-    return `<details class="ms${sel.size ? " ms--on" : ""}" data-fk="${d.k}" data-multi ${S.openMs === d.k && st !== NOOPEN ? "open" : ""}><summary class="inp">${esc(label)}</summary>
-      <div class="ms__pop"><input class="inp ms__q" type="search" placeholder="${esc(d.l.replace("alle ", ""))} suchen …" aria-label="suchen">
-        <div class="ms__list">${opts.map(([v, t, n]) => `<label class="ms__o"><input type="checkbox" value="${esc(v)}" ${sel.has(v) ? "checked" : ""}><span>${esc(t)}</span>${n != null ? `<small>${nf0.format(n)}</small>` : ""}</label>`).join("")}</div>
-        <div class="ms__f"><span class="muted">${sel.size ? `${sel.size} gewählt (ODER)` : "mehrere möglich"}</span>${sel.size ? `<button type="button" class="linkbtn" data-ms-clear>Auswahl aufheben</button>` : ""}</div></div></details>`;
-  }
-  const NOOPEN = {};
-  const FILTERS = [
-    { k: "cat", l: "alle Kategorien", main: true, opts: (c) => c.tops, test: (o, v) => o.top === v },
-    { k: "sub", l: "alle Unterkategorien", main: true, dep: "cat", opts: (c, st) => c.subsOf(st.cat), test: (o, v) => o.sub === v },
-    { k: "col", l: "alle Farben", main: true, extra: true, multi: true, opts: (c) => c.cols, test: (o, v, c) => { const s = selSet(c, v); return (o.col || "").split(", ").some((x) => s.has(x)); } },
-    { k: "des", l: "alle Designer", main: true, extra: true, multi: true, needs: "F", opts: (c) => c.F.persons.map((p) => [p.name, p.name + (p.resolved ? "" : " (Kürzel)"), p.n]), test: (o, v, c) => { const s = selSet(c, v); return (c.F.ppl.get(o.id) || []).some((n) => s.has(n)); } },
-    { k: "mat", l: "alle Materialien", extra: true, multi: true, needs: "F.materials", opts: (c) => c.F.materials.map((m) => [m, m, null]), test: (o, v, c) => selSet(c, v).has(c.F.matBy.get(o.id)) },
-    { k: "pmin", l: "Preis ab €", t: "number", main: true, test: (o, v) => o.price >= +v },
-    { k: "pmax", l: "bis €", t: "number", main: true, test: (o, v) => o.price <= +v },
-    { k: "typ", l: "Einzelartikel & Sets", opts: () => [["ART", "nur Einzelartikel", null], ["SPR", "nur Sets/Kombinationen", null]], test: (o, v) => o.type === v },
-    { k: "rab", l: "Preis: egal", opts: () => [["1", "nur reduzierte (Vorher-Preis)", null], ["0", "ohne Reduzierung", null]], test: (o, v) => (v === "1") === !!o.prev },
-    { k: "chg", l: "Preisänderung: egal", opts: () => [["d7", "gesenkt (7 Tage)", null], ["u7", "erhöht (7 Tage)", null], ["d30", "gesenkt (30 Tage)", null], ["u30", "erhöht (30 Tage)", null]],
-      test: (o, v, c) => { const days_ = v.slice(1) === "7" ? c.d7 : c.d30; return !!o.chg && o.chg.date >= days_ && (v[0] === "d" ? o.chg.to < o.chg.from : o.chg.to > o.chg.from); } },
-    { k: "neu", l: "Neu: egal", opts: () => [["7", "neu seit 7 Tagen", null], ["30", "neu seit 30 Tagen", null], ["90", "neu seit 90 Tagen", null]], test: (o, v) => !o.base && o.first_seen >= daysAgoIso(+v) },
-    { k: "bw", l: "Bewertung: egal", opts: () => [["4.5", "ab 4,5 ★", null], ["4", "ab 4 ★", null], ["3.5", "ab 3,5 ★", null]], test: (o, v) => o.rcount >= 5 && o.rating >= +v },
-    { k: "bn", l: "Bewertungen: egal", opts: () => [["10", "mind. 10", null], ["50", "mind. 50", null], ["200", "mind. 200", null], ["1000", "mind. 1.000", null]], test: (o, v) => o.rcount >= +v },
-    { k: "fu", l: "Fundgrube: egal", opts: () => [["1", "gerade in der Fundgrube", null], ["0", "nicht in der Fundgrube", null]], test: (o, v, c) => c.fund.has(o.no) === (v === "1") },
-    { k: "on", l: "Verkauf: egal", opts: () => [["1", "online bestellbar", null], ["0", "nicht online", null]], test: (o, v) => (v === "1") === !!o.online },
-    // --- Sortiment je Markt (nur wenn Messdaten da sind) ---
-    { k: "mk", l: "Markt: egal", needs: "R", opts: (c) => c.R.st.slice().sort((a, b) => a.name.localeCompare(b.name, "de")).map((s) => [s.id, s.name, null]),
-      test: (o, v, c, st) => { const b = storeBits(c.R, v, o); return b === null ? true : (st.mkm === "0" ? b === 0 : b === 1); } },
-    { k: "mkm", l: "führt …", needs: "R", opts: () => [["1", "führt den Artikel", null], ["0", "führt ihn nicht", null]], test: () => true },
-    { k: "vb", l: "Verbreitung: egal", needs: "R", opts: () => [["1", "nur in 1 Markt", null], ["3", "in höchstens 3 Märkten", null], ["h", "in weniger als der Hälfte", null], ["m", "in mehr als der Hälfte", null], ["a", "fast überall (≥ 90 %)", null], ["0", "in keinem gemessenen Markt", null]],
-      test: (o, v, c) => { const x = spread(c.R, o); if (!x) return false; return v === "1" ? x.n === 1 : v === "3" ? x.n >= 1 && x.n <= 3 : v === "h" ? x.n / x.of < 0.5 : v === "m" ? x.n / x.of >= 0.5 : v === "a" ? x.n / x.of >= 0.9 : x.n === 0; } },
-    { k: "my", l: "Meine Märkte: egal", needs: "R", opts: () => [["any", "mind. einer führt ihn", null], ["all", "alle meine führen ihn", null], ["one", "genau einer führt ihn", null], ["none", "keiner führt ihn", null]],
-      test: (o, v, c) => { const mine = myMarkets(); if (!mine.length) return true; const bits = mine.map((id) => storeBits(c.R, id, o)).filter((b) => b !== null); if (!bits.length) return false; const n = bits.reduce((a, b) => a + b, 0); return v === "any" ? n >= 1 : v === "all" ? n === bits.length : v === "one" ? n === 1 : n === 0; } },
-  ];
-  // Auswahllisten und Zusatzdaten einmal bündeln
-  function filterCtx(kat, R, F) {
-    const key = S.fctx; if (key && key.kat === kat && key.R === R && key.F === F) return key.c;
-    const c = filterCtx0(kat, R, F); S.fctx = { kat, R, F, c }; return c;
-  }
-  function filterCtx0(kat, R, F) {
-    const items = kat.items, count = (fn) => [...items.reduce((m, o) => { for (const k of fn(o)) m.set(k, (m.get(k) || 0) + 1); return m; }, new Map())];
-    return { kat, R, F, fund: fundCount(), d7: daysAgoIso(7), d30: daysAgoIso(30),
-      tops: count((o) => [o.top]).sort((a, b) => b[1] - a[1]).map(([v, n]) => [v, v, n]),
-      cols: count((o) => (o.col || "").split(", ").filter(Boolean)).sort((a, b) => b[1] - a[1]).slice(0, 40).map(([v, n]) => [v, v, n]),
-      subsOf: (top) => (top ? count((o) => (o.top === top && o.sub ? [o.sub] : [])).sort((a, b) => b[1] - a[1]).map(([v, n]) => [v, v, n]) : []) };
-  }
-  const defAvailable = (d, c) => !d.needs || (d.needs === "R" ? !!c.R : d.needs === "F" ? !!c.F?.designers.length : d.needs === "F.materials" ? !!c.F?.materials?.length : true);
-  function filterControl(d, c, st, id) {
-    const v = st[d.k] ?? "";
-    if (d.multi) return multiControl(d, c, st);
-    if (d.t === "number") return `<input class="inp" data-fk="${d.k}" id="${id}${d.k}" type="number" min="0" placeholder="${esc(d.l)}" value="${esc(v)}" style="max-width:${d.k === "pmin" ? 112 : 96}px" aria-label="${esc(d.l)}">`;
-    const opts = d.opts(c, st).map(([val, text, n]) => `<option value="${esc(val)}" ${val === v ? "selected" : ""}>${esc(text)}${n != null ? ` (${nf0.format(n)})` : ""}</option>`).join("");
-    if (d.dep === "cat" && !opts) return "";
-    return `<select class="inp" data-fk="${d.k}" id="${id}${d.k}" aria-label="${esc(d.l)}"><option value="">${esc(d.l)}</option>${opts}</select>`;
-  }
-  // Leiste: Hauptfilter sichtbar, der Rest unter "Weitere Filter (n aktiv)"
-  function filterBarHtml(c, st, id = "f-") {
-    const defs = FILTERS.filter((d) => defAvailable(d, c)), main = defs.filter((d) => d.main), more = defs.filter((d) => !d.main);
-    const active = more.filter((d) => st[d.k]).length;
-    return `${main.map((d) => filterControl(d, c, st, id)).join("")}
-      <details class="morefilters" ${active ? "open" : ""}><summary>Weitere Filter${active ? ` (${active} aktiv)` : ""}</summary><div class="pg-ctl">${more.map((d) => filterControl(d, c, st, id)).join("")}
-        ${c.R ? `<a class="linkbtn" href="#/sortiment" title="Meine Märkte festlegen">Meine Märkte (${myMarkets().length}) festlegen</a>` : ""}</div></details>`;
-  }
-  const extraFilterBar = (c, id) => { const defs = FILTERS.filter((d) => (!d.main || d.extra) && defAvailable(d, c)); return `<details class="morefilters"><summary>Weitere Filter</summary><div class="pg-ctl">${defs.map((d) => filterControl(d, c, {}, id)).join("")}</div></details>`; };
-  const readFilterEls = (root) => Object.fromEntries([...root.querySelectorAll("[data-fk]")].map((e) => [e.dataset.fk, e.dataset.multi !== undefined ? [...e.querySelectorAll("input:checked")].map((x) => x.value).join("|") : e.value]).filter(([, v]) => v !== ""));
-  function passes(o, st, c) {
-    for (const d of FILTERS) { const v = st[d.k]; if (v === undefined || v === "" || !defAvailable(d, c)) continue; if (!d.test(o, v, c, st)) return false; }
+  const defsOf = (tab) => DEF[tab].filter((d) => !d.need || (d.need === "R" ? !!S.rng : !!S.facets));
+  const on = (v) => !(v == null || v === "" || v === false || (Array.isArray(v) && !v.length) || (typeof v === "object" && !Array.isArray(v) && !v.min && !v.max));
+  const ok1 = (d, o, v) => { if (!on(v)) return d.dflt ? d.dflt(o) : true; if (d.t === "multi") return d.get(o).some((x) => v.includes(x)); if (d.t === "range") { const x = d.get(o); return x != null && (!v.min || x >= +v.min) && (!v.max || x <= +v.max); } return d.test(o, v); };
+  const hay = (o) => o._h || (o._h = fold(`${o.name || o.title} ${o.kind || o.product_description} ${o.offer_description || ""} ${o.no} ${fNo(o.no)} ${o.col || ""} ${o.market || ""} ${o.cat || ""}`));
+  const qok = (o, q) => { if (!q) return true; const terms = fold(q).split(/\s+/).filter(Boolean); const h = hay(o); return terms.every((t) => h.includes(t)); };
+  function passAll(o, tab, f, ex) {
+    if (tab === "fund" && !f.zeit && !o.active) return false;
+    if (!qok(o, f.q)) return false;
+    for (const d of defsOf(tab)) if (d.k !== ex && !ok1(d, o, f[d.k])) return false;
     return true;
   }
-  document.addEventListener("input", (e) => { const q = e.target.closest?.(".ms__q"); if (!q) return; const t = ZC.fold(q.value); q.closest(".ms").querySelectorAll(".ms__o").forEach((l) => { l.hidden = !!t && !ZC.fold(l.textContent).includes(t); }); });
-  document.addEventListener("click", (e) => {
-    const clr = e.target.closest?.("[data-ms-clear]");
-    if (clr) { const ms = clr.closest(".ms"); ms.querySelectorAll("input:checked").forEach((x) => (x.checked = false)); ms.querySelector("input[type=checkbox]")?.dispatchEvent(new Event("change", { bubbles: true })); return; }
-    document.querySelectorAll(".ms[open]").forEach((m) => { if (!m.contains(e.target)) { m.open = false; if (S.openMs === m.dataset.fk) S.openMs = null; } });
-  });
-  /* ---------- Favoriten: jeder Katalog-Artikel lässt sich merken (= Merklisten-Regel mit Artikelnummer) ---------- */
-  const isFavRule = (r) => (r.article_numbers || []).length === 1 && !(r.keywords || []).length && !(r.stores || []).length;
-  const favSet = () => { const k = `${S.rules.length}|${S.repo.watch.length}|${S.favV || 0}`; if (S.favC?.k === k) return S.favC.s; const s = new Set(); for (const r of allRules()) if (isFavRule(r)) s.add(ZC.normArticle(r.article_numbers[0])); S.favC = { k, s }; return s; };
-  const isFav = (o) => favSet().has(ZC.normArticle(o.no));
-  const favBtn = (o) => `<button type="button" class="fav ${isFav(o) ? "fav--on" : ""}" data-fav="${esc(o.id)}" aria-pressed="${isFav(o)}" title="${isFav(o) ? "Favorit – antippen zum Entfernen" : "Als Favorit merken (Benachrichtigung, wenn in der Fundgrube)"}">${isFav(o) ? "★" : "☆"}</button>`;
-  async function toggleFav(id) {
-    const o = S.kat?.byId.get(id); if (!o) return;
-    const key = ZC.normArticle(o.no), mine = S.rules.filter((r) => isFavRule(r) && ZC.normArticle(r.article_numbers[0]) === key);
-    if (isFav(o)) {
-      if (!mine.length) { toast("Dieser Favorit kommt aus der Sicherung und lässt sich nur mit verbundenem Worker entfernen."); return; }
-      if (!confirmTwice(`„${o.name}“ aus den Favoriten entfernen?`)) return;
-      S.rules = S.rules.filter((r) => !mine.includes(r)); await persistRules(true); toast("Entfernt. Der frühere Stand ist unter „Daten“ wiederherstellbar.");
+  const srcOf = (tab, f) => { const k = tab === "fund" ? (f.zeit ? "s-fall" + (S.repo.archive ? 1 : 0) : "s-fa") : "s-kat"; if (!memo.has(k)) memo.set(k, tab === "fund" ? (f.zeit ? FALL() : FA()) : S.kat.items.filter((o) => !o.stub)); return memo.get(k); };
+  const apply = (tab, f, ex) => srcOf(tab, f).filter((o) => passAll(o, tab, f, ex));
+  function optsOf(d, tab, f) {
+    const k = `o|${tab}|${d.k}|${JSON.stringify(f)}`;
+    if (memo.has(k)) return memo.get(k);
+    let out;
+    if (d.t === "single") out = d.opts.map(([v, l]) => ({ v, l, n: apply(tab, { ...f, [d.k]: v }).length }));
+    else { const b = apply(tab, f, d.k), m = new Map(); for (const o of srcOf(tab, f)) for (const x of d.get(o)) if (!m.has(x)) m.set(x, 0); for (const o of b) for (const x of d.get(o)) m.set(x, (m.get(x) || 0) + 1); out = [...m].sort(d.ord ? (a, c) => d.ord(a[0], c[0]) : (a, c) => c[1] - a[1] || String(a[0]).localeCompare(String(c[0]), "de")).map(([v, n]) => ({ v, l: d.lab ? d.lab(v) : v, n })); }
+    memo.set(k, out); return out;
+  }
+  const valTxt = (d, v) => { if (d.t === "multi") { if (d.mine && MINE().length && sameSet(v, MINE())) return "meinen Märkten"; const ls = v.map((x) => (d.lab ? d.lab(x) : x)); return ls.length > 3 ? `${ls.slice(0, 2).join(", ")} und ${ls.length - 2} weiteren` : ls.join(" oder "); } if (d.t === "range") return v.min && v.max ? `${eur0(+v.min)} bis ${eur0(+v.max)}` : v.max ? `höchstens ${eur0(+v.max)}` : `mindestens ${eur0(+v.min)}`; if (d.t === "toggle") return d.txt; return d.opts.find((x) => x[0] === v)?.[1] || v; };
+  const sentence = (tab, f) => defsOf(tab).filter((d) => d.base || on(f[d.k])).map((d) => `${d.pre ? d.pre + " " : ""}${on(f[d.k]) ? valTxt(d, f[d.k]) : d.any}${d.post ? " " + d.post : ""}`).join(" ").replace(/ +/g, " ") + (f.q ? ` mit „${f.q}“` : "");
+  const isNewV = (o) => !!S.prevVisit && !o.base && o.first_seen > S.prevVisit;
+  const nv = (o) => (o.active && isNewV(o) ? `<i class="nv" title="neu seit deinem letzten Besuch"></i>` : "");
+  const fundNow = () => { if (!memo.has("fn")) memo.set("fn", FA().reduce((m, o) => m.set(o.no, [...(m.get(o.no) || []), o]), new Map())); return memo.get("fn"); };
+  const fundAll = () => { const k = "fa" + (S.repo.archive ? 1 : 0); if (!memo.has(k)) memo.set(k, FALL().reduce((m, o) => m.set(o.no, [...(m.get(o.no) || []), o]), new Map())); return memo.get(k); };
+
+  function optList(d, tab, f, where = "pop", lim = 0) {
+    const v = f[d.k];
+    if (d.t === "range") return `<div class="range"><input type="number" min="0" inputmode="decimal" placeholder="ab €" id="r-${where}-${d.k}-min" data-range="${d.k}" data-side="min" value="${esc(v?.min || "")}" aria-label="ab Euro"><span>bis</span><input type="number" min="0" inputmode="decimal" placeholder="€" id="r-${where}-${d.k}-max" data-range="${d.k}" data-side="max" value="${esc(v?.max || "")}" aria-label="bis Euro"></div>${where === "pop" ? `<button class="ok" data-shut>Übernehmen</button>` : ""}`;
+    if (d.t === "toggle") return `<label class="opt"><input type="checkbox" data-tg="${d.k}" ${v ? "checked" : ""}><span>${esc(d.txt)}</span><small>${nf(apply(tab, { ...f, [d.k]: true }).length)}</small></label>`;
+    let os = optsOf(d, tab, f); const sq = S.sq[d.k] || "";
+    if (d.search && sq) os = os.filter((o) => fold(o.l).includes(fold(sq)));
+    const allN = os.length; if (lim && !S.more[d.k] && !sq && os.length > lim) { const sel = os.filter((o) => (v || []).includes?.(o.v)); os = [...new Set([...os.slice(0, lim), ...sel])]; }
+    const mineOpt = d.mine && MINE().length ? `<label class="opt sep"><input type="checkbox" data-mine="${d.k}" ${sameSet(v, MINE()) ? "checked" : ""}><span><b>Meine Märkte</b> <span class="kd">${esc(MINE().map(nameOf).join(", "))}</span></span></label>` : "";
+    return `${d.search && (allN > 8 || sq) ? `<input type="search" id="sq-${where}-${d.k}" data-sq="${d.k}" placeholder="suchen" value="${esc(sq)}" aria-label="${esc(d.l)} suchen">` : ""}${mineOpt}${os.map((o) => { const c = d.t === "multi" ? (v || []).includes(o.v) : v === o.v; const mine = d.mine || d.k === "fehlt" ? isMine(o.v) : false; return `<label class="opt ${o.n || c ? "" : "zero"}"><input type="${d.t === "multi" ? "checkbox" : "radio"}" name="${where}${tab}${d.k}" data-k="${d.k}" data-v="${esc(o.v)}" ${c ? "checked" : ""}><span>${d.k === "farbe" ? sq_(o.v) : ""}${mine ? `<b>${esc(o.l)}</b>` : esc(o.l)}</span><small>${nf(o.n)}</small></label>`; }).join("")}${lim && allN > lim && !sq ? `<button class="lnk more" data-more="${d.k}">${S.more[d.k] ? "weniger" : `alle ${allN} zeigen`}</button>` : ""}${d.t === "single" && v && where === "pop" ? `<button class="lnk" data-reset="${d.k}" style="margin-top:6px;display:block">zurücksetzen</button>` : ""}`;
+  }
+  function sideFilters(tab, f) {
+    const defs = defsOf(tab), box = (d) => `<div class="fg"><h4>${esc(d.l)}${on(f[d.k]) ? `<button class="on" data-reset="${d.k}">zurücksetzen</button>` : ""}</h4>${optList(d, tab, f, "side", 7)}</div>`;
+    return `<aside class="side" aria-label="Filter">${defs.filter((d) => d.base).map(box).join("")}${["Was", "Preis", "Zeit", "Wo"].map((g) => [g, defs.filter((d) => !d.base && d.g === g)]).filter(([, l]) => l.length).map(([g, l]) => `<div class="grp">${g}</div>${l.map(box).join("")}`).join("")}</aside>`;
+  }
+  function filterSentence(tab, f) {
+    const slot = (d) => { const set = on(f[d.k]); return `<span class="slot">${d.pre ? esc(d.pre) + " " : ""}<button class="${set ? "set" : ""}" data-pop="${d.k}" aria-expanded="${S.open === d.k}">${esc(set ? valTxt(d, f[d.k]) : d.any || "…")}</button>${set && !d.base ? `<button class="x" data-reset="${d.k}" aria-label="Angabe entfernen">✕</button>` : ""}${d.post ? " " + esc(d.post) : ""}${S.open === d.k ? `<div class="pop">${optList(d, tab, f)}</div>` : ""}</span>`; };
+    const defs = defsOf(tab), base = defs.filter((d) => d.base), extra = defs.filter((d) => !d.base && (on(f[d.k]) || S.open === d.k)), rest = defs.filter((d) => !d.base && !on(f[d.k]) && S.open !== d.k);
+    const groups = ["Was", "Preis", "Zeit", "Wo"].map((g) => [g, rest.filter((d) => d.g === g)]).filter(([, l]) => l.length);
+    return `<div class="q">${base.map(slot).join(" ")}${extra.length ? ", " + extra.map(slot).join(", ") : ""}. <span class="slot"><button class="add" data-pop="__add" aria-expanded="${S.open === "__add"}">+ Angabe</button>${S.open === "__add" ? `<div class="pop">${groups.map(([g, l]) => `<h4>${g}</h4>${l.map((d) => `<button class="opt" style="width:100%;text-align:left" data-addk="${d.k}"><span>${esc(d.l)}</span></button>`).join("")}`).join("")}</div>` : ""}</span></div>`;
+  }
+
+  /* ================= Diagramme ================= */
+  const X0 = () => ms(S.t0 || dIso(180)), X1 = () => ms(TODAY);
+  function axisMonths(x, h) { const out = [], t0 = new Date(X0()); for (let d = new Date(Date.UTC(t0.getUTCFullYear(), t0.getUTCMonth() + 1, 1)); +d <= X1(); d.setUTCMonth(d.getUTCMonth() + 1)) { const xx = x(d.toISOString().slice(0, 10)); out.push(`<line x1="${xx}" x2="${xx}" y1="0" y2="${h}" stroke="var(--rule)"/><text x="${xx + 4}" y="${h - 4}">${["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"][d.getUTCMonth()]}</text>`); } return out.join(""); }
+  function timeline(a, offs) {
+    const W = 760, pl = 58, pr_ = 16, h1 = 150, gap = 18, h2 = 46, H = h1 + gap + h2 + 22;
+    const x = (d) => pl + (Math.min(Math.max(ms(d), X0()), X1()) - X0()) / Math.max(1, X1() - X0()) * (W - pl - pr_);
+    const ph = a ? a.ph.map(([t, v]) => [day(t), v]).filter((p) => p[1] != null) : [];
+    let line = "";
+    if (ph.length) {
+      const vs = ph.map((p) => p[1]), lo = Math.min(...vs), hi = Math.max(...vs), pad = Math.max((hi - lo) * 0.35, hi * 0.08), y = (v) => 10 + (1 - (v - (lo - pad)) / ((hi + pad) - (lo - pad))) * (h1 - 20);
+      let d = ""; ph.forEach(([t, v], i) => { d += i ? `H${x(t).toFixed(1)}V${y(v).toFixed(1)}` : `M${x(t).toFixed(1)} ${y(v).toFixed(1)}`; }); d += `H${x(a.gone || TODAY).toFixed(1)}`;
+      line = `<path d="${d}" fill="none" stroke="var(--ink)" stroke-width="2"/>${ph.map(([t, v]) => `<circle cx="${x(t)}" cy="${y(v)}" r="3.5" fill="var(--ink)"/><text class="lab" x="${x(t) + 6}" y="${y(v) - 7}">${eur(v)}</text>`).join("")}`
+        + (a.first ? `<line x1="${x(a.first)}" x2="${x(a.first)}" y1="0" y2="${h1}" stroke="var(--ink)" stroke-dasharray="2 3"/><text x="${x(a.first) + 4}" y="10">neu</text>` : `<text x="${pl}" y="${h1 + 4}">← schon vor Beginn der Erfassung im Sortiment</text>`)
+        + (a.gone ? `<line x1="${x(a.gone)}" x2="${x(a.gone)}" y1="0" y2="${h1}" stroke="var(--red)" stroke-dasharray="2 3"/><text x="${x(a.gone) - 4}" y="10" text-anchor="end" style="fill:var(--red)">ausgelistet</text>` : "");
+    } else line = `<text x="${pl}" y="${h1 / 2}">kein regulärer Preis bekannt</text>`;
+    const fy = h1 + gap;
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Preis und Fundgrube über die Zeit">${axisMonths(x, H)}${line}
+      <text x="${pl - 8}" y="${fy + 14}" text-anchor="end">Fund-</text><text x="${pl - 8}" y="${fy + 27}" text-anchor="end">grube</text><line x1="${pl}" x2="${W - pr_}" y1="${fy + h2}" y2="${fy + h2}" stroke="var(--rule)"/>
+      ${offs.map((o) => { const x1 = x(o.base ? S.t0 : o.start), x2 = x(o.end || TODAY), yy = fy + 6 + ((o.disc ?? 0) / 75) * (h2 - 12); return `<line x1="${x1}" x2="${Math.max(x2, x1 + 3)}" y1="${yy}" y2="${yy}" stroke="${isMine(o.mid) ? "var(--blue)" : "var(--blue2)"}" stroke-width="${isMine(o.mid) ? 5 : 3}" stroke-linecap="round"><title>${esc(o.market)}: ${eur(o.price)} (−${o.disc ?? "?"} %), ${o.base ? "seit Beginn" : fD(o.start)}${o.end ? " bis " + fD(o.end) : " bis heute"}</title></line>`; }).join("")}
+    </svg><div class="legend"><span><i style="background:var(--ink)"></i>regulärer Preis</span><span><i style="background:var(--blue)"></i>Fundgrube in meinen Märkten</span><span><i style="background:var(--blue2)"></i>Fundgrube anderswo</span><span>je höher im Band, desto mehr Rabatt</span></div>`;
+  }
+  function lanes(list, cur, label) {
+    const W = 760, pl = 210, pr_ = 12, rh = 24, H = list.length * rh + 22, x = (d) => pl + (Math.min(Math.max(ms(d), X0()), X1()) - X0()) / Math.max(1, X1() - X0()) * (W - pl - pr_);
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Wann jede Variante im Sortiment war">${axisMonths(x, H)}${list.map((a, i) => { const y = i * rh + 4, s = a.first || S.t0, e = a.gone || TODAY; return `<g data-go="#/artikel?id=${encodeURIComponent(a.id)}" style="cursor:pointer"><text x="0" y="${y + 13}" class="lab" style="font-weight:${a.id === cur ? 700 : 500}">${esc(label(a)).slice(0, 34)}</text>
+      ${a.first ? "" : `<rect x="${pl - 14}" y="${y + 4}" width="14" height="10" fill="url(#fade)"/>`}<rect x="${x(s)}" y="${y + 4}" width="${Math.max(3, x(e) - x(s))}" height="10" fill="${a.gone ? "var(--mut)" : "var(--ink)"}"/>
+      ${a.first ? `<circle cx="${x(a.first)}" cy="${y + 9}" r="4" fill="var(--mark)" stroke="var(--ink)"/>` : ""}${a.gone ? `<text x="${Math.min(x(e) + 5, W - 90)}" y="${y + 13}" style="fill:var(--red)">ausgelistet ${fS(a.gone)}</text>` : ""}</g>`; }).join("")}
+      <defs><linearGradient id="fade"><stop offset="0" stop-color="var(--ink)" stop-opacity="0"/><stop offset="1" stop-color="var(--ink)"/></linearGradient></defs></svg>
+      <div class="legend"><span><i style="background:var(--ink)"></i>im Sortiment</span><span><i style="background:var(--mark);border:1px solid var(--ink);border-radius:50%"></i>neu erschienen</span><span><i style="background:var(--mut)"></i>ausgelistet</span><span>verblasst links: schon vor Beginn der Erfassung</span></div>`;
+  }
+  function bars(rows, { fmt = nf, hl = () => false, max, pre = () => "", go } = {}) { const mx = max || Math.max(...rows.map((r) => r[1]), 1); return `<table style="width:100%"><tbody>${rows.map(([l, v, extra]) => `<tr ${go ? `data-go="${esc(go(l))}" style="cursor:pointer"` : ""}><td style="width:38%;padding:4px 12px 4px 0;font-size:13px;border:0;${hl(l) ? "font-weight:700" : ""}">${pre(l)}${esc(l)}</td><td style="padding:4px 12px 4px 0;border:0"><div class="trk"><i class="${hl(l) ? "hl" : ""}" style="width:${Math.max(0, v / mx * 100).toFixed(1)}%"></i></div></td><td class="r tn" style="padding:4px 0;font-size:13px;width:90px;border:0">${fmt(v)}${extra ? ` <span class="kd">${extra}</span>` : ""}</td></tr>`).join("")}</tbody></table>`; }
+  function thumbs(rows, fmt = nf) { const mx = Math.max(...rows.map((r) => r.v), 1); return rows.map((r) => `<div class="tb" data-go="${esc(r.go)}"><img src="${esc(r.img)}" alt="" loading="lazy"><span><b>${esc(r.l)}</b><br><span class="kd">${esc(r.s || "")}</span></span><div class="trk"><i style="width:${(r.v / mx * 100).toFixed(1)}%"></i></div><span class="r tn">${fmt(r.v)}</span></div>`).join(""); }
+  function strip(groups) {
+    const W = 760, pl = 210, pr_ = 16, rh = 30, H = groups.length * rh + 26, ticks = [5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000], lo = Math.log10(2), hi = Math.log10(6000), x = (v) => pl + (Math.log10(Math.max(v, 2)) - lo) / (hi - lo) * (W - pl - pr_);
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Preise je Bereich">${ticks.map((t) => `<line x1="${x(t)}" x2="${x(t)}" y1="0" y2="${H - 18}" stroke="var(--rule)"/><text x="${x(t)}" y="${H - 4}" text-anchor="middle">${nf(t)} €</text>`).join("")}
+      ${groups.map((g, i) => { const y = i * rh + 14, ps = g.items.map((a) => a.price).filter((p) => p != null), med = qn(ps, 0.5), sample = g.items.length > 400 ? g.items.filter((_, j) => j % Math.ceil(g.items.length / 400) === 0) : g.items; return `<text x="0" y="${y + 4}" class="lab">${esc(g.l)}</text><text x="${pl - 10}" y="${y + 4}" text-anchor="end">${nf(g.items.length)}</text>${sample.map((a, j) => `<circle cx="${x(a.price)}" cy="${y + ((j % 3) - 1) * 4}" r="2.6" fill="var(--blue)" fill-opacity=".35"/>`).join("")}${med != null ? `<line x1="${x(med)}" x2="${x(med)}" y1="${y - 10}" y2="${y + 10}" stroke="var(--ink)" stroke-width="2"/>` : ""}`; }).join("")}</svg><div class="legend"><span><i style="background:var(--blue);opacity:.5;border-radius:50%"></i>ein Artikel</span><span><i style="background:var(--ink);width:2px"></i>Median</span><span>Achse logarithmisch</span></div>`;
+  }
+  function weekBars(up, down, labels, { a = "neu", b = "ausgelistet" } = {}) {
+    const W = 760, pl = 34, pr_ = 6, H = 190, mid = 90, n = up.length, bw = (W - pl - pr_) / n, mx = Math.max(...up, ...down, 1), sc = 78 / mx;
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${a} und ${b}"><line x1="${pl}" x2="${W}" y1="${mid}" y2="${mid}" stroke="var(--ink)"/>
+      ${up.map((v, i) => `<rect x="${pl + i * bw + 1}" y="${mid - v * sc}" width="${Math.max(1, bw - 2)}" height="${v * sc}" fill="var(--ink)"><title>${labels[i]}: ${v} ${a}</title></rect>${v && n <= 30 ? `<text x="${pl + i * bw + bw / 2}" y="${mid - v * sc - 4}" text-anchor="middle">${v}</text>` : ""}`).join("")}
+      ${down.map((v, i) => `<rect x="${pl + i * bw + 1}" y="${mid + 1}" width="${Math.max(1, bw - 2)}" height="${v * sc}" fill="var(--red)"><title>${labels[i]}: ${v} ${b}</title></rect>${v && n <= 30 ? `<text x="${pl + i * bw + bw / 2}" y="${mid + v * sc + 12}" text-anchor="middle">${v}</text>` : ""}`).join("")}
+      ${labels.map((l, i) => (i % Math.ceil(n / 9) ? "" : `<text x="${pl + i * bw + 2}" y="${H - 2}">${l}</text>`)).join("")}<text x="${pl - 6}" y="${mid - 70}" text-anchor="end">${a}</text><text x="${pl - 6}" y="${mid + 78}" text-anchor="end">${b}</text></svg>`;
+  }
+  function areaDays(vals, labels) {
+    const W = 760, H = 170, pl = 40, mx = Math.max(...vals, 1), n = vals.length, x = (i) => pl + i / Math.max(1, n - 1) * (W - pl - 8), y = (v) => 10 + (1 - v / mx) * (H - 34), pts = vals.map((v, i) => `${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join("L");
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Verlauf">${[0.5, 1].map((k) => `<line x1="${pl}" x2="${W}" y1="${y(mx * k)}" y2="${y(mx * k)}" stroke="var(--rule)"/><text x="${pl - 6}" y="${y(mx * k) + 4}" text-anchor="end">${nf(Math.round(mx * k))}</text>`).join("")}<path d="M${pts}L${x(n - 1)} ${H - 24}L${pl} ${H - 24}Z" fill="var(--blue)" fill-opacity=".08"/><path d="M${pts}" fill="none" stroke="var(--blue)" stroke-width="2"/>${labels.map((l, i) => (i % Math.ceil(n / 7) ? "" : `<text x="${x(i)}" y="${H - 4}">${l}</text>`)).join("")}</svg>`;
+  }
+  const spark = (a) => { const W = 70, H = 18, t0 = X0(), t1 = X1(), xs = (d) => (Math.min(Math.max(ms(d), t0), t1) - t0) / Math.max(1, t1 - t0) * W, ph = a.ph.filter((p) => p[1] != null), vs = ph.map((p) => p[1]); if (!vs.length) return ""; const lo = Math.min(...vs), hi = Math.max(...vs), y = (v) => (hi === lo ? H / 2 : 2 + (1 - (v - lo) / (hi - lo)) * (H - 4)); let d = ""; ph.forEach(([t, v], i) => { d += i ? `H${xs(t).toFixed(1)}V${y(v).toFixed(1)}` : `M${xs(t).toFixed(1)} ${y(v).toFixed(1)}`; }); d += `H${xs(a.gone || TODAY).toFixed(1)}`; const c = lastChg(a); return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" aria-hidden="true"><path d="${d}" fill="none" stroke="${c ? (c.to < c.from ? "var(--green)" : "var(--red)") : "var(--mut)"}" stroke-width="1.5"/></svg>`; };
+
+  /* ================= Bausteine ================= */
+  const favBtn = (no, label) => (no ? `<button class="fav ${FAVS().has(no) ? "on" : ""}" data-fav="${esc(no)}" data-label="${esc(label)}" aria-pressed="${FAVS().has(no)}" aria-label="${FAVS().has(no) ? "gemerkt" : "merken"}">${HEART}</button>` : "");
+  const ausOf = (a) => [a.col, a.measure].filter(Boolean).join(" · ");
+  const img = (src, alt = "") => (src ? `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" decoding="async">` : "");
+  const fundHint = (a) => { const n = fundNow().get(a.no); return n ? `<span class="fh"><b>${n.length} ${n.length === 1 ? "Angebot" : "Angebote"}</b> ab ${eur(Math.min(...n.map((o) => o.price)))}</span>` : ""; };
+  const mineB = (o) => (isMine(o.mid) ? `<b>${esc(o.market)}</b>` : esc(o.market));
+  const offerName = (o) => `${nv(o)}${esc(o.art ? o.art.name : o.title)} <span style="font-weight:400">${esc(o.art ? o.art.kind : o.product_description || "")}</span>`;
+  function rowsFund(list, sortable = true) {
+    const th = (k, l, c = "") => (sortable ? `<th class="${c}" data-sortby="${k}" ${S.sort.fund === k ? 'aria-sort="descending"' : ""}>${l}</th>` : `<th class="${c}">${l}</th>`);
+    return `<div class="tw"><table><thead><tr><th></th><th>Artikel</th>${th("markt", "Markt", "hide")}<th class="hide">Zustand</th>${th("neu", "eingestellt", "hide")}${th("preis", "Preis", "r")}${th("rabatt", "Rabatt", "r")}<th></th></tr></thead><tbody>${list.map((o) => `<tr data-go="#/angebot?id=${encodeURIComponent(o.id)}"><td class="im">${img(o.thumb)}</td><td><div class="nm">${offerName(o)}</div><div class="kd">${o.art ? esc(ausOf(o.art)) : esc(o.offer_description || "").slice(0, 80)}${o.no ? ` · ${fNo(o.no)}` : ""}${!o.art ? " · <span class='up'>nicht im Sortiment</span>" : o.art.gone ? " · <span class='up'>ausgelistet</span>" : ""}</div></td><td class="hide">${mineB(o)}</td><td class="hide">${esc(o.condition || "–")}<div class="kd">${esc(o.reason_discount || "")}</div></td><td class="hide tn">${o.base ? "seit Beginn" : o.active ? ago(o.age) : `${fS(o.start)}–${fS(o.end)}<div class="kd">${daysBetween(o.start, o.end)} Tage da</div>`}</td><td class="r">${pr(o.price)}<div class="kd"><s>${eur(o.orig)}</s></div></td><td class="r tn dn">${o.disc != null ? `−${o.disc} %` : ""}</td><td>${favBtn(o.no, o.art ? o.art.name : o.title)}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+  function rowsSort(list, grp = "aus", sortable = true) {
+    const th = (k, l, c = "") => (sortable ? `<th class="${c}" data-sortby="${k}" ${S.sort.sort === k ? 'aria-sort="descending"' : ""}>${l}</th>` : `<th class="${c}">${l}</th>`);
+    const head = `<thead><tr><th></th>${th("name", "Artikel")}<th class="hide">Bereich</th>${th("preis", "Preis", "r")}${th("chg", "Verlauf", "hide")}${S.rng ? th("verb", "Märkte", "hide") : ""}<th class="hide">Fundgrube</th><th></th></tr></thead>`;
+    const r = (a) => { const c = lastChg(a); return `<tr data-go="#/artikel?id=${encodeURIComponent(a.id)}"><td class="im">${img(a.thumb)}</td><td><div class="nm">${esc(a.name)} <span style="font-weight:400">${esc(a.kind)}</span>${a.first && day(a.first) >= dIso(30) ? ` <span class="chip">neu</span>` : ""}${a.gone ? ` <span class="chip up">ausgelistet</span>` : ""}${a.last && !a.gone ? ` <span class="chip">letzte Chance</span>` : ""}</div><div class="kd">${esc(ausOf(a))}</div></td><td class="hide kd">${esc(a.sub || a.top)}</td><td class="r">${pr(a.price)}${a.prev ? `<div class="kd"><s>${eur(a.prev)}</s></div>` : c ? `<div class="kd tn ${c.to < c.from ? "dn" : "up"}">${c.to < c.from ? "▼" : "▲"} ${Math.abs(Math.round((c.to / c.from - 1) * 100))} % am ${fS(c.d)}</div>` : ""}</td><td class="hide">${spark(a)}</td>${S.rng ? `<td class="hide tn">${a.nMk != null ? `<span class="bar5"><i style="width:${a.nMk / Math.max(1, a.nKn) * 100}%"></i></span>${a.nMk}` : "–"}</td>` : ""}<td class="hide">${fundHint(a)}</td><td>${favBtn(a.no, a.name)}</td></tr>`; };
+    const cols = S.rng ? 8 : 7;
+    if (grp === "aus") return `<div class="tw"><table>${head}<tbody>${list.map(r).join("")}</tbody></table></div>`;
+    const key = grp === "serie" ? (a) => a.name : (a) => a.name + "|" + a.kind, g = new Map(); for (const a of list) g.set(key(a), [...(g.get(key(a)) || []), a]);
+    return `<div class="tw"><table>${head}<tbody>${[...g.values()].map((l) => { const ps = l.map((a) => a.price), kinds = new Set(l.map((a) => a.kind)).size; return `<tr class="grp"><td colspan="${cols}">${esc(grp === "serie" ? `Serie ${l[0].name}` : `${l[0].name} ${l[0].kind}`)} · ${grp === "serie" ? `${kinds} Produkte, ` : ""}${l.length} Variante${l.length > 1 ? "n" : ""} · ${Math.min(...ps) === Math.max(...ps) ? eur(ps[0]) : `${eur(Math.min(...ps))} bis ${eur(Math.max(...ps))}`}</td></tr>${l.map(r).join("")}`; }).join("")}</tbody></table></div>`;
+  }
+  const mini = (list) => `<div class="tw"><table><tbody>${list.map((a) => `<tr data-go="#/artikel?id=${encodeURIComponent(a.id)}"><td class="im">${img(a.thumb)}</td><td><div class="nm">${esc(a.name)} <span style="font-weight:400">${esc(a.kind)}</span></div><div class="kd">${esc(ausOf(a))}${a.nMk != null ? ` · in ${a.nMk} Märkten` : ""}</div></td><td class="r">${pr(a.price)}</td></tr>`).join("")}</tbody></table></div>`;
+  function tiles(list, fund) {
+    return `<div class="imgs">${list.map((o) => { const a = fund ? o.art : o, c = a ? lastChg(a) : null; return `<div data-go="${fund ? `#/angebot?id=${encodeURIComponent(o.id)}` : `#/artikel?id=${encodeURIComponent(o.id)}`}">${favBtn(o.no, a ? a.name : o.title)}${img(fund ? o.thumb : o.thumb)}<div class="n">${fund ? nv(o) : ""}${esc(a ? a.name : o.title)}</div><div class="k">${esc(a ? a.kind : o.product_description || "")}<br>${esc(a ? ausOf(a) : "")}</div>
+      <div class="p">${pr(o.price)}${fund ? `<s class="kd">${eur(o.orig)}</s>${o.disc != null ? `<span class="dn tn">−${o.disc} %</span>` : ""}` : a.prev ? `<s class="kd">${eur(a.prev)}</s>` : c && c.d >= dIso(30) ? `<span class="tn ${c.to < c.from ? "dn" : "up"}">${c.to < c.from ? "−" : "+"}${Math.abs(Math.round((c.to / c.from - 1) * 100))} %</span>` : ""}</div>
+      <div class="f">${fund ? `${mineB(o)} · ${esc(o.condition || "")} · ${o.active ? (o.base ? "seit Beginn" : ago(o.age)) : "weg"}` : `${o.nMk != null ? `${o.nMk} Märkte` : ""}${fundNow().has(o.no) ? `${o.nMk != null ? " · " : ""}<b>${fundNow().get(o.no).length} in der Fundgrube</b>` : ""}`}</div></div>`; }).join("")}</div>`;
+  }
+  const moreBtn = (n) => (n > S.shown ? `<p><button class="btn" data-showmore>${nf(Math.min(150, n - S.shown))} weitere zeigen (${nf(n - S.shown)} übrig)</button></p>` : "");
+
+  /* ================= Seiten ================= */
+  function pageStart() {
+    const favNos = [...FAVS()], fa = FA(), searches = searchRules();
+    const hitsFav = fa.filter((o) => FAVS().has(o.no)), mine = MINE();
+    const newMine = fa.filter((o) => isMine(o.mid) && isNewV(o));
+    const hitsS = searches.filter((r) => r.enabled !== false).map((r) => ({ r, l: ruleHits(r) }));
+    const nHits = new Set([...hitsFav, ...hitsS.flatMap((x) => x.l)].map((o) => o.id)).size;
+    const items = S.kat.items.filter((a) => !a.stub);
+    const ev = [
+      ...items.filter((a) => { const c = lastChg(a); return c && c.d >= dIso(30); }).map((a) => { const c = lastChg(a); return { d: c.d, a, kind: c.to < c.from ? "gesunken" : "gestiegen", t: `${eur(c.from)} → ${eur(c.to)}` }; }),
+      ...items.filter((a) => a.first && day(a.first) >= dIso(30)).map((a) => ({ d: day(a.first), a, kind: "neu", t: `neu in der Serie ${a.name}` })),
+      ...items.filter((a) => a.gone && day(a.gone) >= dIso(30)).map((a) => ({ d: day(a.gone), a, kind: "ausgelistet", t: "nicht mehr im Sortiment" })),
+    ].map((e) => ({ ...e, fav: FAVS().has(e.a.no) })).sort((x, y) => (y.fav - x.fav) || y.d.localeCompare(x.d));
+    const favEv = ev.filter((e) => e.fav).length;
+    const row = (o) => `<tr data-go="#/angebot?id=${encodeURIComponent(o.id)}"><td class="im">${img(o.thumb)}</td><td><div class="nm">${offerName(o)}</div><div class="kd">${o.art ? esc(ausOf(o.art)) : ""}</div></td><td class="hide">${mineB(o)}<div class="kd">${esc(o.condition || "")} · ${o.base ? "seit Beginn" : ago(o.age)}</div></td><td class="r">${pr(o.price)}<div class="kd"><s>${eur(o.orig)}</s>${o.disc != null ? ` −${o.disc} %` : ""}</div></td></tr>`;
+    const favArts = favNos.map((no) => S.kat.byNo.get(no) || { no, name: favRules().find((r) => ZC.normArticle(r.article_numbers[0]) === no)?.name || fNo(no), kind: "", thumb: (fundAll().get(no) || [])[0]?.thumb || "" });
+    return `<h1>Start</h1>
+      <p class="lead">${nHits ? `Für deine Merkliste liegen gerade <button data-go="#treffer">${nf(nHits)} passende Angebote</button> in Fundgruben.` : "Gerade passt kein Angebot zu deiner Merkliste."} ${mine.length ? (S.prevVisit ? `Seit deinem letzten Besuch (${fDT(S.prevVisit)}) kamen in deinen Märkten <button data-go="#/fundgrube" data-pre="newmine">${nf(newMine.length)} Angebote</button> dazu.` : "") : `Wähle unter <button data-go="#/einstellungen">Einstellungen</button> deine Märkte.`} ${favEv ? `Bei <button data-go="#/sortiment" data-pre="favchg">${favEv} gemerkten Artikeln</button> hat sich im Sortiment etwas geändert.` : ""}</p>
+      <div class="sec" id="treffer"><div class="h"><h2>Treffer der Merkliste</h2><span class="kd">nur aktuelle Angebote · je Eintrag</span></div>
+        ${favNos.length || hitsS.length ? `<div class="tw"><table><tbody>
+        ${favArts.map((a) => { const l = fa.filter((o) => o.no === a.no); return l.length ? `<tr class="grp"><td colspan="4">Gemerkt: ${esc(a.name)} ${esc(a.kind || "")} · ${l.length} ${l.length === 1 ? "Angebot" : "Angebote"}</td></tr>${l.sort((x, y) => (isMine(y.mid) - isMine(x.mid)) || x.price - y.price).slice(0, 6).map(row).join("")}` : ""; }).join("")}
+        ${hitsS.map(({ r, l }) => (l.length ? `<tr class="grp"><td colspan="4">Suche: ${esc(ruleText(r))} · ${l.length}</td></tr>${l.sort((x, y) => (isNewV(y) - isNewV(x)) || x.price - y.price).slice(0, 4).map(row).join("")}${l.length > 4 ? `<tr><td colspan="4"><button class="lnk" data-runsearch="${esc(r.id)}">alle ${l.length} ansehen</button></td></tr>` : ""}` : "")).join("")}
+        </tbody></table></div>` : `<p class="kd">Noch nichts gemerkt. Setze das Herz an einem Artikel oder speichere eine Suche in der Fundgrube.</p>`}</div>
+      <div class="sec"><div class="two">
+        <div><div class="h2"><h2>Gemerkte Artikel</h2><span class="kd">Herz an jedem Artikel</span></div><div class="watch">${favArts.map((a) => { const n = fundNow().get(a.no), all = fundAll().get(a.no) || [], lastSeen = all.filter((o) => !o.active).sort((x, y) => (y.end || "").localeCompare(x.end || ""))[0]; return `<div class="r" data-go="${a.id ? `#/artikel?id=${encodeURIComponent(a.id)}` : `#/produkt?art=${a.no}`}">${img(a.thumb) || "<span></span>"}<div><b>${esc(a.name)}</b> ${esc(a.kind || "")}<div class="kd">${a.id ? `${esc(ausOf(a))} · regulär ${eur(a.price)}` : fNo(a.no)}</div></div><div class="tn" style="text-align:right;font-size:13px">${n ? `<b>${n.length} ${n.length === 1 ? "Angebot" : "Angebote"}</b><div class="kd">ab ${eur(Math.min(...n.map((o) => o.price)))}</div>` : `<span class="kd">gerade nicht</span>${lastSeen ? `<div class="kd">zuletzt ${fS(lastSeen.end)}</div>` : ""}`}</div></div>`; }).join("") || `<p class="kd">Keine.</p>`}</div></div>
+        <div><div class="h2"><h2>Gespeicherte Suchen</h2><button class="lnk" data-go="#/fundgrube" style="font-size:13px">neue Suche in der Fundgrube</button></div>${searches.map((r) => { const g = goodPrice(null, r); return `<div class="rulebox"><div class="s" data-runsearch="${esc(r.id)}" style="cursor:pointer">${esc(ruleText(r))}</div><button class="sw" role="switch" aria-checked="${r.notify !== false && r.enabled !== false}" data-notify="${esc(r.id)}" aria-label="Benachrichtigung"></button><div class="m">${ruleHits(r).length} aktuell${g ? ` · bisher ${g.n} Angebote, das günstigste Viertel unter ${eur0(g.q1)}${g.dw != null ? `, meist nach ${g.dw} Tagen weg` : ""}` : ""} · Telegram ${r.notify !== false && r.enabled !== false ? "an" : "aus"}</div><button class="lnk" style="font-size:12.5px" data-runsearch="${esc(r.id)}">bearbeiten</button></div>`; }).join("") || `<p class="kd">Keine. In der Fundgrube Angaben wählen und „Diese Suche merken“.</p>`}</div></div></div>
+      <div class="sec"><div class="h"><h2>Änderungen im Sortiment</h2><span class="kd">gemerkte zuerst · letzte 30 Tage · ${nf(ev.length)} insgesamt</span></div><div class="feed">${ev.slice(0, 12).map((e) => `<div class="ev" data-go="#/artikel?id=${encodeURIComponent(e.a.id)}"><span class="kd tn">${fS(e.d)}</span>${img(e.a.thumb) || "<span></span>"}<span class="t"><span class="chip ${e.kind === "gesunken" ? "dn" : e.kind === "gestiegen" || e.kind === "ausgelistet" ? "up" : ""}">${e.kind === "gesunken" ? "Preis ▼" : e.kind === "gestiegen" ? "Preis ▲" : e.kind}</span>${e.fav ? ` <span class="chip">gemerkt</span>` : ""} <b>${esc(e.a.name)}</b> ${esc(e.a.kind)}<br><span class="kd">${esc(e.a.col)}</span> · ${esc(e.t)}</span></div>`).join("") || `<p class="kd">Keine Änderungen.</p>`}</div>${ev.length > 12 ? `<p><button class="lnk" data-go="#/analyse?b=sortiment">alle in der Analyse</button></p>` : ""}</div>
+      ${mine.length ? `<div class="sec"><div class="h"><h2>Meine Märkte</h2><button data-go="#/analyse?b=maerkte">alle Märkte vergleichen</button></div><div class="two">${mine.map((m) => { const act = items.filter((a) => !a.gone), carr = S.rng ? act.filter((a) => carries(a, m)).length : null; return `<div data-go="#/markt?id=${encodeURIComponent(m)}" style="cursor:pointer;padding:8px 0;border-bottom:1px solid var(--rule)"><div style="font-size:21px;font-weight:700;letter-spacing:-.02em">${esc(nameOf(m))} <span class="lnk" style="font-size:14px">›</span></div><div class="kd">${nf(fa.filter((o) => o.mid === m).length)} Angebote in der Fundgrube, davon ${nf(fa.filter((o) => o.mid === m && isNewV(o)).length)} neu seit deinem letzten Besuch${carr != null ? ` · führt ${nf(carr)} von ${nf(act.length)} Artikeln (${Math.round(carr / act.length * 100)} %)` : ""}</div></div>`; }).join("")}</div></div>` : ""}`;
+  }
+  const SORTS = {
+    fund: { neu: (a, b) => (b.base ? "" : b.first_seen || "").localeCompare(a.base ? "" : a.first_seen || ""), preis: (a, b) => a.price - b.price, rabatt: (a, b) => (b.disc ?? -1) - (a.disc ?? -1), markt: (a, b) => (isMine(b.mid) - isMine(a.mid)) || a.market.localeCompare(b.market, "de") },
+    sort: { chg: (a, b) => (lastChg(b)?.d || day(b.first) || "").localeCompare(lastChg(a)?.d || day(a.first) || ""), preis: (a, b) => a.price - b.price, verb: (a, b) => (a.nMk ?? 999) - (b.nMk ?? 999), bew: (a, b) => b.rating - a.rating || b.rcount - a.rcount, name: (a, b) => a.name.localeCompare(b.name, "de") || a.kind.localeCompare(b.kind, "de") },
+  };
+  function pageList(tab) {
+    const f = S.f[tab], list = apply(tab, f).sort(SORTS[tab][S.sort[tab]] || SORTS[tab][Object.keys(SORTS[tab])[0]]);
+    const title = tab === "fund" ? "Fundgrube" : "Sortiment", cnt = `${nf(list.length)} ${tab === "fund" ? "Angebote" : "Artikel"}`;
+    const viewSeg = tab === "fund" ? `<button data-view="liste" aria-pressed="${S.view.fund !== "kacheln"}">Liste</button><button data-view="kacheln" aria-pressed="${S.view.fund === "kacheln"}">Kacheln</button>`
+      : `<span class="lab">zeigen als</span><button data-grp="aus" aria-pressed="${S.grp === "aus"}">Varianten</button><button data-grp="prod" aria-pressed="${S.grp === "prod"}">Produkte</button><button data-grp="serie" aria-pressed="${S.grp === "serie"}">Serien</button><span class="lab">·</span><button data-view="liste" aria-pressed="${S.view.sort !== "kacheln"}">Liste</button><button data-view="kacheln" aria-pressed="${S.view.sort === "kacheln"}">Kacheln</button>`;
+    const isCustom = Object.keys(f).some((k) => on(f[k]));
+    const g = tab === "fund" && isCustom ? goodPrice(f) : null;
+    const part = list.slice(0, S.shown);
+    const body = !list.length ? `<div class="empty">Kein ${tab === "fund" ? "Angebot" : "Artikel"} passt zu diesem Satz. Entferne eine Angabe.</div>` : S.view[tab] === "kacheln" ? tiles(part, tab === "fund") : tab === "fund" ? rowsFund(part) : rowsSort(part, S.grp);
+    return `<h1>${title}<small class="tn">${cnt}</small></h1><div class="lay">${innerWidth >= 1000 ? sideFilters(tab, f) : ""}<div style="min-width:0">${filterSentence(tab, f)}
+      <div class="bar"><div class="l"><input type="search" id="q-${tab}" data-q="${tab}" placeholder="Name oder Artikelnummer" value="${esc(f.q || "")}" aria-label="Suchen">${isCustom ? `<button class="lnk" data-clear>zurücksetzen</button>` : ""}${tab === "fund" && isCustom ? `<button class="lnk" data-savesearch>Diese Suche merken</button>` : ""}<button class="lnk" data-export="${tab}">als CSV</button></div><div class="seg">${viewSeg}</div></div>
+      ${g ? `<div class="gp"><b>Was ist ein guter Preis?</b> ${g.full ? "Seit Beginn der Erfassung" : "Unter den aktuellen Angeboten"} passten ${nf(g.n)} Angebote zu dieser Suche. Das günstigste Viertel lag unter <b>${eur(g.q1)}</b>, das günstigste bei ${eur(g.lo)}.${g.dw != null ? ` Ein Angebot war meist nach ${g.dw} Tagen weg.` : ""}</div>` : ""}
+      ${body}${moreBtn(list.length)}</div></div>`;
+  }
+  function pageArticle(a) {
+    const prods = S.kat.items.filter((x) => !x.stub && x.name === a.name && x.kind === a.kind), serie = S.kat.items.filter((x) => !x.stub && x.name === a.name);
+    const now = fundNow().get(a.no) || [], all = fundAll().get(a.no) || [], c = lastChg(a), D = S.details?.get(a.id), F = S.facets;
+    const people = F?.ppl.get(a.id) || (D?.designer ? [D.designer] : []);
+    const missMine = S.rng ? MINE().filter((m) => carries(a, m) === false) : [];
+    const gallery = [...new Set([a.img, a.ctx, ...((D?.imgs || "").split("|"))].filter(Boolean))].slice(0, 8);
+    const yes = S.rng ? S.rng.st.filter((s) => carries(a, s.id)) : [], no = S.rng ? S.rng.st.filter((s) => carries(a, s.id) === false) : [];
+    const show = yes.length <= no.length ? ["nur in", yes] : ["fehlt in", no];
+    return `<button class="back" data-back>← zurück</button>
+      <div class="top2"><div><div class="big">${img(a.img ? `${K_IMG}${a.img}?f=s` : "")}</div>${gallery.length > 1 ? `<div class="alts">${gallery.map((g2) => `<a href="${K_IMG}${esc(g2)}?f=xl" target="_blank" rel="noopener" style="width:58px;height:58px;border:1px solid var(--rule);padding:3px;display:block">${img(`${K_IMG}${g2}?f=xxs`)}</a>`).join("")}</div>` : ""}</div><div>
+        <div class="crumb">Sortiment › ${esc(a.top)}${a.sub ? ` › ${esc(a.sub)}` : ""} · Art. ${fNo(a.no)}</div><h1>${esc(a.name)} ${favBtn(a.no, a.name)}</h1><div class="kd2">${esc(a.kind)}${a.measure ? `, ${esc(a.measure)}` : ""}</div>
+        <div class="bigpr">${pr(a.price)}</div>${a.prev ? `<div class="dn">reduziert, vorher ${eur(a.prev)}${a.vto ? ` · gilt bis ${fD(a.vto)}` : ""}</div>` : c ? `<div class="${c.to < c.from ? "dn" : "up"}">${c.to < c.from ? "gesenkt" : "erhöht"} am ${fD(c.d)} von ${eur(c.from)}</div>` : `<div class="kd">Preis seit Beginn der Erfassung unverändert</div>`}
+        ${prods.length > 1 ? `<div class="alts" role="group" aria-label="Varianten">${prods.map((x) => `<button data-go="#/artikel?id=${encodeURIComponent(x.id)}" aria-pressed="${x.id === a.id}" title="${esc(ausOf(x))}">${img(x.thumb, ausOf(x))}</button>`).join("")}</div><div class="kd">Variante: ${esc(ausOf(a))} · ${prods.length} Varianten</div>` : ""}
+        ${now.length ? `<div class="hint"><b>Gerade ${now.length} ${now.length === 1 ? "Angebot" : "Angebote"} in der Fundgrube</b> ab ${eur(Math.min(...now.map((o) => o.price)))}${now.some((o) => isMine(o.mid)) ? `, davon ${now.filter((o) => isMine(o.mid)).length} in deinen Märkten` : ""}. <button data-scroll="fg">ansehen</button></div>` : all.length ? `<div class="hint" style="border-color:var(--rule)">Zuletzt in der Fundgrube am ${fD(all.filter((o) => o.end).sort((x, y) => y.end.localeCompare(x.end))[0]?.end)} · insgesamt ${all.length} Angebote</div>` : ""}
+        ${D?.desc ? `<p class="kd" style="margin:12px 0 0;max-width:62ch;color:var(--ink2)">${esc(D.desc)}</p>` : ""}
+        <dl class="kv"><dt>Design</dt><dd>${people.length && !IOS.test(people[0]) ? people.map((n) => `<button class="lnk" data-desfilter="${esc(n)}">${esc(n)}</button>`).join(", ") + (D?.designer && people.join("/") !== D.designer ? ` <span class="kd">(bei IKEA: ${esc(D.designer)})</span>` : "") : D || F?.by.has(a.id) ? "<span class='kd'>kein Name genannt (IKEA of Sweden)</span>" : "<span class='kd'>noch nicht abgerufen</span>"}</dd>
+          ${D?.material ? `<dt>Material</dt><dd>${esc(D.material)}</dd>` : ""}${D && (D.w || D.h || D.d) ? `<dt>Maße</dt><dd>${esc([D.w && `B ${D.w}`, D.h && `H ${D.h}`, D.d && `T ${D.d}`].filter(Boolean).join(" · "))}</dd>` : ""}
+          <dt>Bewertung</dt><dd>${a.rcount ? `${String(a.rating).replace(".", ",")} von 5 · ${nf(a.rcount)} Stimmen` : "–"}</dd><dt>Im Sortiment</dt><dd>${a.first ? `seit ${fD(day(a.first))}` : "schon vor Beginn der Erfassung"}${a.gone ? ` · <span class="up">ausgelistet am ${fD(day(a.gone))}</span>` : ""}${a.last && !a.gone ? " · <b>letzte Chance</b>" : ""}</dd>
+          ${S.rng ? `<dt>Märkte</dt><dd>${a.nMk != null ? `${a.nMk} von ${a.nKn}` : "noch nicht gemessen"}${MINE().length ? (missMine.length ? ` · <span class="up">fehlt in ${esc(missMine.map(nameOf).join(", "))}</span>` : " · in deinen Märkten") : ""}</dd>` : ""}</dl>
+        <div class="btns"><a class="btn" href="${K_P}${esc(a.slug)}/" target="_blank" rel="noopener">Bei IKEA ansehen ↗</a></div></div></div>
+      <div class="sec"><div class="h"><h2>Preis und Fundgrube</h2><span class="kd">${a.ph.length - 1} Preisänderung${a.ph.length === 2 ? "" : "en"} · ${all.length} Fundgrube-Angebote${S.repo.archive ? "" : " (Archiv lädt)"}</span></div>${timeline(a, all)}</div>
+      ${serie.length > 1 ? `<div class="sec"><div class="h"><h2>${serie.length > prods.length ? `Serie ${esc(a.name)}` : "Varianten"}</h2><span class="kd">wann welche Variante im Sortiment war · antippen zum Wechseln${serie.length > 40 ? " · die 40 jüngsten" : ""}</span></div>${lanes(serie.sort((x, y) => x.kind.localeCompare(y.kind, "de") || (x.col || "").localeCompare(y.col || "", "de")).slice(0, 40), a.id, (x) => (serie.length > prods.length ? `${x.kind}, ${x.col}` : ausOf(x) || x.kind))}</div>` : ""}
+      <div class="sec"><div class="two"><div><div class="h2"><h2>Wo es den Artikel gibt</h2><span class="kd">${S.rng && a.nMk != null ? `${a.nMk} von ${a.nKn} Märkten` : "noch nicht gemessen"}</span></div>${S.rng && a.nMk != null ? `<p style="margin:6px 0 0;line-height:1.7"><span class="kd">${show[0]}:</span> ${show[1].map((s) => `<button class="${isMine(s.id) ? "lnk" : ""}" data-go="#/markt?id=${encodeURIComponent(s.id)}" style="${isMine(s.id) ? "" : "color:var(--ink2)"}">${isMine(s.id) ? "<b>" + esc(s.name) + "</b>" : esc(s.name)}</button>`).join(", ") || "keinem Markt"}</p>` : ""}</div>
+        <div id="fg"><div class="h2"><h2>In der Fundgrube</h2></div><p class="sub">${now.length ? "aktuell, deine Märkte und günstigste zuerst" : "gerade kein Angebot"}</p>${now.length ? rowsFund(now.sort((x, y) => (isMine(y.mid) - isMine(x.mid)) || x.price - y.price), false) : ""}${all.length > now.length ? `<p class="kd" style="margin-top:8px">Früher: ${all.length - now.length} Angebote, ${eur(Math.min(...all.map((o) => o.price)))} bis ${eur(Math.max(...all.map((o) => o.price)))}, meist in ${[...all.reduce((m, o) => m.set(o.market, (m.get(o.market) || 0) + 1), new Map())].sort((x, y) => y[1] - x[1]).slice(0, 2).map((x) => esc(x[0])).join(" und ")}. <button class="lnk" data-go="#/produkt?art=${a.no}">alle ansehen</button></p>` : ""}</div></div></div>`;
+  }
+  function pageProduct(no) {   // Artikelnummer aus der Fundgrube, auch ohne Eintrag im Sortiment
+    const a = S.kat.byNo.get(no), all = (fundAll().get(no) || []).slice().sort((x, y) => (x.active === y.active ? (y.first_seen || "").localeCompare(x.first_seen || "") : y.active - x.active)), ref = all[0];
+    if (!ref && !a) return `<button class="back" data-back>← zurück</button><h1>Nichts gefunden</h1><p class="kd">Zur Artikelnummer ${fNo(no)} gibt es weder einen Sortimentseintrag noch ein Fundgrube-Angebot.</p>`;
+    const nm = a ? a.name : ref.title, kd = a ? a.kind : ref.product_description;
+    return `<button class="back" data-back>← zurück</button><div class="top2"><div class="big">${img(a ? `${K_IMG}${a.img}?f=s` : ref?.image ? `${ref.image}?f=s` : "")}</div><div><div class="crumb">${a ? "Sortiment" : "nicht im Sortiment"} · Art. ${fNo(no)}</div><h1>${esc(nm)} ${favBtn(no, nm)}</h1><div class="kd2">${esc(kd || "")}</div>
+      <dl class="kv"><dt>Fundgrube</dt><dd>${all.filter((o) => o.active).length} aktuell · ${all.length} insgesamt${S.repo.archive ? "" : " (Archiv lädt)"}</dd>${all.length ? `<dt>Preise</dt><dd>${eur(Math.min(...all.map((o) => o.price)))} bis ${eur(Math.max(...all.map((o) => o.price)))}</dd><dt>Märkte</dt><dd>${new Set(all.map((o) => o.mid)).size}</dd>` : ""}</dl>${a ? `<div class="btns"><button class="btn pri" data-go="#/artikel?id=${encodeURIComponent(a.id)}">Artikel im Sortiment</button></div>` : ""}</div></div>
+      <div class="sec"><div class="h"><h2>Alle Angebote dieses Artikels</h2></div>${timeline(a, all)}${rowsFund(all, false)}</div>`;
+  }
+  function pageOffer(o) {
+    const a = o.art, all = (fundAll().get(o.no) || []).filter((x) => x.id !== o.id).sort((x, y) => (y.first_seen || "").localeCompare(x.first_seen || ""));
+    const nm = a ? a.name : o.title;
+    return `<button class="back" data-back>← zurück</button>
+      <div class="top2"><div class="big">${img(o.image ? `${o.image}?f=s` : a ? `${K_IMG}${a.img}?f=s` : "")}</div><div>
+        <div class="crumb">Fundgrube › <button class="lnk" data-go="#/markt?id=${encodeURIComponent(o.mid)}">${esc(o.market)}</button> · ${o.active ? (o.base ? "seit Beginn der Erfassung" : `eingestellt ${ago(o.age)}`) : `${o.base ? "seit Beginn" : fD(o.start)} bis ${fD(o.end)}, nicht mehr da`}</div><h1>${esc(nm)} ${favBtn(o.no, nm)}</h1><div class="kd2">${esc(a ? a.kind : o.product_description || "")}${a ? ` · ${esc(ausOf(a))}` : ""}</div>
+        <div class="bigpr">${pr(o.price)}</div><div>regulär ${eur(o.orig)}${o.disc != null ? ` · <span class="dn">−${o.disc} %</span>` : ""}${a && Math.abs(a.price - (o.orig || 0)) > 0.01 ? ` · heute im Sortiment ${eur(a.price)}` : ""}</div>
+        <dl class="kv"><dt>Zustand</dt><dd>${esc(o.condition || "–")}${o.condition_description ? `<div class="kd">${esc(o.condition_description)}</div>` : ""}</dd><dt>Grund</dt><dd>${esc(o.reason_discount || "–")}</dd>${o.offer_description ? `<dt>Beschreibung</dt><dd>${esc(o.offer_description)}</dd>` : ""}${o.additional_info ? `<dt>Hinweis</dt><dd>${esc(o.additional_info)}</dd>` : ""}<dt>Artikel</dt><dd>${fNo(o.no)}${!a ? " · <span class='up'>nicht im Sortiment</span>" : a.gone ? " · <span class='up'>ausgelistet</span>" : ""}</dd><dt>Angebot</dt><dd class="tn">${esc(o.offer_number || "")}</dd></dl>
+        <div class="btns">${a ? `<button class="btn pri" data-go="#/artikel?id=${encodeURIComponent(a.id)}">Artikel im Sortiment</button>` : ""}${o.link ? `<a class="btn" href="${esc(o.link)}" target="_blank" rel="noopener">Bei IKEA ansehen ↗</a>` : ""}</div></div></div>
+      <div class="sec"><div class="h"><h2>Dieser Artikel in der Fundgrube</h2><span class="kd">${all.length + 1} Angebote · ${new Set([o, ...all].map((x) => x.mid)).size} Märkte${S.repo.archive ? "" : " · Archiv lädt"}</span></div>${timeline(a, [o, ...all])}${all.length ? rowsFund(all, false) : ""}</div>`;
+  }
+  function pageMarket(id) {
+    const name = nameOf(id), fa = FA().filter((o) => o.mid === id), items = S.kat.items.filter((a) => !a.stub && !a.gone), R = S.rng, s = R?.byId[id];
+    let top = "";
+    if (s) {
+      const carr = items.filter((a) => carries(a, id)), share = carr.length / Math.max(1, items.filter((a) => carries(a, id) !== null).length);
+      const ranks = R.st.map((x) => [x.id, items.filter((a) => carries(a, x.id)).length]).sort((a, b) => b[1] - a[1]), rank = ranks.findIndex((r) => r[0] === id) + 1;
+      const missing = items.filter((a) => carries(a, id) === false && a.nKn >= 10 && a.nMk / a.nKn >= 0.8).sort((a, b) => b.nMk - a.nMk), rare = items.filter((a) => carries(a, id) && a.nMk <= 3).sort((a, b) => a.nMk - b.nMk);
+      const cmp = S.cmp && S.cmp !== id && R.byId[S.cmp] ? S.cmp : R.st.find((x) => x.id !== id)?.id;
+      const onlyHere = items.filter((a) => carries(a, id) && carries(a, cmp) === false), onlyThere = items.filter((a) => carries(a, id) === false && carries(a, cmp));
+      const tops = [...new Set(items.map((a) => a.top))];
+      top = `<div class="nums"><div><b class="tn">${Math.round(share * 100)} %</b><span>des Sortiments (${nf(carr.length)} Artikel)</span></div><div><b class="tn">${rank}.</b><span>von ${R.st.length} Märkten nach Sortimentsbreite</span></div><div><b class="tn">${nf(fa.length)}</b><span>Angebote in der Fundgrube</span></div><div><b class="tn">${nf(fa.filter((o) => !o.base && o.age < 7).length)}</b><span>neue Angebote in 7 Tagen</span></div></div>
+        <div class="two"><div><h2>Bereiche</h2><p class="sub">Anteil der Artikel, die dieser Markt führt</p>${bars(tops.map((t) => { const l = items.filter((a) => a.top === t && carries(a, id) !== null); return [t, l.length ? Math.round(l.filter((a) => carries(a, id)).length / l.length * 100) : 0, `${l.filter((a) => carries(a, id)).length}/${l.length}`]; }).sort((a, b) => b[1] - a[1]), { fmt: (v) => v + " %", max: 100 })}</div>
+        <div><h2>Fundgrube hier nach Bereich</h2><p class="sub">aktuelle Angebote</p>${bars([...fa.reduce((m, o) => m.set(o.top, (m.get(o.top) || 0) + 1), new Map())].sort((a, b) => b[1] - a[1]).slice(0, 10))}</div></div>
+        <div class="sec"><div class="h"><h2>Fehlt hier, gibt es fast überall</h2><span class="kd">${nf(missing.length)} Artikel · in mind. 80 % der Märkte</span></div>${missing.length ? rowsSort(missing.slice(0, 60), "aus", false) : `<p class="kd">Nichts.</p>`}</div>
+        <div class="sec"><div class="h"><h2>Gibt es hier, aber kaum anderswo</h2><span class="kd">${nf(rare.length)} Artikel · höchstens 3 Märkte</span></div>${rare.length ? rowsSort(rare.slice(0, 60), "aus", false) : `<p class="kd">Nichts.</p>`}</div>
+        <div class="sec"><div class="h"><h2>Vergleich mit <select id="cmp" data-cmp style="font:inherit;font-weight:700;border:0;border-bottom:2px solid var(--blue);color:var(--blue);background:none">${R.st.filter((x) => x.id !== id).sort((a, b) => a.name.localeCompare(b.name, "de")).map((x) => `<option value="${esc(x.id)}" ${x.id === cmp ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></h2><span class="kd">${nf(onlyHere.length)} nur hier · ${nf(onlyThere.length)} nur dort</span></div><div class="two"><div><p class="sub">nur in ${esc(name)}</p>${onlyHere.length ? mini(onlyHere.slice(0, 40)) : "<p class='kd'>–</p>"}</div><div><p class="sub">nur in ${esc(nameOf(cmp))}</p>${onlyThere.length ? mini(onlyThere.slice(0, 40)) : "<p class='kd'>–</p>"}</div></div></div>`;
+    } else top = `<p class="kd">Sortiment dieses Markts noch nicht gemessen.</p>`;
+    return `<button class="back" data-back>← zurück</button><h1>${esc(name)}${isMine(id) ? `<small>einer deiner Märkte</small>` : ""}</h1>${top}
+      <div class="sec"><div class="h"><h2>Fundgrube hier</h2><button data-go="#/fundgrube" data-pre="markt:${esc(id)}">alle mit Filter öffnen</button></div>${rowsFund(fa.sort(SORTS.fund.neu).slice(0, 12), false)}</div>`;
+  }
+  function pageAna(b) {
+    const items = S.kat.items.filter((a) => !a.stub), act = items.filter((a) => !a.gone), tops = [...new Set(items.map((a) => a.top))];
+    const nav = [["sortiment", "Sortiment"], ["preise", "Preise"], ["serien", "Serien"], ["designer", "Designer"], ["maerkte", "Märkte"], ["fundgrube", "Fundgrube"]];
+    const weeks = Array.from({ length: 26 }, (_, i) => dIso((25 - i) * 7)), wl = weeks.map(fS), inWeek = (d, i) => d && day(d) > (i ? weeks[i - 1] : dIso(26 * 7)) && day(d) <= weeks[i];
+    let body = "";
+    if (b === "sortiment") {
+      const up = weeks.map((_, i) => items.filter((a) => inWeek(a.first, i)).length), down = weeks.map((_, i) => items.filter((a) => inWeek(a.gone, i)).length);
+      body = `<div class="nums"><div><b class="tn">${nf(act.length)}</b><span>Artikel im Sortiment</span></div><div><b class="tn">+${nf(items.filter((a) => a.first).length)}</b><span>neu seit Beginn der Erfassung</span></div><div><b class="tn">−${nf(items.filter((a) => a.gone).length)}</b><span>ausgelistet seit Beginn</span></div><div><b class="tn">${nf(new Set(act.map((a) => a.name)).size)}</b><span>Serien</span></div></div>
+        <h2>Zu- und Abgänge je Woche</h2><p class="sub">neu erschienene oder ausgelistete Artikel · der Startbestand zählt nicht als neu</p>${weekBars(up, down, wl)}
+        <div class="sec two"><div><h2>Bereiche</h2><p class="sub">Artikel im Sortiment · dahinter neu seit Beginn</p>${bars(tops.map((t) => [t, act.filter((a) => a.top === t).length, `+${items.filter((a) => a.top === t && a.first).length}`]).sort((a, b2) => b2[1] - a[1]), { go: (l) => `#/sortiment?bereich=${encodeURIComponent(l)}` })}</div>
+        <div><h2>Farben</h2><p class="sub">Varianten je Farbe · mehrfarbige zählen für jede Farbe</p>${bars([...act.reduce((m, a) => { a.cols.forEach((c) => m.set(c, (m.get(c) || 0) + 1)); return m; }, new Map())].sort((a, b2) => b2[1] - a[1]).slice(0, 12), { pre: sq_ })}
+        <h2 style="margin-top:26px">Einzelartikel und Sets</h2><p class="sub">Set: mehrere Artikel unter einer Nummer, z. B. Regal mit Untergestell</p>${bars([["Einzelartikel", act.filter((a) => a.type === "ART").length], ["Sets", act.filter((a) => a.type === "SPR").length]])}</div></div>`;
+    } else if (b === "preise") {
+      const chg = (dir) => weeks.map((_, i) => items.filter((a) => a.ph.slice(1).some(([t, v], k) => inWeek(t, i) && (dir ? v < a.ph[k][1] : v > a.ph[k][1]))).length);
+      const cuts = items.filter((a) => { const c = lastChg(a); return c && c.d >= dIso(14) && c.to < c.from; });
+      body = `<div class="nums"><div><b class="tn">${eur0(qn(act.map((a) => a.price), 0.5))}</b><span>Median-Preis</span></div><div><b class="tn">${nf(act.filter((a) => a.prev).length)}</b><span>mit Vorher-Preis</span></div><div><b class="tn">${nf(items.filter((a) => { const c = lastChg(a); return c && c.d >= dIso(30) && c.to < c.from; }).length)}</b><span>Preissenkungen in 30 Tagen</span></div><div><b class="tn">${nf(items.filter((a) => { const c = lastChg(a); return c && c.d >= dIso(30) && c.to > c.from; }).length)}</b><span>Preiserhöhungen in 30 Tagen</span></div></div>
+        <h2>Preise je Bereich</h2><p class="sub">jeder Punkt ein Artikel im Sortiment · Strich = Median</p>${strip(tops.map((t) => ({ l: t, items: act.filter((a) => a.top === t) })).sort((a, b2) => b2.items.length - a.items.length))}
+        <div class="sec"><h2>Preisänderungen je Woche</h2><p class="sub">oben gesenkt, unten erhöht</p>${weekBars(chg(true), chg(false), wl, { a: "gesenkt", b: "erhöht" })}</div>
+        <div class="sec"><div class="h"><h2>Preissenkungen der letzten 14 Tage</h2><span class="kd">${nf(cuts.length)} Artikel</span></div>${cuts.length ? rowsSort(cuts.slice(0, 100), "aus", false) : "<p class='kd'>Keine.</p>"}</div>`;
+    } else if (b === "serien") {
+      const m = items.reduce((mm, a) => mm.set(a.name, [...(mm.get(a.name) || []), a]), new Map());
+      const moving = [...m].map(([n, l]) => ({ n, l, ch: l.filter((a) => a.first || a.gone).length })).filter((x) => x.l.length > 1).sort((a, b2) => b2.ch - a.ch || b2.l.length - a.l.length).slice(0, 6);
+      body = `<p class="sub" style="font-size:14px;color:var(--ink2);max-width:70ch">Eine Serie sind alle Artikel mit demselben IKEA-Namen. Jede Bahn ist eine Variante: wann sie erschien, wann sie ging. Gezeigt: die Serien mit den meisten Veränderungen.</p>
+        <div class="two" style="margin-bottom:10px"><div><h2>Größte Serien</h2><p class="sub">Varianten je Name</p>${bars([...m].map(([n, l]) => [n, l.filter((a) => !a.gone).length]).sort((a, b2) => b2[1] - a[1]).slice(0, 12), { go: (l) => `#/sortiment?q=${encodeURIComponent(l)}` })}</div><div><h2>Am stärksten verändert</h2><p class="sub">neue oder ausgelistete Varianten seit Beginn</p>${bars(moving.map((x) => [x.n, x.ch, `von ${x.l.length}`]), { go: (l) => `#/sortiment?q=${encodeURIComponent(l)}` })}</div></div>
+        ${moving.filter((x) => x.ch).map((x) => `<div class="sec"><div class="h"><h2>Serie ${esc(x.n)}</h2><span class="kd">${new Set(x.l.map((a) => a.kind)).size} Produkte · ${x.l.length} Varianten · ${x.l.filter((a) => a.first).length} neu · ${x.l.filter((a) => a.gone).length} ausgelistet</span></div>${lanes(x.l.sort((p, q) => p.kind.localeCompare(q.kind, "de") || (p.col || "").localeCompare(q.col || "", "de")).slice(0, 30), null, (p) => `${p.kind}, ${p.col}`)}</div>`).join("")}`;
+    } else if (b === "designer") {
+      const F = S.facets;
+      if (!F) body = `<p class="kd">Details (Designer, Material) sind noch nicht abgerufen.</p>`;
+      else {
+        const withD = act.filter((a) => F.by.has(a.id)), named = withD.filter((a) => F.ppl.has(a.id));
+        const unres = F.persons.filter((p) => !p.resolved);
+        body = `<div class="nums"><div><b class="tn">${withD.length ? Math.round(named.length / withD.length * 100) : 0} %</b><span>der Artikel mit Details nennen eine Person</span></div><div><b class="tn">${nf(F.persons.length)}</b><span>Personen</span></div><div><b class="tn">${nf(F.n)}</b><span>Artikel mit abgerufenen Details</span></div><div><b class="tn">${nf(unres.length)}</b><span>Kürzel noch offen</span></div></div>
+          <div class="two"><div><h2>Artikel je Person</h2><p class="sub">nach Nachnamen · gemeinsame Projekte zählen für beide · antippen filtert das Sortiment</p>${bars(F.persons.map((p) => [p.name, p.n, p.resolved ? "" : "Kürzel"]), { go: (l) => `#/sortiment?des=${encodeURIComponent(l)}` })}</div>
+          <div><h2>Mit und ohne Namen je Bereich</h2><p class="sub">Anteil der Artikel mit genannter Person, unter allen mit Details</p>${bars(tops.map((t) => { const l = withD.filter((a) => a.top === t); return [t, l.length ? Math.round(l.filter((a) => F.ppl.has(a.id)).length / l.length * 100) : 0, `(${l.length})`]; }).filter((r) => r[2] !== "(0)").sort((a, b2) => b2[1] - a[1]), { fmt: (v) => v + " %", max: 100 })}
+          <h2 style="margin-top:26px">Preisbereich je Person</h2><p class="sub">Median, die zehn mit den meisten Artikeln</p>${bars(F.persons.slice().sort((a, b2) => b2.n - a.n).slice(0, 10).map((p) => [p.name, qn(act.filter((a) => (F.ppl.get(a.id) || []).includes(p.name)).map((a) => a.price), 0.5) || 0]), { fmt: eur0 })}
+          ${unres.length ? `<h2 style="margin-top:26px">Offene Kürzel</h2><p class="sub">noch kein Artikel nennt den Namen ausgeschrieben</p><p>${unres.map((p) => esc(p.name)).join(", ")}</p>` : ""}</div></div>
+          <p class="kd" style="margin-top:20px">IKEA nennt kein Entwurfsjahr. Sichtbar wird, wann Artikel einer Person neu erscheinen oder gehen, ab Beginn der Erfassung.</p>`;
+      }
+    } else if (b === "maerkte") {
+      const R = S.rng;
+      if (!R) body = `<p class="kd">Sortiment je Markt noch nicht gemessen.</p>`;
+      else {
+        const cats = tops.filter((t) => act.some((a) => a.top === t)), rows = R.st.map((s) => { const known = act.filter((a) => carries(a, s.id) !== null); return { id: s.id, m: s.name, all: known.length ? known.filter((a) => carries(a, s.id)).length / known.length : 0, c: cats.map((t) => { const l = known.filter((a) => a.top === t); return l.length ? l.filter((a) => carries(a, s.id)).length / l.length : 0; }) }; });
+        rows.sort(S.heatSort === "name" ? (a, b2) => a.m.localeCompare(b2.m, "de") : (a, b2) => b2.all - a.all);
+        const col = (v) => `color-mix(in srgb, var(--blue) ${Math.round(v * 100)}%, #fff)`;
+        body = `<div class="two"><div><h2>Welcher Markt führt wie viel?</h2><p class="sub">Anteil der Artikel je Bereich · dunkler = mehr · Zeile antippen = Marktseite</p><div class="seg" style="margin:0 0 10px -12px"><span class="lab">sortiert nach</span><button data-heat="anteil" aria-pressed="${S.heatSort === "anteil"}">Anteil</button><button data-heat="name" aria-pressed="${S.heatSort === "name"}">Name</button></div>
+          <div class="tw"><table class="heat"><thead><tr><th>Markt</th><th>gesamt</th>${cats.map((t) => `<th>${esc(t)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr data-go="#/markt?id=${encodeURIComponent(r.id)}" class="${isMine(r.id) ? "me" : ""}"><td class="n">${esc(r.m)}</td><td class="c" style="background:${col(r.all)};color:${r.all > 0.55 ? "#fff" : "var(--ink2)"}">${Math.round(r.all * 100)}</td>${r.c.map((v) => `<td class="c" style="background:${col(v)};color:${v > 0.55 ? "#fff" : "var(--ink2)"}">${Math.round(v * 100)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>
+          <div><h2>Wie verbreitet ist ein Artikel?</h2><p class="sub">Zahl der Märkte, die ihn führen</p>${bars([["nur 1–3 Märkte", act.filter((a) => a.nMk >= 1 && a.nMk <= 3).length], ["4–15", act.filter((a) => a.nMk > 3 && a.nMk <= 15).length], ["16–40", act.filter((a) => a.nMk > 15 && a.nMk <= 40).length], ["mehr als 40", act.filter((a) => a.nMk > 40).length], ["in keinem gemessenen", act.filter((a) => a.nMk === 0).length]])}
+          <h2 style="margin-top:26px">Fundgrube je Markt</h2><p class="sub">aktuelle Angebote · blau: deine Märkte</p>${bars(storeList().map((s) => [s.name, FA().filter((o) => o.mid === s.id).length]).sort((a, b2) => b2[1] - a[1]), { hl: (l) => MINE().some((m) => nameOf(m) === l), go: (l) => `#/markt?id=${encodeURIComponent(storeList().find((s) => s.name === l)?.id || "")}` })}</div></div>`;
+      }
     } else {
-      S.rules.push({ id: newId(), name: `${o.name}${o.kind ? ` ${o.kind}` : ""} ${ZC.fmtArticle(o.no)}`, enabled: true, notify: true, article_numbers: [ZC.fmtArticle(o.no)] });
-      await persistRules(); toast(`★ „${esc(o.name)}“ ist Favorit – Meldung, sobald er in der Fundgrube auftaucht.`);
+      const all = FALL().filter((o) => !o.base), past = all.filter((o) => !o.active), dw = past.map((o) => daysBetween(o.start, o.end));
+      const days = Array.from({ length: 60 }, (_, i) => dIso(59 - i)), every = FALL();
+      const live = days.map((d) => every.filter((o) => (o.base ? true : o.start <= d) && (!o.end || o.end >= d)).length);
+      const newD = days.map((d) => all.filter((o) => o.start === d).length), goneD = days.map((d) => every.filter((o) => o.end === d).length);
+      const dwBy = (key, vals) => vals.map((v) => { const l = past.filter((o) => key(o) === v).map((o) => daysBetween(o.start, o.end)); return [v, l.length ? Math.round(qn(l, 0.5)) : 0, l.length]; });
+      const mk = dwBy((o) => o.market, storeList().map((s) => s.name)).filter((r) => r[2] >= 5).sort((a, b2) => a[1] - b2[1]);
+      const most = [...every.reduce((m, o) => (o.no ? m.set(o.no, [...(m.get(o.no) || []), o]) : m), new Map())].sort((a, b2) => b2[1].length - a[1].length).slice(0, 10);
+      const conds = [...new Set(every.map((o) => o.condition || "ohne Angabe"))];
+      body = `${S.repo.archive ? "" : `<p class="wait">Archiv lädt …</p>`}<div class="nums"><div><b class="tn">${nf(FA().length)}</b><span>Angebote gerade in allen Märkten</span></div><div><b class="tn">${nf(all.filter((o) => o.age < 7).length)}</b><span>neu eingestellt in 7 Tagen</span></div><div><b class="tn">${dw.length ? Math.round(qn(dw, 0.5)) + " Tage" : "–"}</b><span>bis ein Angebot weg ist (Median)</span></div><div><b class="tn">${Math.round(qn(every.map((o) => o.disc), 0.5) || 0)} %</b><span>Rabatt im Median</span></div></div>
+        <h2>Angebote in der Fundgrube, Tag für Tag</h2><p class="sub">alle Märkte · letzte 60 Tage</p>${areaDays(live, days.map(fS))}
+        <div class="sec"><h2>Neu eingestellt und weg, je Tag</h2><p class="sub">oben neu, unten verschwunden · ohne Startbestand</p>${weekBars(newD, goneD, days.map(fS), { a: "neu", b: "weg" })}</div>
+        <div class="sec two"><div><h2>Wie schnell ist es weg?</h2><p class="sub">Anteil der verschwundenen Angebote nach Tagen in der Fundgrube</p>${dw.length ? bars([["1 Tag", dw.filter((d) => d <= 1).length], ["2–3 Tage", dw.filter((d) => d > 1 && d <= 3).length], ["4–7 Tage", dw.filter((d) => d > 3 && d <= 7).length], ["8–14 Tage", dw.filter((d) => d > 7 && d <= 14).length], ["länger", dw.filter((d) => d > 14).length]].map(([l, v]) => [l, Math.round(v / dw.length * 100)]), { fmt: (v) => v + " %" }) : "<p class='kd'>Noch zu wenig Daten.</p>"}
+          <h2 style="margin-top:26px">Tage bis weg, nach Zustand</h2><p class="sub">Median · dahinter Zahl der Angebote</p>${bars(dwBy((o) => o.condition || "ohne Angabe", conds).filter((r) => r[2]).map(([l, v, n]) => [l, v, `(${n})`]), { fmt: (v) => v + " T." })}
+          <h2 style="margin-top:26px">Tage bis weg, nach Markt</h2><p class="sub">schnellste und langsamste · blau: deine</p>${bars([...mk.slice(0, 6), ...mk.filter((r, i) => MINE().some((m) => nameOf(m) === r[0]) && i >= 6 && i < mk.length - 6), ...mk.slice(-6)].map(([l, v, n]) => [l, v, `(${n})`]), { fmt: (v) => v + " T.", hl: (l) => MINE().some((m) => nameOf(m) === l) })}</div>
+        <div><h2>Am häufigsten in der Fundgrube</h2><p class="sub">Angebote je Artikel seit Beginn</p>${thumbs(most.map(([no, l]) => { const a = S.kat.byNo.get(no); return { go: a ? `#/artikel?id=${encodeURIComponent(a.id)}` : `#/produkt?art=${no}`, img: l[0].thumb, l: a ? `${a.name} ${a.kind}` : l[0].title, s: a ? ausOf(a) : l[0].product_description, v: l.length }; }))}
+          <h2 style="margin-top:26px">Rabatthöhe</h2><p class="sub">Angebote je Rabattstufe</p>${bars([[0, 20], [20, 30], [30, 40], [40, 50], [50, 60], [60, 101]].map(([a, b2]) => [b2 > 100 ? `ab ${a} %` : `${a}–${b2} %`, every.filter((o) => o.disc != null && o.disc >= a && o.disc < b2).length]))}
+          <h2 style="margin-top:26px">Rabatt nach Zustand</h2><p class="sub">Median</p>${bars(conds.map((c) => { const l = every.filter((o) => (o.condition || "ohne Angabe") === c).map((o) => o.disc); return [c, Math.round(qn(l, 0.5) || 0), `(${l.length})`]; }).sort((a, b2) => b2[1] - a[1]), { fmt: (v) => v + " %", max: 80 })}</div></div>
+        <div class="sec three"><div><h2>Gründe</h2><p class="sub">wie IKEA den Rabatt begründet</p>${bars([...every.reduce((m, o) => m.set(o.reason_discount || "ohne Angabe", (m.get(o.reason_discount || "ohne Angabe") || 0) + 1), new Map())].sort((a, b2) => b2[1] - a[1]).slice(0, 10))}</div>
+          <div><h2>Farben</h2><p class="sub">Angebote je Farbe, soweit der Artikel bekannt ist</p>${bars([...every.reduce((m, o) => { (o.art?.cols || []).forEach((c) => m.set(c, (m.get(c) || 0) + 1)); return m; }, new Map())].sort((a, b2) => b2[1] - a[1]).slice(0, 10), { pre: sq_ })}</div>
+          <div><h2>Neu eingestellt nach Wochentag</h2><p class="sub">ohne Startbestand</p>${bars(["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map((w, k) => [w, all.filter((o) => (new Date(o.first_seen).getDay() + 6) % 7 === k).length]))}</div></div>`;
     }
-    S.favV = (S.favV || 0) + 1; updateBadges();
-    document.querySelectorAll("[data-fav]").forEach((b) => { const x = S.kat.byId.get(b.dataset.fav), on = x && isFav(x); b.classList.toggle("fav--on", !!on); b.textContent = on ? "★" : "☆"; b.setAttribute("aria-pressed", !!on); });
+    return `<h1>Analyse</h1><div class="anav" role="group" aria-label="Bereich">${nav.map(([k, l]) => `<button data-go="#/analyse?b=${k}" aria-pressed="${b === k}">${l}</button>`).join("")}<button disabled title="kommt später">Länder</button></div>${body}`;
   }
-  document.addEventListener("click", (e) => { const b = e.target.closest?.("[data-fav]"); if (b) { e.preventDefault(); e.stopPropagation(); toggleFav(b.dataset.fav); } }, true);
-  const kUrl = (o) => `${K_P}${o.slug}/`;
-  const kImg = (o, f = "xs") => (o.img ? `<img class="offer__img" src="${K_IMG}${esc(o.img)}?f=${f}" alt="" loading="lazy" decoding="async">` : `<div class="offer__img offer__img--none">▢</div>`);
-  const daysAgoIso = (n) => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
-  const K_FILTERS = {
-    alle: ["Alle", (o) => !isStub(o)],
-    senkung: ["Preis gesenkt (7 T)", (o, c) => o.chg && o.chg.date >= c.d7 && o.chg.to < o.chg.from],
-    erhoehung: ["Preis erhöht (7 T)", (o, c) => o.chg && o.chg.date >= c.d7 && o.chg.to > o.chg.from],
-    last: ["Letzte Chance", (o) => o.last === 1 && o.status === "active"],
-    neu: ["Neu im Sortiment (7 T)", (o, c) => !o.base && o.first_seen >= c.d7 && o.first_seen > c.first],
-    weg: ["Nicht mehr im Sortiment", (o) => o.status === "gone"],
-    fund: ["Auch in der Fundgrube", (o, c) => c.fund.has(o.no)],
-    fav: ["★ Favoriten", (o) => isFav(o)],
-    luecken: ["Nur Basisdaten (Lücken)", (o) => o.status === "stub"],
-  };
-  const isStub = (o) => o.status === "stub";
-  const K_SORT = {
-    chg: ["Letzte Preisänderung", (a, b) => (b.chg?.date || "").localeCompare(a.chg?.date || "")],
-    senk: ["Größte Senkung (%)", (a, b) => a.chgPct - b.chgPct],
-    rating: ["Beste Bewertung", (a, b) => (b.rating || 0) - (a.rating || 0) || b.rcount - a.rcount],
-    rcount: ["Meiste Bewertungen", (a, b) => b.rcount - a.rcount],
-    teuer: ["Preis absteigend", (a, b) => b.price - a.price],
-    guenstig: ["Preis aufsteigend", (a, b) => a.price - b.price],
-    neu: ["Neueste Artikel", (a, b) => (b.base ? "" : b.first_seen || "").localeCompare(a.base ? "" : a.first_seen || "")],
-    name: ["Name A–Z", (a, b) => a.name.localeCompare(b.name, "de")],
-  };
-  async function loadFacets() {                              // Designer -> Artikel (klein), optional
-    if (S.facets !== undefined) return S.facets;
-    try { const d = await getK("facets.bin"); const by = new Map(); for (const [name, ids] of Object.entries(d.designer || {})) for (const id of ids) by.set(id, name); const matBy = new Map(); for (const [name, ids] of Object.entries(d.material || {})) for (const id of ids) matBy.set(id, name);
-      const pm = ZC.designerPeople(Object.keys(d.designer || {}).filter((r) => !IOS.test(r))), ppl = new Map(), pc = new Map(), pr = new Map();
-      for (const [raw, ids] of Object.entries(d.designer || {})) { const ps = pm.get(raw); if (!ps) continue; const names = [...new Set(ps.map((x) => x.name))]; for (const x of ps) pr.set(x.name, x.resolved); for (const id of ids) ppl.set(id, names); for (const n of names) pc.set(n, (pc.get(n) || 0) + ids.length); }
-      const persons = [...pc].map(([name, n]) => ({ name, n, resolved: pr.get(name) })).sort((a, b) => ZC.sortByLast(a.name, b.name));
-      S.facets = { designers: Object.keys(d.designer || {}).sort((x, y) => x.localeCompare(y, "de")), persons, ppl, by, matBy, materials: Object.keys(d.material || {}).sort((x, y) => x.localeCompare(y, "de")), n: d.n }; }
-    catch (e) { if (e instanceof AuthError) throw e; S.facets = null; }
-    return S.facets;
+  async function pageDaten() {
+    const meta = S.repo.meta, km = S.kat.meta;
+    if (meta && !S.repo.runs) S.repo.runs = (await soft(getBin("runs.bin", meta.updated))) || [];
+    if (S.state === undefined) S.state = await soft(getBin("state.bin", meta?.updated));
+    const runs = (S.repo.runs || []).filter((r) => r.ts).slice(-25), gaps = runs.slice(1).map((r, i) => Math.round((new Date(r.ts) - new Date(runs[i].ts)) / 60000));
+    const sent = (S.state?.sent || []).slice(-10).reverse();
+    return `<h1>Daten</h1>
+      <div class="nums"><div><b class="tn">${meta ? fDT(meta.updated) : "–"}</b><span>letzter Fundgrube-Abruf${meta ? `, ${meta.last_run.stores_ok} von ${meta.last_run.stores_total} Märkten` : ""}</span></div><div><b class="tn">${km ? fDT(km.updated) : "–"}</b><span>Sortiment zuletzt aktualisiert</span></div><div><b class="tn">${S.rng ? fDT(S.rng.updated) : "–"}</b><span>Verfügbarkeit je Markt gemessen</span></div><div><b class="tn">${S.facets ? nf(S.facets.n) : "–"}</b><span>Artikel mit Details (Designer, Text, Bilder)</span></div></div>
+      <div class="two"><div><h2>Abruf-Takt</h2><p class="sub">Abstände der letzten Fundgrube-Abrufe in Minuten · rot: über 90</p><div class="runs">${gaps.map((v) => `<i class="${v > 90 ? "late" : ""}" style="height:${Math.min(34, Math.max(3, v / 4))}px" title="${v} Min."></i>`).join("")}</div>
+        <dl class="dl2"><dt>Fundgrube</dt><dd>alle 15 Min. versucht, mind. 50 Min. Abstand${gaps.length ? ` · zuletzt im Median ${Math.round(qn(gaps, 0.5))} Min.` : ""}</dd><dt>Letzter Lauf</dt><dd>${meta ? `${nf(meta.last_run.new || 0)} neu · ${nf(meta.last_run.gone || 0)} weg · ${nf(meta.last_run.price_change || 0)} Preisänderungen` : "–"}</dd><dt>Erfasst insgesamt</dt><dd>${meta ? `${nf(meta.total_offers)} Fundgrube-Angebote` : "–"}</dd>
+        ${km ? `<dt>Sortiment</dt><dd>${nf(km.last_run?.active)} Artikel · ${nf(km.last_run?.categories)} Kategorien${km.last_run?.failed ? ` · <span class="up">${km.last_run.failed} fehlgeschlagen</span>` : ""}</dd>${km.gaps ? `<dt>Lücken</dt><dd>${nf(km.gaps.only_sitemap)} Artikel nur in der Sitemap${km.gaps.filled != null ? ` · zuletzt ${nf(km.gaps.filled)} nachgeholt` : ""}</dd>` : ""}` : ""}
+        ${meta?.last_run?.errors ? `<dt>Hinweise</dt><dd class="kd">${esc(meta.last_run.errors)}</dd>` : ""}</dl></div>
+        <div><h2>Zuletzt per Telegram gemeldet</h2><p class="sub">Einstellungen im Reiter Einstellungen</p><div class="feed">${sent.map((m) => `<div style="grid-template-columns:96px minmax(0,1fr);cursor:default"><span class="kd tn">${fDT(m.ts)}</span><span style="font-size:13px">${esc(String(m.text || "").replace(/<[^>]+>/g, "")).replace(/\n/g, "<br>")}</span></div>`).join("") || "<p class='kd'>Noch nichts gemeldet.</p>"}</div>${S.state?.outbox?.length ? `<p class="kd">${S.state.outbox.length} Nachrichten warten auf den Versand.</p>` : ""}</div></div>
+      <div class="sec"><div class="h"><h2>Märkte</h2><span class="kd">${storeList().length}</span></div><div class="tw"><table><thead><tr><th>Markt</th><th class="r">aktiv</th><th>zuletzt ok</th><th class="hide">Fehler</th></tr></thead><tbody>${storeList().map((s) => `<tr data-go="#/markt?id=${encodeURIComponent(s.id)}"><td>${isMine(s.id) ? `<b>${esc(s.name)}</b>` : esc(s.name)}</td><td class="r tn">${nf(s.active)}</td><td class="tn">${rel(s.last_ok)}</td><td class="hide kd">${esc(s.error || s.last_error || "")}</td></tr>`).join("")}</tbody></table></div></div>
+      <div class="sec"><div class="h"><h2>Begriffe</h2></div><dl class="dl2"><dt>Sortiment</dt><dd>alle Artikel, die IKEA Deutschland regulär verkauft</dd><dt>Bereich</dt><dd>oberste Kategorie, z. B. „Sofas & Sessel“</dd><dt>Serie</dt><dd>alle Artikel mit demselben IKEA-Namen, z. B. VIMLE</dd><dt>Produkt</dt><dd>Serie plus Art, z. B. VIMLE 3er-Sofa</dd><dt>Variante</dt><dd>ein Produkt in einer bestimmten Farbe oder Größe, mit eigener Artikelnummer</dd><dt>Set</dt><dd>mehrere Artikel, die IKEA unter einer Nummer zusammen verkauft</dd><dt>Angebot</dt><dd>ein einzelnes Teil in einer Fundgrube, mit eigenem Preis, Zustand und Markt</dd><dt>Startbestand</dt><dd>was beim Beginn der Erfassung schon da war; zählt nie als „neu“, hat kein Einstelldatum</dd><dt>Tage bis weg</dt><dd>vom ersten bis zum letzten Tag, an dem ein Angebot gelistet war</dd><dt>Verschwunden</dt><dd>erst wenn ein Angebot in zwei erfolgreichen Abrufen seines Markts fehlt</dd></dl>
+        <p class="kd" style="margin-top:12px">Alle Daten liegen verschlüsselt und werden erst in diesem Browser geöffnet. Nichts wird automatisch gelöscht. IKEA liefert kein Einstelldatum; alle Zeitangaben sind Beobachtungen der Abrufe. Die alte Ansicht bleibt unter <a class="lnk" href="alt.html">alt.html</a> erreichbar.</p></div>`;
   }
-  async function loadDetails() {                             // lange Texte, nur auf der Artikelseite
-    if (S.details !== undefined) return S.details;
+  async function pageEinst() {
+    let status = "";
+    if (worker.url && AUTH.pw) { try { const st = await worker.call("GET", null, { path: "/api/status" }); const miss = Object.entries(st.config || {}).filter(([, v]) => !v).map(([k]) => k); status = miss.length ? `<span class="up">Im Hilfsdienst fehlen: ${esc(miss.join(", "))}</span>` : `<span class="ok">Hilfsdienst verbunden</span>${st.telegram?.ts ? ` · Telegram zuletzt ${rel(st.telegram.ts)}` : ""}`; } catch (e) { status = `<span class="up">Hilfsdienst nicht erreichbar (${esc(e.message)})</span>`; } }
+    else status = `<span class="up">Kein Hilfsdienst eingetragen</span>`;
+    if (S.server.ok && !S.hist) S.hist = await worker.call("GET", null, { path: "/api/history" }).catch(() => []);
+    const rs = allRules(), sq = S.sq.mk || "";
+    return `<h1>Einstellungen</h1>
+      <div class="two"><div><h2>Meine Märkte</h2><p class="sub">bestimmen Start, den Filter „meine Märkte“ und die Hervorhebungen</p><input class="inp" type="search" id="sq-einst-mk" data-sq="mk" placeholder="Markt suchen" value="${esc(sq)}" aria-label="Markt suchen" style="margin-bottom:8px">
+        <div style="columns:2 170px;column-gap:20px">${storeList().filter((s) => !sq || fold(s.name).includes(fold(sq))).map((s) => `<label class="opt" style="break-inside:avoid"><input type="checkbox" data-minepick="${esc(s.id)}" ${isMine(s.id) ? "checked" : ""}><span>${isMine(s.id) ? `<b>${esc(s.name)}</b>` : esc(s.name)}</span></label>`).join("")}</div></div>
+        <div><h2>Benachrichtigungen per Telegram</h2><p class="sub">${status}</p><p class="kd" style="margin:0 0 8px">Gemeldet wird, wenn ein Angebot zu einem Eintrag neu erscheint, wieder auftaucht oder billiger wird.</p>
+          ${rs.map((r) => `<div class="rulebox"><div class="s" style="font-size:14px">${isFavRule(r) ? `Gemerkt: <b>${esc(S.kat.byNo.get(ZC.normArticle(r.article_numbers[0]))?.name || r.name)}</b> <span class="kd">${fNo(r.article_numbers[0])}</span>` : esc(ruleText(r))}</div><span style="display:flex;gap:10px;align-items:center"><button class="sw" role="switch" aria-checked="${r.notify !== false && r.enabled !== false}" data-notify="${esc(r.id)}" aria-label="Benachrichtigung"></button>${S.rules.some((x) => x.id === r.id) ? `<button class="lnk" style="font-size:12.5px;color:var(--red)" data-delrule="${esc(r.id)}">entfernen</button>` : ""}</span></div>`).join("") || "<p class='kd'>Noch keine Einträge.</p>"}
+          <form id="wurl" style="margin-top:16px"><label class="kd" for="wurl-i">Adresse des Hilfsdienstes (nur nötig, wenn sie nicht automatisch ankommt)</label><input class="inp" id="wurl-i" name="u" placeholder="https://…workers.dev" value="${esc(lsGet(LS.workerUrl, "") || "")}"></form></div></div>
+      <div class="sec two"><div><h2>Merkliste: frühere Stände</h2><p class="sub">jede Änderung bleibt erhalten · Wiederherstellen fragt zweimal nach</p>${S.server.ok ? `<div class="feed">${(S.hist || []).slice(0, 12).map((h) => `<div style="grid-template-columns:120px minmax(0,1fr) auto;cursor:default"><span class="tn">${fDT(h.ts)}</span><span class="kd">${h.count ?? "?"} Einträge</span><button class="lnk" style="font-size:13px" data-restore="${esc(h.id)}">wiederherstellen</button></div>`).join("") || "<p class='kd'>Noch keine früheren Stände.</p>"}</div>` : `<p class="kd">Erst verfügbar, wenn der Hilfsdienst verbunden ist.</p>`}</div>
+        <div><h2>Export</h2><p class="sub">die gerade gefilterte Liste</p><div class="btns" style="margin-top:0"><button class="btn" data-export="fund">Fundgrube als CSV</button><button class="btn" data-export="sort">Sortiment als CSV</button></div>
+          <h2 style="margin-top:24px">Zugang</h2><p class="sub">Passwort nur in diesem Browser gespeichert</p><div class="btns" style="margin-top:0"><button class="btn" data-logout>Abmelden</button><a class="btn" href="alt.html">Alte Ansicht</a></div></div></div>`;
+  }
+
+  /* ================= Rahmen, Wege, Ereignisse ================= */
+  const TABS = [["start", "Start"], ["fundgrube", "Fundgrube"], ["sortiment", "Sortiment"], ["analyse", "Analyse"], ["daten", "Daten"], ["einstellungen", "Einstellungen"]];
+  function parseHash() {
+    let h = location.hash.replace(/^#\/?/, "") || "start"; const [name, qs] = h.split("?"); const p = new URLSearchParams(qs || "");
+    const map = { aktuell: "fundgrube", archiv: "fundgrube", gemerkt: "start", katalog: "sortiment", katalogstat: "analyse", statistik: "analyse", maerkte: "analyse", merkliste: "start" };
+    return { name: map[name] || name, orig: name, p };
+  }
+  let rendering = false, again = false;
+  async function render() {
+    if (rendering) { again = true; return; }
+    rendering = true;
     try {
-      const d = await getK("details.bin"); const T = d.s, ix = Object.fromEntries(d.f.map((f, i) => [f, i])), m = new Map();
-      for (const row of d.r) m.set(row[0], Object.fromEntries(d.f.slice(1).map((f) => [f, T[row[ix[f]]]])));
-      S.details = m;
-    } catch (e) { if (e instanceof AuthError) throw e; S.details = null; }
-    return S.details;
+      const { name, orig, p } = parseHash(), app = $("#app"), y = scrollY;
+      const tab = ["start", "fundgrube", "sortiment", "analyse", "daten", "einstellungen"].includes(name) ? name : ["artikel", "produkt"].includes(name) ? "sortiment" : ["angebot"].includes(name) ? "fundgrube" : name === "markt" ? "analyse" : "start";
+      // alte Links übernehmen
+      if (orig === "archiv") S.f.fund = { ...S.f.fund, zeit: "weg" };
+      if ((orig === "aktuell" || orig === "archiv") && p.get("s")) S.f.fund = { ...S.f.fund, markt: [p.get("s")] };
+      if (orig === "maerkte") p.set("b", "maerkte");
+      if (orig === "sortiment" && p.get("markt")) { location.replace(`#/markt?id=${encodeURIComponent(p.get("markt"))}`); return; }
+      if (name === "sortiment") { if (p.get("bereich")) { S.f.sort = { bereich: [p.get("bereich")] }; history.replaceState(null, "", "#/sortiment"); } if (p.get("des")) { S.f.sort = { des: [p.get("des")] }; history.replaceState(null, "", "#/sortiment"); } if (p.get("q")) { S.f.sort = { q: p.get("q") }; history.replaceState(null, "", "#/sortiment"); } }
+      app.innerHTML = frame(tab, `<p class="wait">lädt …</p>`);
+      await loadKatalog();
+      const needR = ["sortiment", "artikel", "markt", "analyse", "start"].includes(name), needF = ["sortiment", "artikel", "analyse"].includes(name);
+      await Promise.all([needR ? loadRange() : null, needF ? loadFacets() : null, name === "artikel" ? loadDetails() : null]);
+      const needArch = (name === "fundgrube" && S.f.fund.zeit) || ["artikel", "produkt", "angebot"].includes(name) || (name === "analyse" && (p.get("b") || "sortiment") === "fundgrube") || (name === "start" && !S.repo.archive);
+      if (needArch && !S.repo.archive) loadArchive().then(() => { memo.clear(); for (const o of FALL()) linkOffer(o); render(); }).catch((e) => console.warn(e));
+      let page;
+      if (name === "artikel") { const a = S.kat.byId.get(p.get("id")); page = a ? pageArticle(a) : `<button class="back" data-back>← zurück</button><h1>Artikel nicht gefunden</h1>`; }
+      else if (name === "produkt") page = pageProduct(ZC.normArticle(p.get("art")));
+      else if (name === "angebot") { const o = FALL().find((x) => x.id === p.get("id")); page = o ? pageOffer(o) : S.repo.archive ? `<button class="back" data-back>← zurück</button><h1>Angebot nicht gefunden</h1>` : `<p class="wait">Archiv lädt …</p>`; }
+      else if (name === "markt") page = pageMarket(p.get("id"));
+      else if (tab === "start") page = pageStart();
+      else if (tab === "fundgrube") page = pageList("fund");
+      else if (tab === "sortiment") page = pageList("sort");
+      else if (tab === "analyse") page = pageAna(p.get("b") || "sortiment");
+      else if (tab === "daten") page = await pageDaten();
+      else page = await pageEinst();
+      app.innerHTML = frame(tab, page);
+      document.title = { start: "Start", fundgrube: "Fundgrube", sortiment: "Sortiment", analyse: "Analyse", daten: "Daten", einstellungen: "Einstellungen" }[tab] + " · Zweite Chance";
+      const want = scrollMem.get(location.hash); scrollTo(0, want != null ? want : keepScroll ? y : 0); keepScroll = false;
+    } catch (e) { console.error(e); $("#app").innerHTML = frame("start", `<div class="err"><b>Fehler beim Anzeigen:</b> ${esc(e.message || e)}</div>`); }
+    finally { rendering = false; if (again) { again = false; keepScroll = true; render(); } }
   }
-  const stars = (o) => (o.rcount ? `<span title="${nf2.format(o.rating)} von 5 (${o.rcount} Bewertungen)">★ ${nf2.format(o.rating)} <small class="muted">(${nf0.format(o.rcount)})</small></span>` : "");
-  function kCard(o, fund, R) {
-    const sp = R ? spread(R, o) : null;
-    const down = o.chg && o.chg.to < o.chg.from, up = o.chg && o.chg.to > o.chg.from, recent = o.chg && o.chg.date >= daysAgoIso(7);
-    return `<li class="card pcard">${favBtn(o)}<a class="pcard__a" href="#/artikel?id=${esc(o.id)}">
-      <div class="kimg">${o.img ? `<img class="offer__img" src="${K_IMG}${esc(o.img)}?f=xs" alt="" loading="lazy" decoding="async">` : `<div class="offer__img offer__img--none">▢</div>`}${o.ctx ? `<img class="kimg__alt" data-src="${K_IMG}${esc(o.ctx)}?f=xs" alt="" decoding="async">` : ""}</div>
-      <div class="offer__t" style="font-size:14.5px">${esc(o.name)} ${o.status === "gone" ? `<span class="badge badge--gone">weg</span>` : ""}${o.last && o.status === "active" ? ` <span class="badge badge--new" style="background:var(--rust)">letzte Chance</span>` : ""}</div>
-      <div class="offer__d" style="white-space:normal;font-size:13px">${esc([o.kind, o.measure].filter(Boolean).join(", "))}</div>
-      <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:8px;margin-top:auto"><div><div class="price">${esc(eur(o.price))}</div>${o.prev ? `<div class="was">${esc(eur(o.prev))}</div>` : ""}</div>
-        ${recent && (down || up) ? `<span class="tag" style="${down ? "" : "background:#F3D5CE"}">${down ? "▼" : "▲"} ${nf0.format(Math.abs(Math.round(o.chgPct)))} %</span>` : ""}</div>
-      <div class="muted" style="font-size:12.5px">${esc(o.top)}${o.col ? ` · ${esc(o.col)}` : ""} ${stars(o)}</div>
-      <div class="muted" style="font-size:12.5px">${o.chg ? `Preis seit ${esc(fmtD(o.chg.date))}` : o.base ? "Preis unverändert seit Erfassungsbeginn" : `seit ${esc(fmtD(o.first_seen))} gelistet`}${fund ? ` · <b>${nf0.format(fund)}× Fundgrube</b>` : ""}${sp ? ` · in ${sp.n} von ${sp.of} Märkten` : ""}</div></a></li>`;
+  const scrollMem = new Map(); let keepScroll = false;
+  function frame(tab, page) {
+    const meta = S.repo.meta, age = meta ? (Date.now() - new Date(meta.updated)) / 36e5 : 99;
+    return `<header class="wx"><div class="hd"><div class="brand">Zweite Chance</div><nav class="tabs" aria-label="Hauptnavigation">${TABS.map(([k, l]) => `<button data-go="#/${k}" ${tab === k ? 'aria-current="page"' : ""}>${l}${k === "fundgrube" && meta ? `<sup>${nf(FA().length)}</sup>` : ""}</button>`).join("")}</nav><div class="mine">${meta ? `<span class="${age > 3 ? "up" : ""}">Stand ${rel(meta.updated)}</span>` : "keine Daten"}${MINE().length ? ` · Meine Märkte: ${MINE().map((m) => `<button data-go="#/markt?id=${encodeURIComponent(m)}">${esc(nameOf(m))}</button>`).join(", ")}` : ""}</div></div></header><main class="wx">${page}</main>`;
   }
-  document.addEventListener("mouseover", (e) => { const c = e.target.closest?.(".kimg"); const a = c?.querySelector(".kimg__alt"); if (a && !a.src && a.dataset.src) a.src = a.dataset.src; });
-  const K_VIEWS = { karten: "Einzelartikel", varianten: "Varianten gruppiert", familien: "Produktfamilien", tabelle: "Tabelle", fundgrube: "Fundgrube (nach Artikel)" };
-  const rangeTxt = (a) => { const v = a.map((o) => o.price); const lo = Math.min(...v), hi = Math.max(...v); return lo === hi ? eur(lo) : `${eur(lo)} – ${eur(hi)}`; };
-  const uniq = (a) => [...new Set(a.filter(Boolean))];
-  function groupCard(g, key, mode) {      // g = Artikel einer Variantengruppe bzw. Familie
-    const a = g[0], act = g.filter((o) => o.status === "active").length;
-    const cols = uniq(g.flatMap((o) => (o.col || "").split(", "))), kinds = uniq(g.map((o) => o.kind)), sizes = uniq(g.map((o) => o.measure));
-    const sub = mode === "familien" ? `${kinds.length} ${kinds.length === 1 ? "Produkttyp" : "Produkttypen"}: ${kinds.slice(0, 3).join(", ")}${kinds.length > 3 ? " …" : ""}` : [a.kind, cols.length > 1 ? `${cols.length} Farben` : cols[0], sizes.length > 1 ? `${sizes.length} Maße` : sizes[0]].filter(Boolean).join(", ");
-    const first = g.reduce((m, o) => (o.base ? m : o.first_seen < m ? o.first_seen : m), "9999");
-    return `<li class="card pcard"><a class="pcard__a" href="#/katalog?${mode === "familien" ? "fam" : "var"}=${encodeURIComponent(key)}">
-      <div class="kimg">${a.img ? `<img class="offer__img" src="${K_IMG}${esc(a.img)}?f=xs" alt="" loading="lazy" decoding="async">` : `<div class="offer__img offer__img--none">▢</div>`}</div>
-      <div class="offer__t" style="font-size:14.5px">${esc(a.name)} <span class="badge">${nf0.format(g.length)} ${g.length === 1 ? "Artikel" : "Artikel"}</span></div>
-      <div class="offer__d" style="white-space:normal;font-size:13px">${esc(sub)}</div>
-      <div class="price" style="margin-top:auto">${esc(rangeTxt(g))}</div>
-      <div class="muted" style="font-size:12.5px">${nf0.format(act)} im Sortiment${first < "9999" ? ` · ältester seit ${esc(fmtD(first))}` : ""}</div></a></li>`;
+  const rerender = () => { keepScroll = true; render(); };
+  const setF = (tab, k, v) => { S.f[tab] = { ...S.f[tab], [k]: v }; S.shown = 150; };
+  const tabKey = () => (parseHash().name === "sortiment" ? "sort" : "fund");
+  function exportCSV(tab) {
+    const list = apply(tab, S.f[tab]);
+    const cols = tab === "fund" ? [["Artikel", (o) => o.art ? o.art.name : o.title], ["Beschreibung", (o) => o.product_description], ["Artikelnummer", (o) => fNo(o.no)], ["Markt", (o) => o.market], ["Zustand", (o) => o.condition], ["Grund", (o) => o.reason_discount], ["Preis", (o) => o.price], ["Regulär", (o) => o.orig], ["Rabatt %", (o) => o.disc], ["eingestellt", (o) => (o.base ? "" : o.start)], ["weg", (o) => o.end || ""]]
+      : [["Name", (a) => a.name], ["Produkt", (a) => a.kind], ["Variante", (a) => ausOf(a)], ["Artikelnummer", (a) => fNo(a.no)], ["Bereich", (a) => a.top], ["Preis", (a) => a.price], ["Vorher", (a) => a.prev || ""], ["neu seit", (a) => day(a.first) || ""], ["ausgelistet", (a) => day(a.gone) || ""], ["Märkte", (a) => a.nMk ?? ""], ["Bewertung", (a) => a.rating || ""]];
+    const cell = (v) => { const s = String(v ?? ""); return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const text = "﻿" + [cols.map((c) => c[0]).join(";"), ...list.map((o) => cols.map((c) => cell(c[1](o))).join(";"))].join("\n");
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" })); a.download = `zweite-chance_${tab === "fund" ? "fundgrube" : "sortiment"}_${TODAY}.csv`; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   }
-  function kTable(list) {
-    return `<div class="tblwrap"><table class="tbl" data-sorttable="s"><thead><tr><th data-k="0">Artikel</th><th data-k="1">Art.-Nr.</th><th data-k="2">Kategorie</th><th data-k="3">Farbe</th><th class="n" data-k="4">Preis</th><th class="n" data-k="5">★</th><th data-k="6">seit</th></tr></thead><tbody>${list.map((o) => `<tr><td>${favBtn(o)}<a href="#/artikel?id=${esc(o.id)}"><b>${esc(o.name)}</b></a> <span class="muted">${esc([o.kind, o.measure].filter(Boolean).join(", "))}</span>${o.status === "gone" ? ` <span class="badge badge--gone">weg</span>` : ""}</td><td class="mono">${esc(ZC.fmtArticle(o.no))}</td><td class="muted">${esc(o.cat.split(" › ").slice(0, 2).join(" › "))}</td><td>${esc(o.col)}</td><td class="n" data-v="${o.price}">${esc(eur(o.price))}</td><td class="n" data-v="${o.rating || 0}">${o.rcount ? nf2.format(o.rating) : ""}</td><td data-v="${o.base ? 0 : +new Date(o.first_seen)}">${o.base ? "–" : esc(fmtD(o.first_seen))}</td></tr>`).join("")}</tbody></table></div>`;
-  }
-  /* Fundgrube nach Artikelnummer: eigene Liste, getrennt vom regulären Sortiment (dort tauchen auch Artikel auf, die nicht mehr im Katalog sind) */
-  function renderFundArtikel(kat, p) {
-    const q = ZC.fold(p.get("q") || ""), fs = p.get("fs") || "alle", so = p.get("so") || "n";
-    const g = new Map();
-    for (const o of S.repo.current) { if (o.status !== "active") continue; const a = artsOf(o)[0]; if (!a) continue; const x = g.get(a) || { a, offers: [], stores: new Set() }; x.offers.push(o); x.stores.add(o.store_id); g.set(a, x); }
-    const rows = [...g.values()].map((x) => { const c = kat.byNo.get(x.a); const pr = x.offers.map((o) => o.price); return { ...x, ref: x.offers[0], cat: c, min: Math.min(...pr), pct: Math.max(0, ...x.offers.map((o) => o.discount_pct || 0)), live: c && c.status === "active" }; });
-    const FS = { alle: ["Alle", () => true], kat: ["Aktuell im Katalog", (r) => r.live], weg: ["Nicht (mehr) im Katalog", (r) => !r.live] };
-    const SO = { n: ["Meiste Angebote", (a, b) => b.offers.length - a.offers.length], guenstig: ["Günstigster Preis", (a, b) => a.min - b.min], rabatt: ["Größter Rabatt", (a, b) => b.pct - a.pct], maerkte: ["Meiste Märkte", (a, b) => b.stores.size - a.stores.size], name: ["Name A–Z", (a, b) => a.ref.title.localeCompare(b.ref.title, "de")] };
-    const cnt = Object.fromEntries(Object.entries(FS).map(([k, [, f]]) => [k, rows.filter(f).length]));
-    const list = rows.filter(FS[fs]?.[1] || FS.alle[1]).filter((r) => !q || ZC.fold(`${r.ref.title} ${r.ref.product_description} ${r.a} ${ZC.fmtArticle(r.a)}`).includes(q)).sort((SO[so] || SO.n)[1]);
-    const link = (patch) => `#/katalog?${new URLSearchParams(Object.entries({ v: "fundgrube", q: p.get("q") || "", fs, so, ...patch }).filter(([, v]) => v))}`;
-    let shown = 120;
-    view.innerHTML = `<div class="toolbar"><h2>Fundgrube nach Artikel <small>${nf0.format(rows.length)} verschiedene Artikel · ${nf0.format(S.repo.current.filter((o) => o.status === "active").length)} Angebote</small></h2><div class="toolbar__r"><a class="btn" href="#/statistik">Fundgrube-Statistik</a></div></div>
-      <div class="pg-ctl" id="fa-bar"><input class="inp" id="fa-q" type="search" placeholder="Name, Artikelnr. …" value="${esc(p.get("q") || "")}">
-        <select class="inp" id="fa-view" aria-label="Ansicht">${Object.entries(K_VIEWS).map(([k, l]) => `<option value="${k}" ${k === "fundgrube" ? "selected" : ""}>Ansicht: ${l}</option>`).join("")}</select>
-        <select class="inp" id="fa-so" aria-label="Sortierung">${Object.entries(SO).map(([k, [l]]) => `<option value="${k}" ${k === so ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-      <nav class="chips2">${Object.entries(FS).map(([k, [l]]) => `<a class="chip2 ${k === fs ? "chip2--on" : ""}" href="${link({ fs: k })}">${l} <small>${nf0.format(cnt[k])}</small></a>`).join("")}</nav>
-      <p class="muted" style="margin:0 0 10px">${nf0.format(list.length)} Artikel · Artikel der Fundgrube erscheinen zusätzlich auf ihrer Katalogseite, zählen aber nicht zum regulären Sortiment.</p><ul class="grid" id="fa-list"></ul><div class="more" id="fa-more"></div>`;
-    const draw = () => {
-      $("#fa-list").innerHTML = list.slice(0, shown).map((r) => `<li class="card pcard"><a class="pcard__a" href="${prodHref(r.a)}">${img(r.ref)}
-        <div class="offer__t" style="font-size:14.5px">${esc(r.ref.title)} ${r.live ? "" : `<span class="badge badge--gone">${r.cat ? "nicht mehr im Katalog" : "nicht im Katalog"}</span>`}</div>
-        <div class="offer__d" style="white-space:normal;font-size:13px">${esc(r.ref.product_description)}</div>
-        <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:auto"><div class="price">ab ${esc(eur(r.min))}</div>${r.pct ? `<span class="tag">−${nf0.format(Math.round(r.pct))} %</span>` : ""}</div>
-        <div class="muted" style="font-size:12.5px">${nf0.format(r.offers.length)} ${r.offers.length === 1 ? "Angebot" : "Angebote"} in ${nf0.format(r.stores.size)} ${r.stores.size === 1 ? "Markt" : "Märkten"}</div></a>${r.cat ? favBtn(r.cat) : ""}</li>`).join("") || `<li class="muted">Nichts gefunden.</li>`;
-      $("#fa-more").innerHTML = list.length > shown ? `<button class="btn">${nf0.format(Math.min(120, list.length - shown))} weitere (${nf0.format(list.length - shown)} übrig)</button>` : "";
-      $("#fa-more button")?.addEventListener("click", () => { shown += 120; draw(); });
-    };
-    $("#fa-bar").addEventListener("change", () => { const v = $("#fa-view").value; location.hash = v === "fundgrube" ? link({ q: $("#fa-q").value.trim(), so: $("#fa-so").value }) : `#/katalog?v=${v}`; });
-    draw();
-  }
-  async function renderKatalog(query) {
-    view.innerHTML = `<div class="toolbar"><h2>Katalog</h2></div><div class="skeleton"></div>`;
-    const kat = await loadKatalog();
-    if (!kat.meta) { view.innerHTML = `<div class="empty"><h3>Noch keine Katalogdaten</h3><p>Der erste Katalog-Lauf steht noch aus (Actions → Katalog).</p></div>`; return; }
-    const [F, R] = await Promise.all([loadFacets(), loadRange()]);
-    const p = new URLSearchParams(query || "");
-    if (p.get("v") === "fundgrube") { if (!hasRepo()) { view.innerHTML = `<div class="empty"><h3>Keine Fundgrube-Daten</h3></div>`; return; } return renderFundArtikel(kat, p); }
-    const q = p.get("q") || "", fk = K_FILTERS[p.get("f")] ? p.get("f") : "alle", sk = K_SORT[p.get("sort")] ? p.get("sort") : "chg";
-    const fc = filterCtx(kat, R, F), ctx = { d7: fc.d7, first: kat.first, fund: fc.fund };
-    const st = Object.fromEntries(FILTERS.filter((d) => p.get(d.k) && defAvailable(d, fc)).map((d) => [d.k, p.get(d.k)]));
-    const terms = ZC.fold(q).split(/\s+/).filter(Boolean);
-    const cnt = Object.fromEntries(Object.entries(K_FILTERS).map(([k, [, f]]) => [k, kat.items.filter((o) => f(o, ctx)).length]));
-    const vw = K_VIEWS[p.get("v")] ? p.get("v") : "karten", famQ = p.get("fam") || "", varQ = p.get("var") || "";
-    const base0 = kat.items.filter((o) => K_FILTERS[fk][1](o, ctx) && passes(o, st, fc)
-      && (!terms.length || terms.every((t) => (o._h || (o._h = ZC.fold(`${o.name} ${o.kind} ${o.measure} ${o.no} ${ZC.fmtArticle(o.no)} ${o.cat} ${o.col}`))).includes(t))));
-    const base = base0.filter((o) => (!famQ || o.fk === famQ) && (!varQ || o.vk === varQ));
-    base.sort(K_SORT[sk][1]);
-    const groups = vw === "varianten" || vw === "familien" ? [...base.reduce((m, o) => { const k = vw === "familien" ? o.fk : o.vk; (m.get(k) || m.set(k, []).get(k)).push(o); return m; }, new Map())] : [];
-    const items = vw === "karten" || vw === "tabelle" ? base : groups;
-    let shown = 120;
-    const act = kat.items.filter((o) => o.status === "active").length, m = kat.meta;
-    const link = (patch) => `#/katalog?${new URLSearchParams(Object.fromEntries(Object.entries({ q, f: fk, sort: sk, ...st, v: vw === "karten" ? "" : vw, fam: famQ, var: varQ, ...patch }).filter(([, v]) => v)))}`;
-    view.innerHTML = `<div class="toolbar"><h2>Katalog <small>${nf0.format(act)} Artikel im Sortiment · Stand ${esc(rel(m.updated))}</small></h2><div class="toolbar__r"><a class="btn" href="#/katalogstat">Katalog-Statistik</a></div></div>
-      <div class="pg-ctl" id="k-bar"><input class="inp" id="k-q" type="search" placeholder="Name, Artikelnr., Kategorie, Farbe …" value="${esc(q)}">
-        ${filterBarHtml(fc, st, "k-")}
-        <select class="inp" id="k-view" aria-label="Ansicht">${Object.entries(K_VIEWS).map(([k, l]) => `<option value="${k}" ${k === vw ? "selected" : ""}>Ansicht: ${l}</option>`).join("")}</select>
-        <select class="inp" id="k-sort" aria-label="Sortierung">${Object.entries(K_SORT).map(([k, [l]]) => `<option value="${k}" ${k === sk ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-      <nav class="chips2">${Object.entries(K_FILTERS).filter(([k]) => k !== "luecken" || cnt[k]).map(([k, [l]]) => `<a class="chip2 ${k === fk ? "chip2--on" : ""}" href="${link({ f: k })}">${l} <small>${nf0.format(cnt[k])}</small></a>`).join("")}${Object.keys(st).length ? ` <a class="chip2" href="${link(Object.fromEntries([...Object.keys(st), "q"].map((k) => [k, ""])))}">Filter zurücksetzen ✕</a>` : ""}</nav>
-      ${famQ || varQ ? `<p style="margin:0 0 8px"><a class="chip2 chip2--on" href="${link({ fam: "", var: "" })}">${famQ ? "Familie" : "Variante"}: ${esc(famQ || varQ.replace("|", " · "))} ✕</a></p>` : ""}
-      <p class="muted" id="k-count" style="margin:0 0 10px"></p><${vw === "tabelle" ? "div" : "ul"} class="${vw === "tabelle" ? "" : "grid"}" id="k-list"></${vw === "tabelle" ? "div" : "ul"}><div class="more" id="k-more"></div>`;
-    const draw = () => {
-      $("#k-count").textContent = `${nf0.format(items.length)} ${vw === "familien" ? "Produktfamilien" : vw === "varianten" ? "Variantengruppen" : "Treffer"}${vw === "karten" || vw === "tabelle" ? "" : ` (${nf0.format(base.length)} Artikel)`}${F ? "" : " (Designer-/Material-Filter folgen, sobald die Details geladen sind)"}${R ? "" : " · Markt-Filter erscheinen nach der ersten Sortiments-Messung"}`;
-      const part = items.slice(0, shown);
-      $("#k-list").innerHTML = !items.length ? `<li class="muted">Nichts gefunden.</li>` : vw === "tabelle" ? kTable(part) : vw === "karten" ? part.map((o) => kCard(o, fc.fund.get(o.no) || 0, R)).join("") : part.map(([k, g]) => groupCard(g, k, vw)).join("");
-      if (vw === "tabelle") bindSortTables($("#k-list"));
-      $("#k-more").innerHTML = items.length > shown ? `<button class="btn">${nf0.format(Math.min(120, items.length - shown))} weitere (${nf0.format(items.length - shown)} übrig)</button>` : "";
-      $("#k-more button")?.addEventListener("click", () => { shown += 120; draw(); });
-    };
-    const go = (patch = {}) => { const x = readFilterEls($("#k-bar")); location.hash = link({ ...Object.fromEntries(FILTERS.map((d) => [d.k, ""])), ...x, q: $("#k-q").value.trim(), sort: $("#k-sort").value, v: $("#k-view").value === "karten" ? "" : $("#k-view").value, ...patch }); };
-    $("#k-bar").addEventListener("change", (e) => { S.openMs = e.target.closest(".ms")?.dataset.fk || null; go(e.target.dataset.fk === "cat" ? { sub: "" } : {}); });
-    draw();
-  }
-  function variantSection(kat, o) {
-    const vs = kat.vr.get(o.vk) || [], fam = kat.fam.get(o.fk) || [], other = uniq(fam.filter((x) => x.vk !== o.vk).map((x) => x.kind));
-    if (vs.length < 2 && !other.length) return "";
-    const rows = vs.slice().sort((a, b) => (a.col || "").localeCompare(b.col || "", "de") || a.price - b.price).map((x) => `<tr ${x.id === o.id ? 'style="font-weight:600"' : ""}><td><a href="#/artikel?id=${esc(x.id)}">${x.img ? `<img class="thumb" src="${K_IMG}${esc(x.img)}?f=xxs" alt="" loading="lazy">` : ""}${esc(x.col || "–")}</a></td><td>${esc(x.measure)}</td><td class="n" data-v="${x.price}">${esc(eur(x.price))}</td><td data-v="${x.base ? 0 : +new Date(x.first_seen)}">${x.base ? "<span class='muted'>seit Erfassungsbeginn</span>" : esc(fmtD(x.first_seen))}</td><td>${x.status === "active" ? "im Sortiment" : `weg ${esc(fmtD(x.gone_at || x.last_seen))}`}</td></tr>`).join("");
-    return `<section class="chart" style="grid-column:1/-1"><header><div><h3>Varianten und Familie</h3><p>${nf0.format(vs.length)} Varianten dieses Artikels (Farbe/Maß) · ${nf0.format(fam.length)} Artikel in der Familie „${esc(o.name)}“</p></div><a class="linkbtn" href="#/katalog?v=familien&fam=${encodeURIComponent(o.fk)}">ganze Familie ›</a></header>
-      ${vs.length > 1 ? `<div class="tblwrap"><table class="tbl" data-sorttable="s"><thead><tr><th data-k="0">Farbe</th><th data-k="1">Maß</th><th class="n" data-k="2">Preis</th><th data-k="3">erfasst seit</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}
-      ${other.length ? `<p class="muted" style="margin:8px 0 0">Weitere Produkttypen der Familie: ${other.map((k) => `<a href="#/katalog?fam=${encodeURIComponent(o.fk)}&q=${encodeURIComponent(k)}">${esc(k)}</a>`).join(", ")}</p>` : ""}</section>`;
-  }
-  async function renderArtikel(query) {
-    const id = new URLSearchParams(query || "").get("id") || "";
-    const backK = `<p style="margin:0 0 10px"><a href="#/katalog" class="linkbtn">← Katalog</a></p>`;
-    view.innerHTML = `${backK}<div class="skeleton"></div>`;
-    const kat = await loadKatalog(); const o = kat.byId?.get(id);
-    if (!o) { view.innerHTML = `${backK}<div class="empty"><h3>Artikel nicht gefunden</h3></div>`; return; }
-    if (hasRepo() && !archiveFullyLoaded()) await loadArchive();
-    const fund = allOffers(true).filter((x) => artsOf(x).includes(o.no)).sort((a, b) => (b.first_seen || "").localeCompare(a.first_seen || ""));
-    const fundAct = fund.filter((x) => x.status === "active");
-    const today = new Date().toISOString().slice(0, 10), pts = [];
-    o.ph.forEach(([t, v], i) => { if (i) pts.push({ t: o.ph[i][0], v: o.ph[i - 1][1] }); pts.push({ t, v }); });
-    pts.push({ t: o.status === "gone" ? o.last_seen : today, v: o.ph[o.ph.length - 1][1] });
-    const LOG = { gone: "Aus dem Sortiment genommen", back: "Wieder im Sortiment", last: "Als „Letzte Chance“ markiert" };
-    view.innerHTML = `${backK}
-      <div class="prodhead">${o.img ? `<img src="${K_IMG}${esc(o.img)}?f=s" alt="" loading="lazy">` : ""}
-        <div><h2>${esc(o.name)} ${favBtn(o)}</h2><p class="muted" style="margin:2px 0">${esc([o.kind, o.measure].filter(Boolean).join(", "))}</p>
-        <p class="mono" style="margin:0">Art. ${esc(ZC.fmtArticle(o.no))}${o.type === "SPR" ? " · Set/Kombination" : ""} · <a href="#/katalog?cat=${encodeURIComponent(o.top)}${o.sub ? `&sub=${encodeURIComponent(o.sub)}` : ""}">${esc(o.cat)}</a></p>
-        <p style="margin:6px 0 0">${stars(o)}${o.col ? ` · Farbe: ${esc(o.col)}` : ""}<span id="art-designer"></span></p>
-        <p id="art-desc" class="muted" style="margin:8px 0 0;max-width:62ch"></p><div id="art-gallery" class="gallery"></div>
-        <p style="margin:8px 0 0;display:flex;gap:8px;flex-wrap:wrap"><a class="btn btn--blue" href="${esc(kUrl(o))}" target="_blank" rel="noopener">Bei IKEA ansehen ↗</a>
-          ${fund.length ? `<a class="btn" href="${prodHref(o.no)}">Fundgrube-Statistik</a>` : ""}</p></div></div>
-      <div class="kpis">
-        ${kpi(eur(o.price), o.prev ? `jetzt (vorher ${eur(o.prev)})` : "aktueller Preis")}
-        ${kpi(eur(o.lo), "niedrigster Preis")}${kpi(eur(o.hi), "höchster Preis")}
-        ${kpi(nf0.format(o.ph.length - 1), "Preisänderungen")}
-        ${kpi(o.base ? "seit Start" : fmtD(o.first_seen), o.base ? "bereits im Sortiment" : "erfasst seit")}
-        ${kpi(o.status === "gone" ? "ausgelistet" : o.last ? "Letzte Chance" : "im Sortiment", o.tag ? `Hinweis: ${o.tag.toLowerCase().replace(/_/g, " ")}` : "Status")}
-        ${kpi(nf0.format(fundAct.length), `in der Fundgrube (${nf0.format(fund.length)} insgesamt)`)}
-      </div>
-      <div class="charts">
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Preisverlauf</h3><p>${o.base ? "Jede Änderung seit Erfassungsbeginn" : `Jede Änderung seit ${esc(fmtD(o.first_seen))}`}${o.vto ? ` · aktueller Preis gültig bis ${esc(fmtD(o.vto))}` : ""}</p></div></header>${o.ph.length > 1 ? lineChart(pts, { fmt: eur }) : `<p class="muted">Seit ${o.base ? "Beginn der Erfassung" : `der Erfassung (${esc(fmtD(o.first_seen))})`} hat sich der Preis nicht geändert.</p>`}</section>
-        <section class="chart"><header><div><h3>Verlauf</h3></div></header><ul class="timeline">
-          ${[...o.ph.slice(1).map(([t, v], i) => ({ t, text: `Preis ${v < o.ph[i][1] ? "gesenkt" : "erhöht"}: ${eur(o.ph[i][1])} → ${eur(v)}` })), ...o.log.map(([t, k]) => ({ t, text: LOG[k] || k })), { t: o.first_seen, text: o.base ? "Bei Erfassungsbeginn schon im Sortiment" : "Erstmals erfasst", hide: o.base }].sort((a, b) => b.t.localeCompare(a.t)).map((e) => `<li>${e.hide ? "" : `<b>${esc(fmtD(e.t))}</b> · `}${esc(e.text)}</li>`).join("")}</ul></section>
-        ${variantSection(kat, o)}
-        <section class="chart" id="art-sortiment" style="grid-column:1/-1"><p class="muted">Sortiment je Markt wird geladen …</p></section>
-        ${fund.length ? `<section class="chart"><header><div><h3>In der Fundgrube</h3><p>${nf0.format(fundAct.length)} jetzt · Zeile antippen = Details</p></div></header>${offerTable(fund.slice(0, 30))}</section>` : ""}
-      </div>`;
-    bindSortTables(view); fillArtikelSortiment(o); fillArtikelDetails(o);
-  }
-  async function fillArtikelDetails(o) {
-    const D = await loadDetails(), r = D?.get(o.id);
-    const imgs = [...new Set([o.img, o.ctx, ...((r?.imgs || "").split("|"))].filter(Boolean))];
-    const g = $("#art-gallery"); if (g) g.innerHTML = imgs.slice(0, 8).map((f) => `<a href="${K_IMG}${esc(f)}?f=xl" target="_blank" rel="noopener"><img src="${K_IMG}${esc(f)}?f=xs" alt="" loading="lazy"></a>`).join("");
-    if (!r) { const d = $("#art-desc"); if (d) d.textContent = D ? "Beschreibung wird in den nächsten Tagen nachgeladen." : ""; return; }
-    if (r.designer && $("#art-designer")) { const ns = !IOS.test(r.designer) && S.facets?.ppl.get(o.id) || [r.designer]; $("#art-designer").innerHTML = ` · Designer: ${ns.map((n) => `<a href="#/katalog?des=${encodeURIComponent(n)}"><b>${esc(n)}</b></a>`).join(", ")}${ns.join("/") !== r.designer ? ` <small class="muted">(bei IKEA: ${esc(r.designer)})</small>` : ""}`; }
-    if ($("#art-desc")) $("#art-desc").innerHTML = `${esc(r.desc)}${r.material ? `<br><b>Material:</b> ${esc(r.material)}` : ""}${r.w || r.h || r.d ? `<br><b>Maße:</b> ${esc([r.w && `Breite ${r.w}`, r.h && `Höhe ${r.h}`, r.d && `Tiefe ${r.d}`].filter(Boolean).join(" · "))}` : ""}`;
-  }
-  const kat0 = () => S.kat || { items: [] };
-  async function fillKatalogDiag() {
-    const box = $("#diag-katalog"); if (!box) return;
-    loadFacets().then((F) => { const c = $("#diag-details"); if (c) c.innerHTML = F ? `${nf0.format(F.n)} von ${nf0.format(kat0().items.length)} Artikeln · ${nf0.format(F.persons.length)} Designer` : "noch nicht geholt (Actions → Details, läuft danach täglich)"; }).catch(() => {});
-    loadRange().then((R) => { const c = $("#diag-range"); if (c) c.innerHTML = R ? `${R.st.length} Märkte × ${nf0.format(R.N)} Artikel · Stand ${esc(rel(R.updated))}` : "noch keine Messung (Actions → Sortiment)"; }).catch(() => {});
-    const kat = await loadKatalog().catch(() => null);
-    if (!kat?.meta) { box.innerHTML += `<p class="muted">Noch keine Katalogdaten. Erster Lauf: Actions → Katalog.</p>`; return; }
-    const m = kat.meta, r = m.last_run, g = m.gaps;
-    box.innerHTML += `<table class="tbl"><tbody>
-      <tr><td>Letzter Lauf</td><td>${esc(fmtDT(m.updated))} (${esc(rel(m.updated))}) · ${esc(r.categories)} Kategorien${r.failed ? ` · <b>${r.failed} fehlgeschlagen</b>` : ""}${r.complete ? "" : " · unvollständig"}</td></tr>
-      <tr><td>Artikel</td><td>${nf0.format(r.active)} im Sortiment · ${nf0.format(r.total)} erfasst</td></tr>
-      <tr><td>Letzter Lauf</td><td>${nf0.format(r.new)} neu · ${nf0.format(r.price_change)} Preisänderungen · ${nf0.format(r.gone)} ausgelistet · ${nf0.format(r.last_chance)} neue „Letzte Chance“</td></tr>
-      <tr><td>Sortiment je Markt</td><td id="diag-range">…</td></tr>
-      <tr><td>Details (Designer, Beschreibung, Bilder)</td><td id="diag-details">…</td></tr>
-      ${g ? `<tr><td>Lücken (${esc(fmtD(g.day))})</td><td>${nf0.format(g.only_sitemap)} nur in der Sitemap · ${nf0.format(g.only_list)} nur in den Listen · Sitemap gesamt ${nf0.format(g.sitemap)}</td></tr>` : ""}</tbody></table>`;
-  }
-
-  /* ---------- Sortiment je Markt: wer führt was? (k/range.bin, wöchentlich gemessen) ---------- */
-  const b64bits = (s) => (s ? Uint8Array.from(atob(s), (c) => c.charCodeAt(0)) : new Uint8Array(0));
-  const bitAt = (arr, i) => (arr[i >> 3] >> (i & 7)) & 1;
-  async function loadRange() {
-    if (S.rng !== undefined) return S.rng;
-    try {
-      const d = await getK("range.bin"); const kat = await loadKatalog();
-      const N = d.ids.length, st = d.stores.filter((s) => d.range[s.id]).map((s) => ({ ...s, r: b64bits(d.range[s.id]), k: b64bits((d.stock || {})[s.id]), n: Math.min(s.n || 0, N) }));
-      const cnt = new Uint16Array(N), known = new Uint16Array(N);
-      for (const s of st) for (let i = 0; i < s.n; i++) { known[i]++; if (bitAt(s.r, i)) cnt[i]++; }
-      S.rng = { ids: d.ids, N, st, cnt, known, idx: new Map(d.ids.map((x, i) => [x, i])), updated: d.updated, kat, byId: Object.fromEntries(st.map((s) => [s.id, s])) };
-    } catch (e) { if (e instanceof AuthError) throw e; S.rng = null; }
-    return S.rng;
-  }
-  const RARE = 3, COMMON = 0.8, MIN_KNOWN = 10;
-  const itemAt = (R, i) => R.kat.byId.get(R.ids[i]);
-  function storeStats(R, s, mask) {
-    if (!mask && s._st) return s._st;
-    let inr = 0, excl = 0, miss = 0, stock = 0, n = 0;
-    for (let i = 0; i < s.n; i++) {
-      if (mask && !mask[i]) continue;
-      n++;
-      if (bitAt(s.r, i)) { inr++; if (R.known[i] >= MIN_KNOWN && R.cnt[i] <= RARE) excl++; if (bitAt(s.k, i)) stock++; }
-      else if (R.known[i] >= MIN_KNOWN && R.cnt[i] / R.known[i] >= COMMON) miss++;
+  document.addEventListener("click", async (e) => {
+    const t = e.target.closest("button,[data-go],[data-runsearch],th[data-sortby],label[data-addk]");
+    if (S.open && !e.target.closest(".pop") && !(t && t.dataset.pop)) { S.open = null; S.sq = {}; if (!t) return rerender(); }
+    if (!t || t.tagName === "A") return;
+    const d = t.dataset, tab = tabKey();
+    if (d.fav) { e.stopPropagation(); e.preventDefault(); return toggleFav(d.fav, d.label || d.fav); }
+    if (d.go) {
+      e.preventDefault();
+      if (d.go === "#treffer") { $("#treffer")?.scrollIntoView({ behavior: "smooth" }); return; }
+      if (d.pre === "newmine") S.f.fund = { markt: [...MINE()], besuch: true };
+      if (d.pre === "favchg") S.f.sort = { gemerkt: true, chg: "any" };
+      if (d.pre?.startsWith("markt:")) S.f.fund = { markt: [d.pre.slice(6)] };
+      scrollMem.set(location.hash, scrollY);
+      if (location.hash === d.go) return render();
+      location.hash = d.go; return;
     }
-    const out = { inr, n, share: n ? inr / n : 0, excl, miss, stock };
-    if (!mask) s._st = out;
-    return out;
-  }
-  const storeNamesAt = (R, i, want = 1) => R.st.filter((s) => i < s.n && bitAt(s.r, i) === want).map((s) => s.name);
-  const catTop = (o) => o?.top || "–";
-
-  /* Gemeinsame Filterleiste für alle Artikel-Listen dieser Seite */
-  const DF_SORT = {
-    selten: ["Seltenste zuerst", (R) => (a, b) => R.cnt[a] - R.cnt[b]],
-    verbreitet: ["Verbreitetste zuerst", (R) => (a, b) => R.cnt[b] / (R.known[b] || 1) - R.cnt[a] / (R.known[a] || 1)],
-    guenstig: ["Preis aufsteigend", (R) => (a, b) => (itemAt(R, a)?.price ?? 0) - (itemAt(R, b)?.price ?? 0)],
-    teuer: ["Preis absteigend", (R) => (a, b) => (itemAt(R, b)?.price ?? 0) - (itemAt(R, a)?.price ?? 0)],
-    name: ["Name A–Z", (R) => (a, b) => (itemAt(R, a)?.name || "").localeCompare(itemAt(R, b)?.name || "", "de")],
-    kat: ["Kategorie", (R) => (a, b) => (itemAt(R, a)?.cat || "").localeCompare(itemAt(R, b)?.cat || "", "de")],
-    bewertung: ["Beste Bewertung", (R) => (a, b) => (itemAt(R, b)?.rating || 0) - (itemAt(R, a)?.rating || 0)],
-  };
-  function dfBar(id, R, F, sort = "selten") {
-    const tops = [...R.kat.items.reduce((m, o) => m.set(o.top, (m.get(o.top) || 0) + 1), new Map())].sort((a, b) => a[0].localeCompare(b[0], "de"));
-    return `<div class="pg-ctl" data-df="${id}"><input class="inp" data-f="q" placeholder="Artikel suchen"><select class="inp" data-f="cat"><option value="">alle Kategorien</option>${tops.map(([c, n]) => `<option>${esc(c)}</option>`).join("")}</select>
-      <select class="inp" data-f="sub" hidden><option value="">alle Unterkategorien</option></select>
-      <input class="inp" data-f="pmin" type="number" min="0" placeholder="Preis ab €" style="max-width:105px"><input class="inp" data-f="pmax" type="number" min="0" placeholder="bis €" style="max-width:95px">
-      <select class="inp" data-f="sort">${Object.entries(DF_SORT).map(([k, [l]]) => `<option value="${k}" ${k === sort ? "selected" : ""}>${l}</option>`).join("")}</select>${extraFilterBar(filterCtx(R.kat, R, F), id + "-")}</div>`;
-  }
-  const dfRead = (id) => { const g = (f) => $(`[data-df="${id}"] [data-f="${f}"]`)?.value || ""; return { q: ZC.fold(g("q")).trim(), cat: g("cat"), sub: g("sub"), pmin: g("pmin") === "" ? null : +g("pmin"), pmax: g("pmax") === "" ? null : +g("pmax"), sort: g("sort") || "selten", x: readFilterEls($(`[data-df="${id}"]`)) }; };
-  function dfWire(id, R, redraw) {
-    const root = $(`[data-df="${id}"]`);
-    root.addEventListener("input", debounce((e) => { if (e.target.dataset.f !== "cat") redraw(); }, 200));
-    root.addEventListener("change", (e) => {
-      if (e.target.dataset.f === "cat") {
-        const sub = $('[data-f="sub"]', root), subs = [...R.kat.items.filter((o) => o.top === e.target.value).reduce((m, o) => (o.sub ? m.set(o.sub, 1) : m), new Map()).keys()].sort((a, b) => a.localeCompare(b, "de"));
-        sub.hidden = !subs.length; sub.innerHTML = `<option value="">alle Unterkategorien</option>${subs.map((c) => `<option>${esc(c)}</option>`).join("")}`;
-      }
-      redraw();
-    });
-  }
-  const dfApply = (R, F, list, f) => { const fc = filterCtx(R.kat, R, F); return list.filter((i) => {
-    const o = itemAt(R, i); if (!o || isStub(o)) return false;
-    return (f.x ? passes(o, f.x, fc) : true) && (!f.cat || o.top === f.cat) && (!f.sub || o.sub === f.sub) && (f.pmin == null || o.price >= f.pmin) && (f.pmax == null || o.price <= f.pmax)
-      && (!f.q || (o._sh || (o._sh = ZC.fold(`${o.name} ${o.kind} ${o.measure} ${o.no} ${o.col}`))).includes(f.q));
-  }).sort(DF_SORT[f.sort][1](R)); };
-  function listRows(R, F, list, { showWo = true, shown = 100 } = {}) {
-    const rows = list.slice(0, shown).map((i) => {
-      const o = itemAt(R, i), wo = showWo ? storeNamesAt(R, i) : [];
-      return `<tr><td><a href="#/artikel?id=${esc(o.id)}">${o.img ? `<img class="thumb" src="${K_IMG}${esc(o.img)}?f=xxs" alt="" loading="lazy">` : ""}<b>${esc(o.name)}</b></a> <span class="muted">${esc([o.kind, o.measure].filter(Boolean).join(", "))}</span>${F?.by.get(o.id) ? ` <span class="muted">· ${esc(F.by.get(o.id))}</span>` : ""}</td>
-        <td class="mono">${esc(ZC.fmtArticle(o.no))}</td><td class="muted" style="font-size:12.5px">${esc(o.cat.split(" › ").slice(0, 2).join(" › "))}</td>
-        <td class="n" data-v="${o.price}">${esc(eur(o.price))}</td><td class="n" data-v="${R.cnt[i]}">${R.cnt[i]}/${R.known[i]}</td>
-        ${showWo ? `<td style="font-size:12.5px">${esc(wo.length <= 8 ? wo.join(", ") : wo.slice(0, 8).join(", ") + ` … +${wo.length - 8}`)}</td>` : ""}</tr>`;
-    }).join("");
-    return `<div class="tblwrap"><table class="tbl" data-sorttable="s"><thead><tr><th data-k="0">Artikel</th><th data-k="1">Art.-Nr.</th><th data-k="2">Kategorie</th><th class="n" data-k="3">Preis</th><th class="n" data-k="4">Märkte</th>${showWo ? "<th>Wo</th>" : ""}</tr></thead><tbody>${rows}</tbody></table></div>`;
-  }
-  /* Liste in einen Kasten zeichnen: filtern, sortieren, "mehr" */
-  function mountList(boxId, barId, R, F, getBase, opts = {}) {
-    const box = $(`#${boxId}`); let shown = 100;
-    const draw = () => {
-      const list = dfApply(R, F, getBase(), dfRead(barId));
-      box.innerHTML = `<p class="muted" style="margin:4px 0">${nf0.format(list.length)} Artikel</p>${listRows(R, F, list, { ...opts, shown })}${list.length > shown ? `<p><button class="btn" data-more>${nf0.format(Math.min(100, list.length - shown))} weitere (${nf0.format(list.length - shown)} übrig)</button></p>` : ""}`;
-      $("[data-more]", box)?.addEventListener("click", () => { shown += 100; draw(); }); bindSortTables(box);
-    };
-    dfWire(barId, R, () => { shown = 100; draw(); }); draw(); return draw;
-  }
-  const noRange = `<div class="empty"><h3>Noch keine Sortimentsdaten</h3><p>Die Messung läuft wöchentlich (Actions → Sortiment). Beim ersten Mal dauert sie etwa 20–60 Minuten.</p></div>`;
-  const diffIdx = (A, B, N) => { const onlyA = [], onlyB = []; let both = 0; for (let i = 0; i < Math.min(A.n, B.n, N); i++) { const a = bitAt(A.r, i), b = bitAt(B.r, i); if (a && b) both++; else if (a) onlyA.push(i); else if (b) onlyB.push(i); } return { onlyA, onlyB, both }; };
-
-  async function renderSortiment(query) {
-    view.innerHTML = `<div class="toolbar"><h2>Sortiment je Markt</h2></div><div class="skeleton"></div>`;
-    const R = await loadRange();
-    if (!R) { view.innerHTML = `<div class="toolbar"><h2>Sortiment je Markt</h2></div>${noRange}`; return; }
-    const F = await loadFacets();
-    const p = new URLSearchParams(query || ""); const sid = p.get("markt");
-    if (sid && R.byId[sid]) return renderSortimentMarkt(R, F, R.byId[sid]);
-    const tops = [...R.kat.items.reduce((m, o) => m.set(o.top, (m.get(o.top) || 0) + 1), new Map())].sort((a, b) => a[0].localeCompare(b[0], "de"));
-    const rare = []; for (let i = 0; i < R.N; i++) if (R.known[i] >= MIN_KNOWN && R.cnt[i] >= 1 && R.cnt[i] <= RARE) rare.push(i);
-    const almostAll = R.cnt.reduce((a, c, i) => a + (R.known[i] >= MIN_KNOWN && c / R.known[i] >= 0.9 ? 1 : 0), 0);
-    const base = R.st.map((s) => storeStats(R, s)), shares = base.map((t) => t.share), measured = R.st.filter((s) => s.n === R.N).length;
-    const opt = (sel) => R.st.slice().sort((a, b) => a.name.localeCompare(b.name, "de")).map((s) => `<option value="${esc(s.id)}" ${s.id === sel ? "selected" : ""}>${esc(s.name)}</option>`).join("");
-    const byShare = R.st.slice().sort((a, b) => storeStats(R, b).share - storeStats(R, a).share);
-    view.innerHTML = `<div class="toolbar"><h2>Sortiment je Markt <small>${nf0.format(R.N)} Artikel · Stand ${esc(rel(R.updated))}</small></h2></div>
-      <div class="kpis">${kpi(`${R.st.length} / 55`, "Märkte gemessen")}${kpi(nf0.format(R.N), "Artikel gemessen")}
-        ${kpi(`${pct(Math.min(...shares) * 100)} – ${pct(Math.max(...shares) * 100)}`, "Anteil am Gesamtsortiment je Markt")}
-        ${kpi(nf0.format(rare.length), `Artikel in höchstens ${RARE} Märkten`)}${kpi(nf0.format(almostAll), "Artikel in fast allen Märkten (≥ 90 %)")}</div>
-      <p class="muted" style="font-size:12.5px;margin:-8px 0 18px">„Im Sortiment“ heißt: Der Markt führt den Artikel (laut IKEA-Verfügbarkeitsabfrage), unabhängig vom aktuellen Bestand.${measured < R.st.length ? ` Bei ${R.st.length - measured} Märkten ist die Messung älter als der letzte Artikelstand.` : ""} Die Messung läuft wöchentlich.</p>
-      <details class="chart" style="margin:0 0 14px;padding:10px 14px" id="my-box" ${myMarkets().length ? "" : "open"}><summary><b>Meine Märkte</b> <span class="muted" id="my-n">(${myMarkets().length} gewählt – wirkt auf den Filter „Meine Märkte“ im Katalog und in den Listen; nur auf diesem Gerät gespeichert)</span></summary>
-        <div class="pg-ctl" style="margin-top:8px">${R.st.slice().sort((a, b) => a.name.localeCompare(b.name, "de")).map((s) => `<label style="display:flex;gap:4px;align-items:center;font-size:13.5px"><input type="checkbox" data-my="${esc(s.id)}" ${myMarkets().includes(s.id) ? "checked" : ""}>${esc(s.name)}</label>`).join("")}</div></details>
-      <div class="charts">
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Welcher Markt führt wie viel?</h3><p>Anteil der gemessenen Artikel · optional nur eine Kategorie · Spaltenkopf = sortieren · Markt antippen für Details</p></div></header>
-          <div class="pg-ctl"><select class="inp" id="rk-cat"><option value="">alle Kategorien</option>${tops.map(([c, n]) => `<option value="${esc(c)}">${esc(c)} (${nf0.format(n)})</option>`).join("")}</select></div><div id="rk-box"></div></section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Nur in wenigen Märkten</h3><p>Artikel, die höchstens ${RARE} Märkte führen · mit Namen der Märkte</p></div></header>
-          ${dfBar("rare", R, F)}<div class="pg-ctl"><select class="inp" id="rare-max">${[1, 2, 3, 5, 10].map((n) => `<option value="${n}" ${n === RARE ? "selected" : ""}>in höchstens ${n} ${n === 1 ? "Markt" : "Märkten"}</option>`).join("")}</select></div><div id="rare-box"></div></section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Zwei Märkte vergleichen</h3><p>Was führt der eine, aber nicht der andere?</p></div></header>
-          <div class="pg-ctl"><select class="inp" id="cmp-a">${opt(byShare[0]?.id)}</select><span>gegen</span><select class="inp" id="cmp-b">${opt(byShare[byShare.length - 1]?.id)}</select></div>${dfBar("cmp", R, F, "kat")}
-          <div id="cmp-kpi"></div><h4 style="margin:10px 0 4px" id="cmp-ha"></h4><div id="cmp-a-box"></div><h4 style="margin:14px 0 4px" id="cmp-hb"></h4><div id="cmp-b-box"></div></section>
-      </div>`;
-    // Rangliste (ggf. nur eine Kategorie)
-    const drawRank = () => {
-      const c = $("#rk-cat").value, mask = c ? Uint8Array.from({ length: R.N }, (_, i) => (itemAt(R, i)?.top === c ? 1 : 0)) : null;
-      const rows = R.st.map((s) => ({ s, t: storeStats(R, s, mask) })).sort((a, b) => b.t.share - a.t.share), mx = Math.max(0.0001, ...rows.map((r) => r.t.share));
-      $("#rk-box").innerHTML = `<div class="tblwrap"><table class="tbl" data-sorttable="m"><thead><tr><th data-k="0">Markt</th><th class="n" data-k="1">im Sortiment</th><th data-k="2">Anteil</th><th class="n" data-k="3">nur in ≤ ${RARE} Märkten</th><th class="n" data-k="4">fehlt (sonst ≥ 80 %)</th><th class="n" data-k="5">vorrätig</th><th data-k="6">gemessen</th></tr></thead><tbody>
-        ${rows.map(({ s, t }) => `<tr><td><a href="#/sortiment?markt=${esc(s.id)}"><b>${esc(s.name)}</b></a></td><td class="n" data-v="${t.inr}">${nf0.format(t.inr)} <span class="muted">/ ${nf0.format(t.n)}</span></td>
-          <td data-v="${t.share}"><span class="mbar"><i style="width:${(t.share / mx) * 100}%"></i></span> ${nf2.format(t.share * 100)} %</td>
-          <td class="n" data-v="${t.excl}">${nf0.format(t.excl)}</td><td class="n" data-v="${t.miss}">${nf0.format(t.miss)}</td><td class="n" data-v="${t.stock}">${nf0.format(t.stock)}</td><td data-v="${s.day || ""}">${esc(fmtD(s.day))}</td></tr>`).join("")}</tbody></table></div>`; bindSortTables($("#rk-box"));
-    };
-    $("#rk-cat").addEventListener("change", drawRank); drawRank();
-    // Seltene Artikel
-    $("#my-box").addEventListener("change", (e) => { if (!e.target.dataset.my) return; const set = new Set(myMarkets()); e.target.checked ? set.add(e.target.dataset.my) : set.delete(e.target.dataset.my); lsSet(MY_KEY, [...set]); $("#my-n").textContent = `(${set.size} gewählt – wirkt auf den Filter „Meine Märkte“ im Katalog und in den Listen; nur auf diesem Gerät gespeichert)`; });
-    mountList("rare-box", "rare", R, F, () => { const mx = +$("#rare-max").value, out = []; for (let i = 0; i < R.N; i++) if (R.known[i] >= MIN_KNOWN && R.cnt[i] >= 1 && R.cnt[i] <= mx) out.push(i); return out; });
-    $("#rare-max").addEventListener("change", () => $('[data-df="rare"]').dispatchEvent(new Event("change")));
-    // Vergleich
-    let diff = null;
-    const base2 = (side) => () => (diff ? diff[side] : []);
-    const redrawA = mountList("cmp-a-box", "cmp", R, F, base2("onlyA"), { showWo: false });
-    const boxB = mountListAlt("cmp-b-box", "cmp", R, F, base2("onlyB"));
-    const compute = () => {
-      const A = R.byId[$("#cmp-a").value], B = R.byId[$("#cmp-b").value]; diff = diffIdx(A, B, R.N);
-      $("#cmp-kpi").innerHTML = `<div class="kpis">${kpi(nf0.format(diff.both), "in beiden")}${kpi(nf0.format(diff.onlyA.length), `nur ${esc(A.name)}`)}${kpi(nf0.format(diff.onlyB.length), `nur ${esc(B.name)}`)}</div>`;
-      $("#cmp-ha").textContent = `Nur ${A.name}`; $("#cmp-hb").textContent = `Nur ${B.name}`; redrawA(); boxB();
-    };
-    ["#cmp-a", "#cmp-b"].forEach((x) => $(x).addEventListener("change", compute)); compute(); bindSortTables(view);
-  }
-  // zweite Liste teilt die Filterleiste mit der ersten (ohne zweite Verdrahtung der Leiste)
-  function mountListAlt(boxId, barId, R, F, getBase) {
-    const box = $(`#${boxId}`); let shown = 100;
-    const draw = () => {
-      const list = dfApply(R, F, getBase(), dfRead(barId));
-      box.innerHTML = `<p class="muted" style="margin:4px 0">${nf0.format(list.length)} Artikel</p>${listRows(R, F, list, { showWo: false, shown })}${list.length > shown ? `<p><button class="btn" data-more>${nf0.format(Math.min(100, list.length - shown))} weitere (${nf0.format(list.length - shown)} übrig)</button></p>` : ""}`;
-      $("[data-more]", box)?.addEventListener("click", () => { shown += 100; draw(); }); bindSortTables(box);
-    };
-    $(`[data-df="${barId}"]`).addEventListener("change", () => { shown = 100; draw(); });
-    $(`[data-df="${barId}"]`).addEventListener("input", debounce(() => { shown = 100; draw(); }, 200));
-    return draw;
-  }
-
-  function renderSortimentMarkt(R, F, s) {
-    const t = storeStats(R, s), back = `<p style="margin:0 0 10px"><a href="#/sortiment" class="linkbtn">← alle Märkte</a></p>`;
-    const mine = [], gaps = [];
-    for (let i = 0; i < s.n; i++) {
-      if (R.known[i] < MIN_KNOWN) continue;
-      if (bitAt(s.r, i)) { if (R.cnt[i] <= RARE) mine.push(i); } else if (R.cnt[i] / R.known[i] >= COMMON) gaps.push(i);
+    if (d.back !== undefined) { history.length > 1 ? history.back() : (location.hash = "#/start"); return; }
+    if (d.runsearch) { const r = allRules().find((x) => x.id === d.runsearch); if (!r) return; S.f.fund = r.ui ? JSON.parse(JSON.stringify(r.ui)) : { q: (r.keywords || []).join(" ") || (r.article_numbers || []).join(" "), ...(r.stores?.length ? { markt: r.stores.filter((s) => storeList().some((x) => x.id === s)) } : {}), ...(r.max_price ? { preis: { max: String(r.max_price) } } : {}) }; location.hash = "#/fundgrube"; return; }
+    if (d.sortby) { S.sort[tab] = d.sortby; return rerender(); }
+    if (d.pop) { S.open = S.open === d.pop ? null : d.pop; S.sq = {}; return rerender(); }
+    if (d.addk) { S.open = d.addk; return rerender(); }
+    if (d.shut !== undefined) { S.open = null; return rerender(); }
+    if (d.reset) { setF(tab, d.reset, null); S.open = null; return rerender(); }
+    if (d.more) { S.more[d.more] = !S.more[d.more]; return rerender(); }
+    if (d.clear !== undefined) { S.f[tab] = {}; S.shown = 150; return rerender(); }
+    if (d.showmore !== undefined) { S.shown += 150; return rerender(); }
+    if (d.view) { S.view[tab] = d.view; lsSet(LS.view, S.view); return rerender(); }
+    if (d.grp) { S.grp = d.grp; return rerender(); }
+    if (d.heat) { S.heatSort = d.heat; return rerender(); }
+    if (d.scroll) { document.getElementById(d.scroll)?.scrollIntoView({ behavior: "smooth" }); return; }
+    if (d.export) return exportCSV(d.export);
+    if (d.desfilter) { S.f.sort = { des: [d.desfilter] }; location.hash = "#/sortiment"; return; }
+    if (d.savesearch !== undefined) {
+      const f = JSON.parse(JSON.stringify(S.f.fund)), name = sentence("fund", f).replace(/^Zeige aktuelle /, "");
+      S.rules.push({ id: newId(), name: name.slice(0, 120), enabled: true, notify: true, ui: f, keywords: f.q ? [f.q] : [], stores: f.markt || [], conditions: f.zust || [], min_price: f.preis?.min ? +f.preis.min : null, max_price: f.preis?.max ? +f.preis.max : null, min_discount_pct: f.rabatt ? +f.rabatt : null });
+      if (await persistRules()) toast("Suche gemerkt. Telegram meldet neue Treffer."); memo.clear(); return rerender();
     }
-    const cats = new Map();
-    for (let i = 0; i < s.n; i++) { const o = itemAt(R, i); if (!o) continue; const c = catTop(o), x = cats.get(c) || { all: 0, here: 0 }; x.all++; if (bitAt(s.r, i)) x.here++; cats.set(c, x); }
-    const catRows = [...cats.entries()].map(([c, x]) => ({ c, ...x, share: x.here / x.all })).filter((x) => x.all >= 20).sort((a, b) => a.share - b.share);
-    const avg = R.st.reduce((a, o) => a + storeStats(R, o).share, 0) / R.st.length;
-    const opts = R.st.filter((o) => o.id !== s.id).sort((a, b) => a.name.localeCompare(b.name, "de")).map((o) => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join("");
-    view.innerHTML = `${back}<div class="toolbar"><h2>${esc(s.name)} <small>Sortiment · gemessen ${esc(fmtD(s.day))}</small></h2><div class="toolbar__r"><a class="btn" href="${marktHref(s.id)}">Fundgrube dieses Markts</a></div></div>
-      <div class="kpis">${kpi(nf0.format(t.inr), "Artikel im Sortiment")}${kpi(`${nf2.format(t.share * 100)} %`, `Anteil (Ø aller Märkte ${nf2.format(avg * 100)} %)`)}
-        ${kpi(nf0.format(mine.length), `nur hier oder in ≤ ${RARE} Märkten`)}${kpi(nf0.format(gaps.length), "fehlen, obwohl ≥ 80 % der Märkte sie führen")}${kpi(nf0.format(t.stock), "bei der Messung vorrätig")}</div>
-      <div class="charts">
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Nur hier (oder in ≤ ${RARE} Märkten)</h3><p>Was es sonst kaum gibt</p></div></header>${dfBar("mine", R, F)}<div id="mine-box"></div></section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Lücken: fehlt hier, gibt es fast überall</h3><p>Standard: Verbreitetste zuerst</p></div></header>${dfBar("gaps", R, F, "verbreitet")}<div id="gaps-box"></div></section>
-        <section class="chart"><header><div><h3>Anteil je Kategorie</h3><p>Schwächste zuerst · nur Kategorien mit ≥ 20 Artikeln</p></div></header>${bars(catRows.map((x) => ({ l: `${x.c} (${x.here}/${x.all})`, v: Math.round(x.share * 100) })).slice(0, 25), { fmt: (v) => v + " %", cls: "bl", max: 100 })}</section>
-        <section class="chart"><header><div><h3>Mit anderem Markt vergleichen</h3></div></header><div class="pg-ctl"><select class="inp" id="vs"><option value="">Markt wählen …</option>${opts}</select></div><div id="vs-kpi"></div><h4 id="vs-ha"></h4><div id="vs-a"></div><h4 id="vs-hb"></h4><div id="vs-b"></div></section>
-      </div>`;
-    mountList("mine-box", "mine", R, F, () => mine); mountList("gaps-box", "gaps", R, F, () => gaps, { showWo: false });
-    let diff = null; const vsA = $("#vs-a"), vsB = $("#vs-b");
-    const draw = (box, list) => { box.innerHTML = `<p class="muted" style="margin:4px 0">${nf0.format(list.length)} Artikel</p>${listRows(R, F, list, { showWo: false, shown: 60 })}`; bindSortTables(box); };
-    $("#vs").addEventListener("change", () => {
-      const B = R.byId[$("#vs").value]; if (!B) return; diff = diffIdx(s, B, R.N);
-      $("#vs-kpi").innerHTML = `<div class="kpis">${kpi(nf0.format(diff.both), "in beiden")}${kpi(nf0.format(diff.onlyA.length), `nur ${esc(s.name)}`)}${kpi(nf0.format(diff.onlyB.length), `nur ${esc(B.name)}`)}</div>`;
-      $("#vs-ha").textContent = `Nur ${s.name}`; $("#vs-hb").textContent = `Nur ${B.name}`;
-      draw(vsA, dfApply(R, F, diff.onlyA, { ...dfDefault, sort: "kat" })); draw(vsB, dfApply(R, F, diff.onlyB, { ...dfDefault, sort: "kat" }));
-    });
-  }
-  const dfDefault = { q: "", cat: "", sub: "", des: "", pmin: null, pmax: null };
-  async function fillArtikelSortiment(o) {
-    const box = $("#art-sortiment"); if (!box) return;
-    const R = await loadRange(); const i = R?.idx.get(o.id);
-    if (i == null) { box.remove(); return; }
-    const yes = storeNamesAt(R, i, 1), no = storeNamesAt(R, i, 0);
-    box.innerHTML = `<header><div><h3>Im Sortiment in ${yes.length} von ${yes.length + no.length} Märkten</h3><p>Stand ${esc(rel(R.updated))} · <a href="#/sortiment">Sortiment je Markt</a></p></div></header>
-      <p style="margin:4px 0"><b>Ja:</b> ${yes.map(esc).join(", ") || "–"}</p><p class="muted" style="margin:4px 0"><b>Nein:</b> ${no.map(esc).join(", ") || "–"}</p>`;
-  }
-
-  /* ---------- Katalog-Statistik: Designer, Preisbereiche, Kategorien, Farben ---------- */
-  const quantile = (sorted, q) => { if (!sorted.length) return null; const i = (sorted.length - 1) * q, lo = Math.floor(i), hi = Math.ceil(i); return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo); };
-  const IOS = /ikea of sweden/i;
-  // Preisbereich als kleine Grafik (log-Skala): Linie = min–max, Kasten = mittlere Hälfte, Punkt = Median
-  const priceRange = (r, lo = 0.5, hi = 6000, w = 150) => {
-    const x = (v) => 4 + ((Math.log(Math.max(v, lo)) - Math.log(lo)) / (Math.log(hi) - Math.log(lo))) * (w - 8);
-    return `<svg width="${w}" height="16" viewBox="0 0 ${w} 16" role="img" aria-label="Preis ${eur(r.min)} bis ${eur(r.max)}, Median ${eur(r.med)}"><line x1="${x(r.min)}" x2="${x(r.max)}" y1="8" y2="8" stroke="#9EA2A9" stroke-width="2"/>
-      <rect x="${x(r.q1)}" y="3" width="${Math.max(2, x(r.q3) - x(r.q1))}" height="10" fill="#0058A3" fill-opacity=".35"/><circle cx="${x(r.med)}" cy="8" r="3.5" fill="#0058A3"/></svg>`;
-  };
-  const stat = (arr) => { const s = arr.slice().sort((a, b) => a - b); return { n: s.length, min: s[0], q1: quantile(s, .25), med: quantile(s, .5), q3: quantile(s, .75), max: s[s.length - 1] }; };
-
-  async function renderKatalogStat() {
-    view.innerHTML = `<div class="toolbar"><h2>Katalog-Statistik</h2></div><div class="skeleton"></div>`;
-    const kat = await loadKatalog();
-    if (!kat.meta) { view.innerHTML = `<div class="empty"><h3>Noch keine Katalogdaten</h3></div>`; return; }
-    const F = await loadFacets();
-    const act = kat.items.filter((o) => o.status === "active"), total = act.length;
-    const desOf = (o) => F?.by.get(o.id) || "";
-    const withDes = act.filter((o) => desOf(o));
-    // --- Designer ---
-    const byDes = new Map();
-    for (const o of withDes) { const raw = desOf(o); for (const d of (IOS.test(raw) ? [raw] : F.ppl.get(o.id) || [raw])) { const g = byDes.get(d) || []; g.push(o); byDes.set(d, g); } }
-    const desRows = [...byDes.entries()].map(([d, list]) => {
-      const st = stat(list.map((o) => o.price)), cats = [...list.reduce((m, o) => m.set(o.top, (m.get(o.top) || 0) + 1), new Map())].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([c, n]) => `${c} (${n})`);
-      const rated = list.filter((o) => o.rcount >= 5);
-      return { d, n: list.length, ...st, cats: cats.join(", "), rating: rated.length ? rated.reduce((a, o) => a + o.rating, 0) / rated.length : null, ios: IOS.test(d) };
-    }).sort((a, b) => b.n - a.n);
-    const ios = desRows.filter((r) => r.ios), iosN = ios.reduce((a, r) => a + r.n, 0);
-    const named = desRows.filter((r) => !r.ios);
-    // IKEA of Sweden je Kategorie
-    const catMap = new Map();
-    for (const o of withDes) { const c = catMap.get(o.top) || { ios: 0, other: 0 }; (IOS.test(desOf(o)) ? (c.ios++) : (c.other++)); catMap.set(o.top, c); }
-    const catIos = [...catMap.entries()].map(([c, x]) => ({ c, ...x, share: x.ios / (x.ios + x.other) })).sort((a, b) => b.ios - a.ios);
-    // --- Preise je Kategorie ---
-    const byCat = new Map(); for (const o of act) { const g = byCat.get(o.top) || []; g.push(o); byCat.set(o.top, g); }
-    const catRows = [...byCat.entries()].map(([c, l]) => ({ c, ...stat(l.map((o) => o.price)), rating: (() => { const r = l.filter((o) => o.rcount >= 5); return r.length ? r.reduce((a, o) => a + o.rating, 0) / r.length : null; })() })).sort((a, b) => b.n - a.n);
-    // --- Preisverteilung ---
-    const edges = [0, 5, 10, 20, 50, 100, 200, 500, 1000, Infinity], lab = ["unter 5 €", "5–10 €", "10–20 €", "20–50 €", "50–100 €", "100–200 €", "200–500 €", "500–1.000 €", "ab 1.000 €"];
-    const hist = lab.map((l, i) => ({ l, v: act.filter((o) => o.price >= edges[i] && o.price < edges[i + 1]).length }));
-    // --- Farben ---
-    const colors = [...act.reduce((m, o) => { for (const c of (o.col || "").split(", ").filter(Boolean)) m.set(c, (m.get(c) || 0) + 1); return m; }, new Map())].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([l, v]) => ({ l, v }));
-    // --- Preisänderungen je Woche ---
-    const wk = (d) => { const t = new Date(d + "T00:00:00Z"); const day = (t.getUTCDay() + 6) % 7; t.setUTCDate(t.getUTCDate() - day); return t.toISOString().slice(0, 10); };
-    const wDown = new Map(), wUp = new Map();
-    for (const o of kat.items) for (let i = 1; i < o.ph.length; i++) { const w = wk(o.ph[i][0]); (o.ph[i][1] < o.ph[i - 1][1] ? wDown : wUp).set(w, ((o.ph[i][1] < o.ph[i - 1][1] ? wDown : wUp).get(w) || 0) + 1); }
-    const weeks = [...new Set([...wDown.keys(), ...wUp.keys()])].sort();
-    const rated = act.filter((o) => o.rcount >= 20);
-    const sets = act.filter((o) => o.type === "SPR").length, discounted = act.filter((o) => o.prev).length;
-    const cov = F ? `${nf0.format(F.n)} von ${nf0.format(total)} Artikeln mit abgerufenen Details` : "Details noch nicht abgerufen";
-    const dRow = (r) => `<tr><td><a href="#/katalog?des=${encodeURIComponent(r.d)}"><b>${esc(r.d)}</b></a>${r.ios ? ` <span class="badge badge--back">Marke</span>` : ""}</td><td class="n" data-v="${r.n}">${nf0.format(r.n)}</td><td data-v="${r.med}">${priceRange(r)}</td><td class="n" data-v="${r.min}">${esc(eur(r.min))}</td><td class="n" data-v="${r.med}">${esc(eur(r.med))}</td><td class="n" data-v="${r.max}">${esc(eur(r.max))}</td><td class="n" data-v="${r.rating ?? -1}">${r.rating ? nf2.format(r.rating) : "–"}</td><td class="muted" style="font-size:12.5px">${esc(r.cats)}</td></tr>`;
-    view.innerHTML = `<p style="margin:0 0 10px"><a href="#/katalog" class="linkbtn">← Katalog</a> · <a href="#/statistik" class="linkbtn">Fundgrube-Statistik</a></p><div class="toolbar"><h2>Katalog-Statistik <small>${nf0.format(total)} Artikel im Sortiment</small></h2></div>
-      <div class="kpis">${kpi(nf0.format(total), "Artikel im Sortiment")}${kpi(nf0.format(byCat.size), "Hauptkategorien")}${kpi(eur(median(act.map((o) => o.price))), "Median-Preis")}${kpi(`${nf0.format(sets)} (${pct(sets / total * 100)})`, "Sets und Kombinationen")}
-        ${kpi(`${nf0.format(discounted)} (${pct(discounted / total * 100)})`, "mit Vorher-Preis")}${kpi(nf0.format(act.filter((o) => o.last).length), "„Letzte Chance“")}${kpi(rated.length ? nf2.format(rated.reduce((a, o) => a + o.rating, 0) / rated.length) : "–", `Ø Bewertung (${nf0.format(rated.length)} Artikel mit ≥ 20)`)}</div>
-      <div class="charts">
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Designer: wer hat die meisten Artikel, wer designt in welchem Preisbereich?</h3><p>${esc(cov)} · Linie = günstigster bis teuerster, Kasten = mittlere Hälfte, Punkt = Median (log-Skala) · Spaltenkopf = sortieren · Name = Artikel anzeigen</p></div></header>
-          ${desRows.length ? `<div class="tblwrap"><table class="tbl" data-sorttable="d"><thead><tr><th data-k="0">Designer</th><th class="n" data-k="1">Artikel</th><th>Preisbereich</th><th class="n" data-k="3">ab</th><th class="n" data-k="4">Median</th><th class="n" data-k="5">bis</th><th class="n" data-k="6">Ø Bew.</th><th>Hauptkategorien</th></tr></thead><tbody>${desRows.slice(0, 60).map(dRow).join("")}</tbody></table></div>${desRows.length > 60 ? `<p class="muted" style="font-size:12.5px">${desRows.length - 60} weitere Designer, siehe Katalog-Filter „Designer“.</p>` : ""}` : `<p class="muted">Designer werden täglich nachgeladen (Actions → Details). Sobald Daten da sind, erscheint hier die Rangliste.</p>`}</section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Wo ist nur „IKEA of Sweden“ genannt?</h3><p>Artikel, bei denen kein einzelner Designer, sondern nur die Marke steht · ${nf0.format(iosN)} von ${nf0.format(withDes.length)} Artikeln mit Designer-Angabe (${withDes.length ? pct(iosN / withDes.length * 100) : "–"})</p></div></header>
-          ${catIos.length ? `<div class="tblwrap"><table class="tbl" data-sorttable="i"><thead><tr><th data-k="0">Kategorie</th><th class="n" data-k="1">nur „IKEA of Sweden“</th><th class="n" data-k="2">mit Einzel-Designer</th><th data-k="3">Anteil Marke</th></tr></thead><tbody>${catIos.map((r) => `<tr><td><a href="#/katalog?cat=${encodeURIComponent(r.c)}&des=${encodeURIComponent(ios[0]?.d || "IKEA of Sweden")}">${esc(r.c)}</a></td><td class="n" data-v="${r.ios}">${nf0.format(r.ios)}</td><td class="n" data-v="${r.other}">${nf0.format(r.other)}</td><td data-v="${r.share}"><span class="mbar"><i style="width:${r.share * 100}%"></i></span> ${nf0.format(Math.round(r.share * 100))} %</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">Noch keine Designer-Daten.</p>`}</section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Preisbereiche je Kategorie</h3><p>Linie = günstigster bis teuerster, Kasten = mittlere Hälfte, Punkt = Median · Kategorie antippen = Artikel</p></div></header>
-          <div class="tblwrap"><table class="tbl" data-sorttable="c"><thead><tr><th data-k="0">Kategorie</th><th class="n" data-k="1">Artikel</th><th>Preisbereich</th><th class="n" data-k="3">ab</th><th class="n" data-k="4">Median</th><th class="n" data-k="5">bis</th><th class="n" data-k="6">Ø Bew.</th></tr></thead><tbody>${catRows.map((r) => `<tr><td><a href="#/katalog?cat=${encodeURIComponent(r.c)}"><b>${esc(r.c)}</b></a></td><td class="n" data-v="${r.n}">${nf0.format(r.n)}</td><td data-v="${r.med}">${priceRange(r)}</td><td class="n" data-v="${r.min}">${esc(eur(r.min))}</td><td class="n" data-v="${r.med}">${esc(eur(r.med))}</td><td class="n" data-v="${r.max}">${esc(eur(r.max))}</td><td class="n" data-v="${r.rating ?? -1}">${r.rating ? nf2.format(r.rating) : "–"}</td></tr>`).join("")}</tbody></table></div></section>
-        <section class="chart"><header><div><h3>Preisverteilung</h3><p>Wie viele Artikel in welchem Preisbereich</p></div></header>${bars(hist, { cls: "y" })}</section>
-        <section class="chart"><header><div><h3>Häufigste Farben</h3></div></header>${bars(colors, { cls: "bl" })}</section>
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Preisänderungen je Woche</h3><p>Senkungen und Erhöhungen · wird mit jedem Tag aussagekräftiger</p></div></header>${weeks.length >= 2 ? `${columns([weeks.map((w) => wDown.get(w) || 0), weeks.map((w) => wUp.get(w) || 0)], weeks, ["#2E7D4F", "#B5452B"])}<div class="legend"><span><i style="background:#2E7D4F"></i>gesenkt</span><span><i style="background:#B5452B"></i>erhöht</span></div>` : "<p class='muted'>Erst ab der zweiten Woche mit Daten.</p>"}</section>
-      </div>`;
-    bindSortTables(view);
-  }
-
-  /* ---------- Märkte: Übersicht und Unterseite je Markt ---------- */
-  // Angebote nach Produkt bündeln (Artikelnummer; ohne Nummer nach Name+Beschreibung)
-  function groupProducts(offers) {
-    const m = new Map();
-    for (const o of offers) {
-      const a = artsOf(o)[0] || "";
-      const k = a || `t:${o.title}|${o.product_description}`;
-      let g = m.get(k);
-      if (!g) m.set(k, (g = { key: k, art: a, title: o.title, product_description: o.product_description, image: o.image, orig: o.original_price, offers: [], act: 0, n: 0, min: null, maxPct: null, maxEur: null, newest: "", saved: 0 }));
-      g.offers.push(o); g.n++;
-      if (!g.image && o.image) g.image = o.image;
-      if (!o.base && (o.first_seen || "") > g.newest) g.newest = o.first_seen;
-      if (o.status === "active") {
-        g.act++;
-        if (o.price != null) g.min = g.min == null ? o.price : Math.min(g.min, o.price);
-        if (o.discount_pct != null) g.maxPct = Math.max(g.maxPct ?? -1, o.discount_pct);
-        if (o.discount_eur != null) { g.maxEur = Math.max(g.maxEur ?? -1, o.discount_eur); g.saved += o.discount_eur; }
-      }
-    }
-    return [...m.values()];
-  }
-  const PSORT = {
-    anzahl: ["Meiste Angebote", (a, b) => b.act - a.act || b.n - a.n],
-    rabatt: ["Höchster Rabatt (%)", (a, b) => (b.maxPct ?? -1) - (a.maxPct ?? -1)],
-    ersparnis: ["Größte Ersparnis (€)", (a, b) => (b.maxEur ?? -1) - (a.maxEur ?? -1)],
-    neu: ["Neueste zuerst", (a, b) => (b.newest || "").localeCompare(a.newest || "")],
-    preis: ["Günstigste zuerst", (a, b) => (a.min ?? 1e9) - (b.min ?? 1e9)],
-    name: ["Name A–Z", (a, b) => (a.title || "").localeCompare(b.title || "", "de")],
-  };
-  function productCard(g, storeId) {
-    const href = g.art ? prodHref(g.art) : `#/aktuell?q=${encodeURIComponent(g.title)}${storeId ? `&s=${encodeURIComponent(storeId)}` : ""}`;
-    const isNewP = S.prevVisit && g.newest > S.prevVisit;
-    return `<li class="card pcard"><a href="${href}" class="pcard__a">
-      ${img(g)}
-      <div class="offer__t" style="font-size:14.5px">${esc(g.title)} ${isNewP ? `<span class="badge badge--new">neu</span>` : ""}</div>
-      <div class="offer__d" style="white-space:normal;font-size:13px">${esc(g.product_description)}</div>
-      <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:8px;margin-top:auto">
-        <div>${g.act ? `<div class="price">${g.act > 1 ? "ab " : ""}${esc(eur(g.min))}</div>` : `<div class="muted" style="font-size:13px">derzeit nicht gelistet</div>`}${g.orig ? `<div class="was">${esc(eur(g.orig))}</div>` : ""}</div>
-        ${g.maxPct != null ? `<span class="tag">−${esc(pct(g.maxPct))}</span>` : ""}
-      </div>
-      <div class="muted" style="font-size:12.5px">${g.act ? `${nf0.format(g.act)}× jetzt` : ""}${g.n > g.act ? `${g.act ? " · " : ""}${nf0.format(g.n)}× insgesamt` : ""}${g.maxEur ? ` · spart bis ${esc(eur0(g.maxEur))}` : ""}</div>
-    </a></li>`;
-  }
-  // Gemeinsame Produkt-Galerie mit Suche, Sortierung und "mehr"
-  function productGallery(id, offers, storeId) {
-    return `<section class="chart" style="grid-column:1/-1" id="${id}"><header><div><h3>Produkte <small class="muted" data-pg-count></small></h3><p>Antippen = Produkt mit Preisverlauf, Ersparnis und allen Märkten</p></div></header>
-      <div class="pg-ctl"><input class="inp" data-pg-q placeholder="Produkt suchen" aria-label="Produkte durchsuchen">
-        <select class="inp" data-pg-sort aria-label="Sortierung">${Object.entries(PSORT).map(([k, [l]]) => `<option value="${k}">${l}</option>`).join("")}</select>
-        <label class="switch"><input type="checkbox" data-pg-gone> auch verschwundene</label></div>
-      <ul class="grid" data-pg-list></ul><div class="more" data-pg-more></div></section>`;
-  }
-  function bindGallery(id, offers, storeId) {
-    const box = $(`#${id}`); if (!box) return;
-    const groups = groupProducts(offers);
-    let shown = 60;
-    const draw = () => {
-      const q = ZC.fold($("[data-pg-q]", box).value).trim(), withGone = $("[data-pg-gone]", box).checked;
-      const cmp = PSORT[$("[data-pg-sort]", box).value][1];
-      const list = groups.filter((g) => (withGone || g.act) && (!q || ZC.fold(`${g.title} ${g.product_description} ${g.art} ${ZC.fmtArticle(g.art)}`).includes(q))).sort(cmp);
-      $("[data-pg-count]", box).textContent = `${nf0.format(list.length)}`;
-      $("[data-pg-list]", box).innerHTML = list.slice(0, shown).map((g) => productCard(g, storeId)).join("") || `<li class="muted">Nichts gefunden.</li>`;
-      $("[data-pg-more]", box).innerHTML = list.length > shown ? `<button class="btn">${nf0.format(Math.min(60, list.length - shown))} weitere (${nf0.format(list.length - shown)} übrig)</button>` : "";
-      $("[data-pg-more] button", box)?.addEventListener("click", () => { shown += 60; draw(); });
-    };
-    $("[data-pg-q]", box).addEventListener("input", debounce(() => { shown = 60; draw(); }, 150));
-    $("[data-pg-sort]", box).addEventListener("change", () => { shown = 60; draw(); });
-    $("[data-pg-gone]", box).addEventListener("change", () => { shown = 60; draw(); });
-    draw();
-  }
-
-  async function renderMaerkte() {
-    const act = allOffers(false).filter((o) => o.status === "active");
-    const d7 = new Date(Date.now() - 7 * 864e5).toISOString();
-    const per = new Map();
-    for (const o of act) { const x = per.get(o.store_id) || { n: 0, disc: [], new7: 0, top: null, saved: 0 }; x.n++; if (o.discount_pct != null) x.disc.push(o.discount_pct); if (o.first_seen >= d7 && !o.base) x.new7++; x.saved += o.discount_eur || 0; if (!x.top || (o.discount_pct ?? -1) > (x.top.discount_pct ?? -1)) x.top = o; per.set(o.store_id, x); }
-    const list = stores().map((s) => ({ s, x: per.get(s.id) || { n: 0, disc: [], new7: 0, top: null, saved: 0 } }));
-    const MSORT = { name: ["Name A–Z", (a, b) => a.s.name.localeCompare(b.s.name, "de")], n: ["Meiste Angebote", (a, b) => b.x.n - a.x.n], neu: ["Meiste neue (7 T)", (a, b) => b.x.new7 - a.x.new7], rabatt: ["Höchster Median-Rabatt", (a, b) => (median(b.x.disc) ?? -1) - (median(a.x.disc) ?? -1)] };
-    const sortKey = lsGet("zc.msort", "name");
-    view.innerHTML = `<div class="toolbar"><h2>Märkte <small>${list.length}</small></h2>
-        <div class="toolbar__r"><input class="inp" id="m-find" placeholder="Markt suchen" style="width:auto">
-        <select class="inp" id="m-sort" style="width:auto">${Object.entries(MSORT).map(([k, [l]]) => `<option value="${k}" ${k === sortKey ? "selected" : ""}>${l}</option>`).join("")}</select></div></div>
-      <ul class="mgrid">${list.sort(MSORT[sortKey]?.[1] || MSORT.name[1]).map(({ s, x }) => `<li><a class="mcard" href="${marktHref(s.id)}">
-        ${x.top ? img(x.top, "mcard__img") : `<div class="mcard__img offer__img--none">▢</div>`}
-        <div class="mcard__b"><b>${esc(s.name)}</b>
-          <span>${nf0.format(x.n)} Angebote · Median ${esc(pct(median(x.disc)))}</span>
-          <span class="muted">${nf0.format(x.new7)} neu in 7 Tagen${x.top?.discount_pct != null ? ` · bis −${esc(pct(x.top.discount_pct))}` : ""}</span></div></a></li>`).join("")}</ul>`;
-    $("#m-sort").addEventListener("change", (e) => { lsSet("zc.msort", e.target.value); renderMaerkte(); });
-    $("#m-find").addEventListener("input", (e) => { const q = ZC.fold(e.target.value); $$(".mgrid li").forEach((li) => { li.hidden = q && !ZC.fold(li.textContent).includes(q); }); });
-  }
-
-  async function renderMarkt(query) {
-    const p = new URLSearchParams(query || ""); const id = p.get("id") || "";
-    const backM = `<p style="margin:0 0 10px"><a href="#/maerkte" class="linkbtn">← alle Märkte</a></p>`;
-    if (hasRepo() && !archiveFullyLoaded()) { view.innerHTML = `${backM}<div class="skeleton"></div>`; await loadArchive(); }
-    if (hasRepo() && !S.repo.runs) S.repo.runs = await getBin("runs.bin", S.repo.meta.updated).catch(() => []);
-    const st = stores().find((s) => s.id === id);
-    const all = allOffers(true).filter((o) => o.store_id === id);
-    if (!st && !all.length) { view.innerHTML = `${backM}<div class="empty"><h3>Markt nicht gefunden</h3></div>`; return; }
-    const name = st?.name || all[0].store;
-    const act = all.filter((o) => o.status === "active"), gone = all.filter((o) => o.status === "gone");
-    const d7 = new Date(Date.now() - 7 * 864e5).toISOString(), firstRun = (S.repo.runs || [])[0]?.ts || "";
-    const new7 = all.filter((o) => o.first_seen >= d7 && o.first_seen > firstRun && !o.base).length, gone7 = gone.filter((o) => o.gone_at >= d7).length;
-    const topPct = act.filter((o) => o.discount_pct != null).sort((a, b) => b.discount_pct - a.discount_pct).slice(0, 12);
-    const buckets = Array.from({ length: 10 }, (_, i) => ({ l: `${i * 10}–${i * 10 + 9} %`, v: 0 })); act.forEach((o) => { if (o.discount_pct != null) buckets[Math.min(9, Math.max(0, Math.floor(o.discount_pct / 10)))].v++; });
-    const reasons = [...act.reduce((m, o) => m.set(o.reason_discount || "–", (m.get(o.reason_discount || "–") || 0) + 1), new Map())].map(([l, v]) => ({ l, v })).sort((a, b) => b.v - a.v).slice(0, 10);
-    const conds = [...act.reduce((m, o) => m.set(o.condition || "–", (m.get(o.condition || "–") || 0) + 1), new Map())].map(([l, v]) => ({ l, v })).sort((a, b) => b.v - a.v);
-    const { labels, counts } = listedPerDay(all, 60);
-    view.innerHTML = `${backM}
-      <div class="toolbar"><h2>${esc(name)}</h2><div class="toolbar__r"><a class="btn" href="#/aktuell?s=${esc(id)}">Als Liste mit Filtern</a><a class="btn" href="#/archiv?s=${esc(id)}">Archiv dieses Markts</a></div></div>
-      <div class="kpis">
-        ${kpi(nf0.format(act.length), "aktive Angebote")}
-        ${kpi(nf0.format(groupProducts(act).length), "verschiedene Produkte")}
-        ${kpi(pct(median(act.map((o) => o.discount_pct))), "Median-Rabatt")}
-        ${kpi(eur0(act.reduce((a, o) => a + (o.discount_eur || 0), 0)), "Ersparnis gesamt (aktiv)")}
-        ${kpi(nf2.format(new7 / 7), "neu pro Tag (7 T)")}
-        ${kpi(nf2.format(gone7 / 7), "weg pro Tag (7 T)")}
-        ${kpi(gone.filter((o) => !o.base).length >= 3 ? fmtDays(median(gone.map(dwellOf))) : "–", "Verweildauer (Median)")}
-        ${kpi(nf0.format(all.length), "insgesamt erfasst")}
-      </div>
-      <div class="charts">
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Größte Rabatte jetzt</h3><p>Antippen = Angebot mit allen Details</p></div><a class="linkbtn" href="#/aktuell?s=${esc(id)}&sort=rabattpct">alle ›</a></header>${topPct.length ? `<ul class="grid">${topPct.map(offerCard).join("")}</ul>` : "<p class='muted'>Keine aktiven Angebote.</p>"}</section>
-        ${productGallery("pg-markt", all, id)}
-        <section class="chart"><header><div><h3>Rabatthöhe</h3><p>aktive Angebote</p></div></header>${bars(buckets, { cls: "y" })}</section>
-        <section class="chart"><header><div><h3>Zustand</h3></div></header>${bars(conds, { cls: "bl" })}</section>
-        <section class="chart"><header><div><h3>Häufigste Rabattgründe</h3></div></header>${bars(reasons)}</section>
-        <section class="chart"><header><div><h3>Bestand je Tag</h3><p>gleichzeitig gelistete Angebote, letzte 60 Tage</p></div></header>${columns([counts], labels, ["#0058A3"])}</section>
-      </div>`;
-    bindGallery("pg-markt", all, id);
-    bindSortTables(view);
-  }
-
-  // Produktsuche für die Statistik-Seite
-  function productFinder(every) {
-    const m = new Map();
-    for (const o of every) { const a = artsOf(o)[0]; if (!a) continue; const x = m.get(a) || { art: a, title: o.title, desc: o.product_description, n: 0, act: 0 }; x.n++; if (o.status === "active") x.act++; m.set(a, x); }
-    const list = [...m.values()].sort((a, b) => b.n - a.n);
-    S.productIndex = list;
-    const rows = (xs) => xs.slice(0, 20).map((x) => `<tr><td><a href="${prodHref(x.art)}"><b>${esc(x.title)}</b></a> <span class="muted">${esc(x.desc)}</span></td><td class="mono">${esc(ZC.fmtArticle(x.art))}</td><td class="n">${nf0.format(x.act)}</td><td class="n">${nf0.format(x.n)}</td></tr>`).join("");
-    return `<section class="chart" style="grid-column:1/-1"><header><div><h3>Produkte</h3><p>Name oder Artikelnummer suchen · antippen = Preisverlauf, Spanne, wann und wo</p></div></header>
-      <input class="inp" id="prod-find" placeholder="z. B. Knivshult oder 505.032.73" style="max-width:420px;margin-bottom:8px">
-      <div class="tblwrap"><table class="tbl"><thead><tr><th>Produkt</th><th>Art.-Nr.</th><th class="n">jetzt</th><th class="n">insgesamt</th></tr></thead><tbody id="prod-rows">${rows(list)}</tbody></table></div></section>`;
-  }
-  function bindProductFinder() {
-    const inp = $("#prod-find"); if (!inp) return;
-    const rows = (xs) => xs.slice(0, 20).map((x) => `<tr><td><a href="${prodHref(x.art)}"><b>${esc(x.title)}</b></a> <span class="muted">${esc(x.desc)}</span></td><td class="mono">${esc(ZC.fmtArticle(x.art))}</td><td class="n">${nf0.format(x.act)}</td><td class="n">${nf0.format(x.n)}</td></tr>`).join("");
-    inp.addEventListener("input", debounce(() => {
-      const q = ZC.fold(inp.value).trim(), digits = ZC.normArticle(inp.value);
-      const xs = !q ? S.productIndex : S.productIndex.filter((x) => (digits.length >= 3 && x.art.includes(digits)) || ZC.fold(`${x.title} ${x.desc}`).includes(q));
-      $("#prod-rows").innerHTML = rows(xs) || `<tr><td colspan="4" class="muted">Nichts gefunden.</td></tr>`;
-    }, 150));
-  }
-
-  async function renderStatistik(query) {
-    if (activeSource() === "none") return renderOnboarding();
-    const p = new URLSearchParams(query || ""); const scope = p.get("scope") || "aktiv"; const tage = Number(p.get("tage") || 30);
-    if (hasRepo() && !archiveFullyLoaded()) { view.innerHTML = `<div class="toolbar"><h2>Statistik</h2></div><div class="skeleton"></div>`; await loadArchive(); }
-    if (hasRepo() && !S.repo.runs) S.repo.runs = await getBin("runs.bin", S.repo.meta.updated).catch(() => []);
-    const every = allOffers(true);
-    const set = scope === "aktiv" ? every.filter((o) => o.status === "active") : every;
-    const gone = every.filter((o) => o.status === "gone");
-    const now = Date.now(), since = new Date(now - tage * 864e5).toISOString();
-    const nameOf = Object.fromEntries(stores().map((s) => [s.id, s.name]));
-    const csvBtn = (key) => `<button class="linkbtn" data-csv="${key}">CSV</button>`;
-    const tables = {};
-    const agg = (list, keyFn, valFn = () => 1) => { const m = new Map(); for (const o of list) { const k = keyFn(o) || "–"; m.set(k, (m.get(k) || 0) + valFn(o)); } return [...m.entries()].map(([l, v]) => ({ l, v })).sort((a, b) => b.v - a.v); };
-    const byStore = agg(set, (o) => nameOf[o.store_id] || o.store);
-    const byReason = agg(set, (o) => o.reason_discount).slice(0, 15);
-    const byCond = agg(set, (o) => o.condition);
-    const idOfName = Object.fromEntries(stores().map((x) => [x.name, x.id]));
-    byStore.forEach((r) => { if (idOfName[r.l]) r.href = marktHref(idOfName[r.l]); });
-    const titleOfArt = {}; for (const o of set) { const a = artsOf(o)[0]; if (a && !titleOfArt[a]) titleOfArt[a] = `${o.title} ${o.product_description}`.slice(0, 60); }
-    const byTitle = agg(set, (o) => artsOf(o)[0]).filter((r) => r.l !== "–").slice(0, 15).map((r) => ({ l: titleOfArt[r.l] || r.l, v: r.v, href: prodHref(r.l) }));
-    const buckets = Array.from({ length: 10 }, (_, i) => ({ l: `${i * 10}–${i * 10 + 9} %`, v: 0 })); set.forEach((o) => { if (o.discount_pct != null) buckets[Math.min(9, Math.max(0, Math.floor(o.discount_pct / 10)))].v++; });
-    const dwellBy = (keyFn) => { const m = new Map(); gone.forEach((o) => { const k = keyFn(o) || "–"; if (!o.base) (m.get(k) || m.set(k, []).get(k)).push(days(o.first_seen, o.gone_at)); }); return [...m.entries()].filter(([, a]) => a.length >= 5).map(([l, a]) => ({ l, v: Math.round(median(a) * 100) / 100, n: a.length })).sort((a, b) => a.v - b.v).slice(0, 15); };
-    const dwellCond = dwellBy((o) => o.condition), dwellStore = dwellBy((o) => nameOf[o.store_id] || o.store);
-    const dayList = []; for (let d = new Date(since); d <= new Date(now); d = new Date(+d + 864e5)) dayList.push(dayKey(d));
-    const nNew = Object.fromEntries(dayList.map((d) => [d, 0])), nGone = { ...Object.fromEntries(dayList.map((d) => [d, 0])) };
-    every.forEach((o) => { const a = dayKey(o.first_seen); if (!o.base && a in nNew) nNew[a]++; if (o.gone_at) { const b = dayKey(o.gone_at); if (b in nGone) nGone[b]++; } });
-    const nBase = every.filter((o) => o.base).length;
-    Object.assign(tables, { maerkte: byStore, gruende: byReason, zustand: byCond, produkte: byTitle, rabatt: buckets, verweil_zustand: dwellCond, verweil_markt: dwellStore, verlauf: dayList.map((d) => ({ l: d, neu: nNew[d], weg: nGone[d] })) });
-    const active = every.filter((o) => o.status === "active");
-    const k = (v, l) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`;
-    view.innerHTML = `
-      <div class="toolbar"><h2>Statistik</h2>
-        <div class="toolbar__r"><a class="btn" href="#/katalogstat">Katalog-Statistik</a>
-          <div class="seg" role="group" aria-label="Datengrundlage"><button data-scope="aktiv" aria-pressed="${scope === "aktiv"}">Aktuell gelistet</button><button data-scope="alle" aria-pressed="${scope === "alle"}">Alle erfassten</button></div>
-          <label class="sr" for="tage">Zeitraum Verlauf</label><select class="inp" id="tage" style="width:auto">${[14, 30, 90, 365].map((t) => `<option value="${t}" ${t === tage ? "selected" : ""}>${t} Tage</option>`).join("")}</select>
-        </div></div>
-      <div class="kpis">
-        ${k(nf0.format(active.length), "aktive Angebote")}
-        ${k(eur0(active.reduce((a, o) => a + (o.discount_eur || 0), 0)), "Rabatt-Summe aktiv")}
-        ${k(pct(median(set.map((o) => o.discount_pct))), "Median-Rabatt")}
-        ${k(eur(median(set.map((o) => o.price))), "Median-Preis")}
-        ${k(dur(median(gone.map(dwellOf)) ?? null), "Median-Verweildauer (verschwunden)")}
-        ${k(nf0.format(every.filter((o) => !o.base && o.first_seen >= since).length), `neu in ${tage} Tagen`)}
-        ${k(nf0.format(gone.filter((o) => o.gone_at >= since).length), `verschwunden in ${tage} Tagen`)}
-      </div>
-      <p class="muted" style="font-size:12.5px;margin:-14px 0 22px">Grundlage: ${nf0.format(set.length)} Angebote · der Erst-Import${nBase ? ` (${nf0.format(nBase)} Angebote, die beim Start schon da waren)` : ""} ist bei „neu“, Verläufen und Verweildauern ausgeblendet. „Verschwunden“ heißt: nicht mehr gelistet (verkauft, reserviert oder entfernt) – die Schnittstelle unterscheidet das nicht. Verweildauer erst ab ≥ 5 Fällen je Gruppe; Angebote, die vor Beobachtungsbeginn eingestellt wurden, sind unterschätzt.</p>
-      <div class="charts">
-        <section class="chart" style="grid-column:1/-1"><header><div><h3>Neu vs. verschwunden pro Tag</h3><p>Erstmals gesehen bzw. zuletzt gesehen, Berliner Zeit</p></div>${csvBtn("verlauf")}</header>
-          ${columns([dayList.map((d) => nNew[d]), dayList.map((d) => nGone[d])], dayList, ["#2E7D4F", "#B5452B"])}<div class="legend"><span><i style="background:#2E7D4F"></i>neu</span><span><i style="background:#B5452B"></i>verschwunden</span></div></section>
-        <section class="chart"><header><div><h3>Angebote je Markt</h3><p>${scope === "aktiv" ? "derzeit gelistet" : "alle erfassten"}</p></div>${csvBtn("maerkte")}</header>${bars(byStore)}</section>
-        <section class="chart"><header><div><h3>Häufigste Rabattgründe</h3><p>Freitext laut IKEA, Top 15</p></div>${csvBtn("gruende")}</header>${bars(byReason, { cls: "y" })}</section>
-        <section class="chart"><header><div><h3>Zustand</h3></div>${csvBtn("zustand")}</header>${bars(byCond, { cls: "bl" })}</section>
-        <section class="chart"><header><div><h3>Rabatthöhe</h3><p>Verteilung gegenüber Neupreis</p></div>${csvBtn("rabatt")}</header>${bars(buckets, { cls: "y" })}</section>
-        <section class="chart"><header><div><h3>Häufigste Produkte</h3><p>nach Artikelnummer, Top 15 · antippen für Details</p></div>${csvBtn("produkte")}</header>${bars(byTitle)}</section>
-        <section class="chart"><header><div><h3>Verweildauer nach Zustand</h3><p>Median in Tagen, nur verschwundene</p></div>${csvBtn("verweil_zustand")}</header>${dwellCond.length ? bars(dwellCond, { fmt: fmtDays, cls: "bl" }) : "<p class='muted'>Noch zu wenige abgeschlossene Angebote.</p>"}</section>
-        <section class="chart"><header><div><h3>Verweildauer nach Markt</h3><p>Median in Tagen – kurz = schnell vergriffen</p></div>${csvBtn("verweil_markt")}</header>${dwellStore.length ? bars(dwellStore, { fmt: fmtDays }) : "<p class='muted'>Noch zu wenige abgeschlossene Angebote.</p>"}</section>
-      </div>
-      ${moreStats(every, gone, nameOf, tables, csvBtn)}`;
-    $$("[data-scope]").forEach((b) => b.addEventListener("click", () => { location.hash = `#/statistik?scope=${b.dataset.scope}&tage=${tage}`; }));
-    $("#tage").addEventListener("change", (e) => { location.hash = `#/statistik?scope=${scope}&tage=${e.target.value}`; });
-    bindSortTables(view); bindProductFinder();
-    $$("[data-csv]").forEach((b) => b.addEventListener("click", () => { const t = tables[b.dataset.csv]; download(`statistik_${b.dataset.csv}_${dayKey(Date.now())}.csv`, toCSV(t, Object.keys(t[0] || { l: 0, v: 0 }))); }));
-  }
-
-  /* ---------- Daten & Methodik ---------- */
-  const DICT = [
-    ["id", "Tracker-Schlüssel: u:&lt;offerUuid&gt;, sonst n:&lt;Markt&gt;:&lt;Angebotsnummer&gt;. Eindeutig pro Einzelstück."],
-    ["offer_uuid / offer_number", "Kennungen des Angebots bei IKEA (Nummer steht auch im Reservierungslink)."],
-    ["article_number", "Reguläre IKEA-Artikelnummer (8 Ziffern). Mehrere Angebote können denselben Artikel haben."],
-    ["title / product_description", "Produktname und Produktbeschreibung laut IKEA."],
-    ["offer_description", "Angebotsspezifischer Text, falls vorhanden."],
-    ["condition / condition_description", "Zustandsstufe und Erläuterung (z. B. „Wie neu“)."],
-    ["reason_discount / additional_info", "Grund für den Rabatt bzw. Mangel – Freitext der Märkte."],
-    ["price / original_price", "Zweite-Chance-Preis und regulärer Preis in Euro."],
-    ["discount_eur / discount_pct", "Berechnet: Neupreis − Preis; Anteil am Neupreis."],
-    ["first_seen / last_seen", "Erster und letzter Abruf, in dem das Angebot gelistet war (UTC, ISO 8601). Kein IKEA-Einstelldatum."],
-    ["gone_at / status", "Status „gone“ nach 2 erfolgreichen Abrufen des Markts ohne das Angebot; gone_at = letzter Sichtzeitpunkt."],
-    ["reappear_count", "Wie oft das Angebot nach dem Verschwinden wieder auftauchte (z. B. abgelaufene Reservierung)."],
-    ["price_history", "Liste [Zeitpunkt, Preis] bei jeder Preisänderung."],
-  ];
-  // Wie regelmäßig wurde zuletzt abgerufen? (Lücken sofort sichtbar)
-  function taktHtml() {
-    const runs = (S.repo.runs || []).map((r) => r.ts).filter(Boolean).sort();
-    if (runs.length < 2) return `<p class="muted">Noch zu wenige Abrufe.</p>`;
-    const last = runs.slice(-25), gaps = [];
-    for (let i = 1; i < last.length; i++) gaps.push((new Date(last[i]) - new Date(last[i - 1])) / 36e5);
-    const day = runs.filter((t) => Date.now() - new Date(t) < 864e5).length;
-    const fmtH = (h) => (h < 1.5 ? `${Math.round(h * 60)} Min.` : `${nf0.format(Math.round(h * 10) / 10)} Std.`);
-    const ok = median(gaps) <= 1.3 && Math.max(...gaps) <= 3;
-    return `<p style="margin:0 0 6px"><span class="dot ${ok ? "" : "dot--warn"}"></span>${ok ? "Regelmäßig" : "Unregelmäßig"}: ${day} Abrufe in den letzten 24 Std.</p>
-      <table class="tbl"><tbody><tr><td>Typischer Abstand</td><td>${fmtH(median(gaps))}</td></tr><tr><td>Längste Lücke (letzte 24 Abrufe)</td><td>${fmtH(Math.max(...gaps))}</td></tr><tr><td>Letzter Abruf</td><td>${esc(rel(runs[runs.length - 1]))}</td></tr></tbody></table>
-      ${columns([gaps.map((g) => Math.round(g * 10) / 10)], last.slice(1).map((t) => dayKey(t)), ["#0058A3"])}<p class="muted" style="font-size:12px;margin:2px 0 0">Abstand zwischen den letzten Abrufen in Stunden.</p>`;
-  }
-  async function fillWorkerDiag() {
-    const box = $("#diag-worker"); if (!box) return;
-    const head = "<h3>Worker (Takt, Telegram-Bot, Merkliste)</h3>";
-    const manual = `<form id="wurl" class="row" style="margin-top:8px"><input class="inp" name="u" placeholder="https://zc-helper….workers.dev" value="${esc(lsGet(LS.workerUrl, "") || "")}"><button class="btn" type="submit">Verbinden</button></form>`;
-    const bindForm = () => $("#wurl", box)?.addEventListener("submit", (e) => { e.preventDefault(); lsSet(LS.workerUrl, new FormData(e.target).get("u").trim()); toast("Gespeichert – lade neu …"); setTimeout(() => location.reload(), 600); });
-    if (!worker.url) {
-      box.innerHTML = `${head}<p><span class="dot dot--bad"></span><b>Nicht verbunden.</b> Im GitHub-Repo fehlt das Secret <code>WORKER_URL</code>. Bis dahin: Adresse hier eintragen (gilt nur für diesen Browser).</p>${manual}`;
-      return bindForm();
-    }
-    let st;
-    try { st = await worker.call("GET", null, { path: "/api/status" }); }
-    catch (e) {
-      // Ohne Passwort abfragbar: welche Einstellungen kommen im Worker an?
-      const ping = await fetch(`${worker.url}/api/ping`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
-      const missing = ping?.config ? Object.entries(ping.config).filter(([, v]) => !v).map(([k]) => k) : null;
-      const why = !ping ? "Der Worker antwortet nicht (Adresse falsch oder noch alte Worker-Version ohne Diagnose)."
-        : missing.includes("ACCESS_PASSWORD") ? "Im Worker ist <b>ACCESS_PASSWORD nicht gesetzt</b> (oder als normale Variable statt als Secret angelegt und beim letzten Deploy verloren gegangen)."
-        : /401/.test(e.message) ? "ACCESS_PASSWORD ist gesetzt, stimmt aber nicht mit dem Passwort überein, mit dem du dich hier angemeldet hast."
-        : esc(e.message);
-      box.innerHTML = `${head}<p><span class="dot dot--bad"></span>${why}</p>
-        ${missing?.length ? `<p>Im Worker fehlen außerdem: <b>${missing.filter((k) => k !== "ACCESS_PASSWORD").map(esc).join(", ") || "nichts"}</b></p>` : ""}
-        <p class="muted" style="font-size:12.5px">Adresse: <code>${esc(worker.url)}</code>${ping ? ` · Worker-Version ${esc(String(ping.version))}` : ""}</p>${manual}`;
-      return bindForm();
-    }
-    const row = (label, x, okText) => `<tr><td>${label}</td><td>${!x ? `<span class="muted">noch nie</span>` : x.ok ? `<span class="dot"></span>${okText} · ${esc(rel(x.ts))}` : `<span class="dot dot--bad"></span><b>${esc(x.error || "Fehler")}</b> · ${esc(rel(x.ts))}`}</td></tr>`;
-    const missing = Object.entries(st.config || {}).filter(([, v]) => !v).map(([k]) => k);
-    box.innerHTML = `${head}
-      ${missing.length ? `<p><span class="dot dot--bad"></span>Im Worker fehlen: <b>${missing.map(esc).join(", ")}</b></p>` : `<p><span class="dot"></span>Alle Einstellungen im Worker vorhanden${S.repo.meta?.worker ? "" : " · <b>GitHub-Secret WORKER_URL fehlt noch</b> (Merkliste erreicht den Abruf sonst nicht)"}.</p>`}
-      <table class="tbl"><tbody>
-        ${row("Stündlicher Auslöser", st.scrape, "ausgelöst")}
-        ${row("Telegram-Nachricht empfangen", st.telegram, "angenommen")}
-        ${row("Telegram-Bot ausgelöst", st.bot, "ausgelöst")}
-        <tr><td>Merkliste</td><td>${S.server?.ok ? `<span class="dot"></span>zentral gespeichert (${S.rules.length} Suchen)` : `<span class="dot dot--bad"></span>nicht erreichbar`}</td></tr>
-      </tbody></table>
-      <p style="margin-top:10px"><button class="btn" id="run-now">Jetzt abrufen</button> <span class="muted" style="font-size:12.5px">startet einen Abruf (dauert ca. 3 Min.)</span></p>`;
-    $("#run-now", box).addEventListener("click", async (e) => {
-      e.target.disabled = true;
-      try { await worker.call("POST", {}, { path: "/api/run" }); toast("Abruf gestartet. In ca. 3 Minuten neu laden."); }
-      catch (err) { toast(`<b>Nicht gestartet:</b> ${esc(err.message)} – Details siehe „Stündlicher Auslöser“.`, 8000); fillWorkerDiag(); }
-    });
-  }
-  async function fillSentLog() {
-    const box = $("#diag-sent"); if (!box) return;
-    const state = await getBin("state.bin", S.repo.meta?.updated).catch(() => null);
-    const sent = (state?.sent || []).slice(-15).reverse();
-    const queued = state?.outbox?.length || 0;
-    box.classList.remove("muted");
-    box.innerHTML = (sent.length ? `<ul class="sentlog">${sent.map((m) => `<li><span class="muted mono">${esc(fmtDT(m.ts))}</span><div>${m.text.replace(/<(?!\/?(b|code|a)( href="[^"]*")?>)[^>]*>/g, "").replace(/\n/g, "<br>")}</div></li>`).join("")}</ul>`
-      : `<p class="muted">Seit Einführung des Protokolls noch nichts gemeldet. Gemeldet wird, wenn ein Angebot zu einer gemerkten Suche mit 🔔 neu erscheint, wieder auftaucht oder billiger wird.</p>`)
-      + (queued ? `<p class="muted">${queued} Nachricht(en) warten auf den nächsten Versand.</p>` : "");
-  }
-  async function renderDaten(query) {
-    const meta = S.repo.meta;
-    if (hasRepo() && !S.repo.runs) S.repo.runs = await getBin("runs.bin", meta.updated).catch(() => []);
-    const runs = (S.repo.runs || []).slice(-48).reverse();
-    const st = meta?.stores || S.local.stores || [];
-    const bmSrc = await getText("bookmarklet.src.js").catch(() => "");
-    const tracker = location.href.split("#")[0];
-    const bm = bmSrc ? "javascript:" + encodeURIComponent(bmSrc.replace("__TRACKER_URL__", tracker).replace(/\n\s*/g, "\n")) : "#";
-    const src = activeSource();
-    view.innerHTML = `
-      <div class="toolbar"><h2>Daten &amp; Methodik</h2>
-        <div class="toolbar__r"><label class="sr" for="src">Datenquelle</label>
-          <select id="src" class="inp" style="width:auto">
-            <option value="auto" ${S.source === "auto" ? "selected" : ""}>Quelle: automatisch</option>
-            <option value="repo" ${S.source === "repo" ? "selected" : ""} ${hasRepo() ? "" : "disabled"}>Nur GitHub-Abrufe</option>
-            <option value="local" ${S.source === "local" ? "selected" : ""} ${hasLocal() ? "" : "disabled"}>Nur lokale Importe</option>
-            <option value="both" ${S.source === "both" ? "selected" : ""} ${hasRepo() && hasLocal() ? "" : "disabled"}>Beide zusammen</option>
-          </select></div></div>
-      <div class="cols2" style="margin-top:16px">
-        <section class="box"><h3>Stand</h3>
-          <table class="tbl"><tbody>
-            <tr><td>Aktive Quelle</td><td>${({ repo: "GitHub-Abrufe", local: "Lokale Importe (dieser Browser)", both: "GitHub + lokal", none: "keine" })[src]}</td></tr>
-            <tr><td>Letzter GitHub-Abruf</td><td>${meta ? `${esc(fmtDT(meta.updated))} (${esc(rel(meta.updated))})` : "–"}</td></tr>
-            ${meta ? `<tr><td>Märkte ok</td><td>${meta.last_run.stores_ok} / ${meta.last_run.stores_total}</td></tr>
-            <tr><td>Letzter Lauf</td><td>${nf0.format(meta.last_run.new || 0)} neu · ${nf0.format(meta.last_run.gone || 0)} weg · ${nf0.format(meta.last_run.price_change || 0)} Preisänderungen · ${nf0.format(meta.hits_this_run || 0)} Merklisten-Treffer</td></tr>
-            <tr><td>Erfasst insgesamt</td><td>${nf0.format(meta.total_offers)} Angebote</td></tr>` : ""}
-            <tr><td>Letzter lokaler Import</td><td>${S.local.updated ? `${esc(fmtDT(S.local.updated))} · ${nf0.format(Object.keys(S.local.db).length)} Angebote` : "–"}</td></tr>
-          </tbody></table>
-          ${meta?.last_run?.errors ? `<p class="muted" style="font-size:13px"><b>Hinweise letzter Lauf:</b> ${esc(meta.last_run.errors)}</p>` : ""}
-        </section>
-        <section class="box"><h3>Export</h3>
-          <p class="muted" style="font-size:13.5px;margin:0 0 10px">Die Listen „Aktuell“ und „Archiv“ haben oben einen CSV-Export (gefilterte Ansicht).</p>
-          <p><button class="btn" id="logout">Auf diesem Gerät abmelden</button></p>
-          ${hasLocal() ? `<p style="margin-top:12px"><button class="btn" id="local-exp">Lokalen Bestand als CSV</button> <button class="btn" id="local-json">… als Backup-JSON</button></p>` : ""}
-        </section>
-      </div>
-
-      <div class="cols2" style="margin-top:28px">
-        <section class="box" id="diag-takt"><h3>Abruf-Takt</h3>${taktHtml()}</section>
-        <section class="box" id="diag-worker"><h3>Worker (Takt, Telegram-Bot, Merkliste)</h3><p class="muted">prüfe …</p></section>
-      </div>
-      <section class="box" id="diag-katalog" style="margin-top:28px"><h3>Katalog (alle Artikel Deutschland)</h3></section>
-      <div class="cols2" style="margin-top:28px">
-        <section class="box"><h3>Zuletzt per Telegram gemeldet</h3><div id="diag-sent" class="muted">lädt …</div></section>
-        <section class="box"><h3>Merkliste: frühere Stände</h3>
-          ${S.server?.ok ? `<details id="hist"><summary>Anzeigen</summary><div id="hist-list" class="muted" style="margin-top:8px">lädt …</div></details>` : `<p class="muted">Erst verfügbar, wenn der Worker verbunden ist.</p>`}</section>
-      </div>
-
-      <section class="box" style="margin-top:28px" id="import">
-        <h3>Selbst abrufen (Lesezeichen) – falls GitHub gesperrt ist oder du sofort aktuelle Daten willst</h3>
-        <ol class="prose" style="padding-left:20px">
-          <li>Den gelben Knopf in die Lesezeichenleiste ziehen: <a class="bm" href="${esc(bm)}" onclick="event.preventDefault();alert('Bitte in die Lesezeichenleiste ziehen und dann auf ikea.com anklicken.')">IKEA Zweite Chance holen</a></li>
-          <li>Eine beliebige Seite auf <a href="https://www.ikea.com/de/de/second-hand/buy-from-ikea/" target="_blank" rel="noopener">ikea.com/de</a> öffnen und das Lesezeichen anklicken. Dauer: ca. 1–3 Minuten für alle Märkte.</li>
-          <li>Die Daten landen automatisch hier im Monitor (gespeichert in diesem Browser) – sonst wird eine Datei heruntergeladen, die du unten einliest <b>oder im Repo in <code>inbox/</code> hochlädst</b>; dann übernimmt GitHub sie ins zentrale Archiv.</li>
-        </ol>
-        <div class="drop" id="drop" tabindex="0">Snapshot-Datei (.json) hierher ziehen oder <label class="linkbtn" style="cursor:pointer">auswählen<input type="file" id="file" accept=".json,application/json" hidden></label></div>
-        ${hasLocal() ? `<p style="margin-top:10px"><button class="btn" id="local-del" style="color:var(--rust)">Lokalen Bestand löschen</button></p>` : ""}
-      </section>
-
-      <section style="margin-top:28px"><div class="toolbar"><h2>Märkte <small>${st.length}</small></h2></div>
-        <div class="tblwrap"><table class="tbl"><thead><tr><th>Markt</th><th>ID</th><th class="n">aktiv</th><th>zuletzt ok</th><th>Fehler</th></tr></thead><tbody>
-          ${st.map((s) => `<tr><td><a href="#/aktuell?s=${esc(s.id)}">${esc(s.name)}</a> · <a href="${marktHref(s.id)}" class="muted">Statistik</a></td><td class="mono">${esc(s.id)}</td><td class="n">${s.active != null ? nf0.format(s.active) : "–"}</td><td>${esc(rel(s.last_ok))}</td><td class="muted" style="font-size:12.5px">${esc(s.last_error || "")}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Noch keine Märkte erfasst.</td></tr>`}
-        </tbody></table></div></section>
-
-      ${runs.length ? `<section style="margin-top:28px"><div class="toolbar"><h2>Abrufprotokoll <small>letzte ${runs.length}</small></h2></div><div class="tblwrap"><table class="tbl"><thead><tr><th>Zeit</th><th>Quelle</th><th class="n">Märkte ok</th><th class="n">aktiv</th><th class="n">neu</th><th class="n">weg</th><th class="n">wieder</th><th class="n">Preis</th><th class="n">Dauer</th></tr></thead><tbody>
-        ${runs.map((r) => `<tr><td>${esc(fmtDT(r.ts))}</td><td>${esc(r.source)}</td><td class="n">${esc(r.stores_ok)}/${esc(r.stores_total)}</td><td class="n">${esc(r.active)}</td><td class="n">${esc(r.new)}</td><td class="n">${esc(r.gone)}</td><td class="n">${esc(r.reappeared)}</td><td class="n">${esc(r.price_change)}</td><td class="n">${esc(r.duration_s)} s</td></tr>`).join("")}
-      </tbody></table></div></section>` : ""}
-
-      <section class="prose" style="margin-top:32px">
-        <h2>Methodik</h2>
-        <p><b>Quelle.</b> Die Daten stammen aus der Schnittstelle, die IKEAs eigene Zweite-Chance-Seite lädt (<code>web-api.ikea.com/circular/circular-asis</code>). Sie ist nicht dokumentiert und kann sich jederzeit ändern. Abgerufen wird stündlich, alle Märkte nacheinander mit Pausen.</p>
-        <p><b>Eindeutigkeit.</b> Jedes Einzelstück hat bei IKEA eine Angebots-UUID; sie ist der Schlüssel. Drei gleiche Regale im selben Markt sind drei Datensätze. Doppelte Einträge innerhalb einer Antwort werden verworfen.</p>
-        <p><b>Verschwinden.</b> Ein Angebot gilt erst als „weg“, wenn es in zwei aufeinanderfolgenden <i>erfolgreichen</i> Abrufen seines Markts fehlt. Fällt ein Markt aus oder liefert er unplausibel null Angebote, bleibt sein Bestand unverändert. Taucht ein Angebot wieder auf (etwa nach abgelaufener Reservierung), wird derselbe Datensatz reaktiviert.</p>
-        <p><b>Datum.</b> IKEA liefert kein Einstelldatum. Alle Zeitangaben sind Beobachtungen dieses Trackers; die Genauigkeit entspricht dem Abrufintervall (≈ 1 Stunde). Angebote, die schon vor dem ersten Abruf gelistet waren (Erst-Import), werden in Neu-Zahlen, Verweildauern und Datumsanzeigen ausgeblendet.</p>
-        <p><b>Aufbewahrung.</b> Nichts wird automatisch gelöscht: aktive und verschwundene Angebote, ihr Verlauf und das Abrufprotokoll bleiben dauerhaft gespeichert (Archiv nach Monaten). Alle Dateien liegen verschlüsselt auf dem Server und werden erst in diesem Browser entschlüsselt.</p>
-        <h3 style="margin-top:20px">Felder</h3>
-        <table class="tbl"><tbody>${DICT.map(([k, v]) => `<tr><td class="mono" style="white-space:nowrap">${k}</td><td>${v}</td></tr>`).join("")}</tbody></table>
-      </section>`;
-
-    bindHistory(view); fillWorkerDiag(); fillSentLog(); fillKatalogDiag();
-    $("#logout").addEventListener("click", () => { lsSet(LS.key, null); lsSet(LS.pw, null); location.reload(); });
-    $("#src").addEventListener("change", (e) => { S.source = e.target.value; lsSet(LS.source, S.source); updateBadges(); renderDaten(); });
-    const drop = $("#drop"), file = $("#file");
-    file.addEventListener("change", () => file.files[0] && importFile(file.files[0]));
-    drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
-    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
-    drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); const f = e.dataTransfer.files[0]; if (f) importFile(f); });
-    drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); file.click(); } });
-    $("#local-exp")?.addEventListener("click", () => download(`zweite-chance_lokal_${dayKey(Date.now())}.csv`, toCSV(Object.values(S.local.db), EXPORT_COLS)));
-    $("#local-json")?.addEventListener("click", () => download(`zweite-chance_lokal_${dayKey(Date.now())}.json`, JSON.stringify({ format: "zc-local-v1", ...S.local }), "application/json"));
-    $("#local-del")?.addEventListener("click", async () => { if (!confirm("Lokal gespeicherte Angebote in diesem Browser löschen? GitHub-Daten bleiben unberührt.")) return; S.local = { db: {}, events: [], runs: [], updated: null, stores: [] }; await saveLocal(); updateBadges(); renderDaten(); });
-    if (new URLSearchParams(query || "").get("import")) $("#import").scrollIntoView({ block: "start" });
-  }
-
-  /* ---------- Import (Lesezeichen / Datei) ---------- */
-  async function ingest(data) {
-    if (data?.format === "zc-local-v1") { S.local = { db: data.db || {}, events: data.events || [], runs: data.runs || [], updated: data.updated || null, stores: data.stores || [] }; await saveLocal(); toast("Lokales Backup wiederhergestellt."); }
-    else {
-      const before = new Set(Object.keys(S.local.db));
-      const run = ZC.ingestSnapshot(S.local, data);
-      await saveLocal();
-      const fresh = before.size ? Object.values(S.local.db).filter((o) => !before.has(o.id)) : [];
-      const hits = fresh.filter((o) => hitRules(o).length);
-      toast(`<b>Import ok:</b> ${run.stores_ok}/${run.stores_total} Märkte, ${nf0.format(run.offers_seen)} Angebote · ${nf0.format(run.new || 0)} neu · ${nf0.format(run.gone || 0)} weg${hits.length ? ` · <b>${hits.length} Merklisten-Treffer</b>` : ""}`, 8000);
-      if (hits.length) notifyHits(hits);
-      if (run.errors) console.warn("Import-Hinweise:", run.errors);
-    }
-    updateBadges(); route();
-  }
-  async function importFile(f) {
-    try { await ingest(JSON.parse(await f.text())); } catch (e) { toast(`<b>Import fehlgeschlagen:</b> ${esc(e.message || e)}`, 8000); }
-  }
-  window.addEventListener("message", async (ev) => {
-    let host = ""; try { host = new URL(ev.origin).hostname; } catch { return; }
-    if (!/(^|\.)ikea\.com$/.test(host)) return;
-    if (ev.data === "zc-hello") { ev.source?.postMessage("zc-ready", ev.origin); return; }
-    if (ev.data?.type === "zc-snapshot") {
-      try { await ingest(ev.data.snapshot); ev.source?.postMessage("zc-imported", ev.origin); }
-      catch (e) { toast(`<b>Import fehlgeschlagen:</b> ${esc(e.message || e)}`, 8000); }
-    }
+    if (d.notify) { const r = S.rules.find((x) => x.id === d.notify); if (!r) { toast("Dieser Eintrag stammt aus der Sicherung und ist erst mit verbundenem Hilfsdienst änderbar."); return; } const onNow = r.notify !== false && r.enabled !== false; r.notify = !onNow; r.enabled = true; await persistRules(); memo.clear(); return rerender(); }
+    if (d.delrule) { const r = S.rules.find((x) => x.id === d.delrule); if (!r || !confirmTwice(`„${isFavRule(r) ? r.name : ruleText(r)}“ entfernen?`)) return; S.rules = S.rules.filter((x) => x.id !== r.id); await persistRules(true); memo.clear(); toast("Entfernt. Früherer Stand bleibt wiederherstellbar."); return rerender(); }
+    if (d.restore) { if (!confirmTwice("Diesen früheren Stand der Merkliste wiederherstellen?")) return; try { const snap = await worker.call("GET", null, { path: `/api/history?id=${encodeURIComponent(d.restore)}` }); S.rules = ZC.dedupeRules(snap.rules || []).map(withId); S.hist = null; await persistRules(true); memo.clear(); toast("Früherer Stand wiederhergestellt."); rerender(); } catch (err) { toast(`Nicht möglich: ${esc(err.message)}`); } return; }
+    if (d.logout !== undefined) { lsSet(LS.key, null); lsSet(LS.pw, null); location.reload(); }
   });
-  if (window.opener) try { window.opener.postMessage("zc-ready", "*"); } catch { /* ohne Opener */ }
+  document.addEventListener("change", (e) => {
+    const t = e.target, d = t.dataset, tab = tabKey();
+    if (d.k) { const def = DEF[tab].find((x) => x.k === d.k); if (def.t === "multi") { const cur = S.f[tab][d.k] || []; setF(tab, d.k, t.checked ? [...cur, d.v] : cur.filter((x) => x !== d.v)); } else { setF(tab, d.k, d.v); S.open = null; } return rerender(); }
+    if (d.mine) { setF(tab, d.mine, t.checked ? [...MINE()] : []); return rerender(); }
+    if (d.tg) { setF(tab, d.tg, t.checked); S.open = null; return rerender(); }
+    if (d.range) { const cur = S.f[tab][d.range] || {}; setF(tab, d.range, { ...cur, [d.side]: t.value }); return rerender(); }
+    if (d.cmp !== undefined) { S.cmp = t.value; return rerender(); }
+    if (d.minepick) { const m = MINE(); lsSet(LS.mine, t.checked ? [...new Set([...m, d.minepick])] : m.filter((x) => x !== d.minepick)); memo.clear(); return rerender(); }
+  });
+  document.addEventListener("submit", (e) => { if (e.target.id === "wurl") { e.preventDefault(); lsSet(LS.workerUrl, new FormData(e.target).get("u").trim()); toast("Gespeichert, lade neu …"); setTimeout(() => location.reload(), 600); } });
+  let qt;
+  document.addEventListener("input", (e) => {
+    const d = e.target.dataset, id = e.target.id;
+    const refocus = () => { const i = document.getElementById(id); if (i) { i.focus(); i.setSelectionRange?.(i.value.length, i.value.length); } };
+    if (d.sq) { S.sq[d.sq] = e.target.value; clearTimeout(qt); qt = setTimeout(async () => { keepScroll = true; await render(); refocus(); }, 150); return; }
+    if (d.q) { clearTimeout(qt); const v = e.target.value; qt = setTimeout(async () => { setF(d.q, "q", v); keepScroll = true; await render(); refocus(); }, 300); }
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.dataset?.range) { e.preventDefault(); const tb = tabKey(), dd = e.target.dataset, cur = S.f[tb][dd.range] || {}; setF(tb, dd.range, { ...cur, [dd.side]: e.target.value }); S.open = null; rerender(); return; } if (e.key === "Escape" && S.open) { S.open = null; rerender(); } if (e.key === "Enter" && e.target.matches?.("tr[data-go],div[data-go]")) e.target.click(); });
+  window.addEventListener("hashchange", () => { S.open = null; render(); });
 
-  /* ---------- Hinweise ---------- */
-  function notifyHits(hits) {
-    if (!lsGet(LS.notify, false) || !("Notification" in window) || Notification.permission !== "granted") return;
-    const n = new Notification(hits.length === 1 ? `Merkliste: ${hits[0].title}` : `${hits.length} neue Merklisten-Treffer`, {
-      body: hits.slice(0, 3).map((o) => `${o.title} · ${eur(o.price)} · ${o.store}`).join("\n"), tag: "zc-hits",
-    });
-    n.onclick = () => { window.focus(); location.hash = "#/aktuell?hit=1&neu=1"; };
-  }
-  function markHitsSeen() { lsSet(LS.seenHits, allOffers(false).filter((o) => hitRules(o).length).map((o) => o.id)); }
-  function checkNewHits() {
-    const seen = new Set(lsGet(LS.seenHits, []));
-    const hits = allOffers(false).filter((o) => o.status === "active" && hitRules(o).length);
-    const fresh = hits.filter((o) => !seen.has(o.id));
-    if (fresh.length && seen.size) { notifyHits(fresh); toast(`<b>${fresh.length} neue Merklisten-Treffer</b> – <a style="color:#FFDB00" href="#/aktuell?hit=1">ansehen</a>`, 9000); }
-    lsSet(LS.seenHits, hits.map((o) => o.id));
-  }
-  function updateBadges() {
-    const act = allOffers(false).filter((o) => o.status === "active");
-    $("#n-aktuell").textContent = act.length ? nf0.format(act.length) : "";
-    const h = act.filter((o) => hitRules(o).length).length;
-    $("#n-hits").textContent = h ? nf0.format(h) : "";
-    const up = updatedAt(), meta = S.repo.meta;
-    if (!up) { $("#status").textContent = "Noch keine Daten"; return; }
-    const age = (Date.now() - new Date(up)) / 36e5;
-    const okRatio = meta ? meta.last_run.stores_ok / Math.max(1, meta.last_run.stores_total) : 1;
-    const cls = age > 6 || okRatio < 0.5 ? "dot--bad" : age > 2.5 || okRatio < 0.95 ? "dot--warn" : "";
-    $("#status").innerHTML = `<span class="dot ${cls}"></span>Stand <b>${esc(rel(up))}</b>${meta ? ` · ${meta.last_run.stores_ok}/${meta.last_run.stores_total} Märkte` : ""} · ${nf0.format(act.length)} aktiv`;
-  }
-
-  /* ---------- Einrichtung (noch keine Daten) ---------- */
-  function renderOnboarding() {
-    view.innerHTML = `<div class="prose" style="margin:20px auto 0">
-      <h2 style="font-size:30px">Noch keine Daten</h2>
-      <p>Sobald der erste Abruf durch ist, erscheinen hier die Angebote. Der erste Lauf dauert einige Minuten; danach diese Seite neu laden.</p>
-      <p><a class="btn btn--primary" href="#/daten?import=1">Selbst abrufen per Lesezeichen →</a></p></div>`;
-  }
-
-  /* ---------- Router & Start ---------- */
-  function route() {
-    document.body.classList.remove("filters-open");
-    const h = location.hash.replace(/^#\/?/, "") || "aktuell";
-    const [name, query] = h.split("?");
-    if (name === "merkliste") { const rg = new URLSearchParams(query || "").get("regel"); location.replace(`#/aktuell?m=${rg !== null && savedSearches()[rg] ? savedSearches()[rg].r.id : "all"}`); return; }
-    const tab0 = name === "produkt" || name === "katalogstat" ? "statistik" : name === "markt" ? "maerkte" : name === "artikel" ? "katalog" : ["aktuell", "archiv", "maerkte", "katalog", "sortiment", "statistik", "daten"].includes(name) ? name : "aktuell";
-    const tab = tab0 === "aktuell" && /(^|&)m=/.test(query || "") ? "gemerkt" : tab0;
-    $$(".tabs a").forEach((a) => a.dataset.tab === tab ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current"));
-    S.shown = 120;
-    const r = { aktuell: () => renderList("aktuell", query), gemerkt: () => renderList("aktuell", query), archiv: () => renderList("archiv", query), maerkte: () => (name === "markt" ? renderMarkt(query) : renderMaerkte()), katalog: () => (name === "artikel" ? renderArtikel(query) : renderKatalog(query)), sortiment: () => renderSortiment(query), statistik: () => (name === "produkt" ? renderProdukt(query) : name === "katalogstat" ? renderKatalogStat() : renderStatistik(query)), daten: () => renderDaten(query) }[tab];
-    Promise.resolve(r()).catch((e) => { console.error(e); view.innerHTML = `<div class="empty"><h3>Fehler beim Anzeigen</h3><p>${esc(e.message || e)}</p></div>`; });
-  }
-  window.addEventListener("hashchange", () => { if ($("#detail").open) $("#detail").close(); route(); });
-  view.addEventListener("click", (e) => { const el = e.target.closest("[data-id]"); if (el && !e.target.closest("a")) openDetail(el.dataset.id); });
-  view.addEventListener("keydown", (e) => { const el = e.target.closest?.("[data-id]"); if (el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openDetail(el.dataset.id); } });
-  $("#detail").addEventListener("click", (e) => { if (e.target === $("#detail")) $("#detail").close(); });
-
-  function rememberVisit() { lsSet(LS.lastVisit, new Date().toISOString()); }
-  async function refresh() {
-    const prev = S.repo.meta?.updated;
-    await loadRepo().catch((e) => { if (e instanceof AuthError) { lsSet(LS.key, null); location.reload(); } });
-    if (S.repo.meta?.updated && S.repo.meta.updated !== prev) {
-      S.repo.archive = {}; S.repo.runs = null; S.kat = null; S.rng = undefined; S.facets = undefined; S.details = undefined; resetRules();
-      updateBadges(); checkNewHits();
-      if (prev) { toast(`Neue Daten (${esc(fmtDT(S.repo.meta.updated))}).`); if (!$("#detail").open && !document.activeElement?.closest?.("form")) route(); }
-    } else updateBadges();
-  }
+  /* ================= Start ================= */
   function loginForm(message) {
     return new Promise((resolve) => {
-      const box = $("#login"); box.hidden = false;
+      const box = $("#login"); box.hidden = false; $("#app").hidden = true;
       const form = $("#login-form"), msg = $("#login-msg"), pw = $("#login-pw");
       msg.textContent = message || ""; pw.focus();
       form.onsubmit = async (e) => {
         e.preventDefault(); msg.textContent = "Prüfe …"; form.querySelector("button").disabled = true;
         try {
-          const b64 = await ZC.deriveKeyB64(pw.value);
-          AUTH.key = await ZC.importKey(b64); AUTH.pw = pw.value;
-          await loadRepo();
-          lsSet(LS.key, b64); lsSet(LS.pw, pw.value);
-          box.hidden = true; resolve();
-        } catch (err) {
-          msg.textContent = err instanceof AuthError ? "Passwort stimmt nicht." : `Fehler: ${err.message || err}`;
-          form.querySelector("button").disabled = false; pw.select();
-        }
+          const b64 = await ZC.deriveKeyB64(pw.value); AUTH.key = await ZC.importKey(b64); AUTH.pw = pw.value;
+          await loadRepo(); lsSet(LS.key, b64); lsSet(LS.pw, pw.value);
+          box.hidden = true; $("#app").hidden = false; resolve();
+        } catch (err) { msg.textContent = err instanceof AuthError ? "Passwort stimmt nicht." : `Fehler: ${err.message || err}`; form.querySelector("button").disabled = false; pw.select(); }
       };
     });
   }
   async function unlock() {
     const k = lsGet(LS.key, null);
-    if (k) {
-      try { AUTH.key = await ZC.importKey(k); AUTH.pw = lsGet(LS.pw, null); await loadRepo(); return; }
-      catch (e) { if (!(e instanceof AuthError)) throw e; lsSet(LS.key, null); }
-    }
+    if (k) { try { AUTH.key = await ZC.importKey(k); AUTH.pw = lsGet(LS.pw, null); await loadRepo(); return; } catch (e) { if (!(e instanceof AuthError)) throw e; lsSet(LS.key, null); } }
     await loginForm();
   }
+  async function refresh() {
+    const m = await getBin("meta.bin").catch(() => null);
+    if (!m || m.updated === S.repo.meta?.updated) return;
+    await loadRepo().catch(() => {});
+    { S.kat = null; S.rng = undefined; S.facets = undefined; S.details = undefined; S.state = undefined; S.repo.runs = null; memo.clear(); await loadKatalog(); toast("Neue Daten geladen."); rerender(); }
+  }
   async function init() {
-    S.prevVisit = lsGet(LS.lastVisit, null);
-    await Promise.all([unlock(), loadLocal()]);
+    await unlock();
     document.body.classList.remove("locked");
-    document.title = "Zweite Chance";
-    view.innerHTML = '<div class="skeleton"></div>'.repeat(2);
-    updateBadges(); route(); checkNewHits();
-    setTimeout(rememberVisit, 60000);
-    document.addEventListener("visibilitychange", () => { if (document.hidden) rememberVisit(); else refresh(); });
+    render();
+    setTimeout(() => lsSet(LS.lastVisit, new Date().toISOString()), 60000);
+    document.addEventListener("visibilitychange", () => { if (document.hidden) lsSet(LS.lastVisit, new Date().toISOString()); else refresh(); });
     setInterval(refresh, 10 * 60 * 1000);
   }
-  window.ZCApp = { openDetail, route, state: S };   // fuer Konsole/Debugging
-  init();
+  window.ZCApp = { state: S, render };
+  init().catch((e) => { $("#app").innerHTML = `<div class="err wx"><b>Start fehlgeschlagen:</b> ${esc(e.message || e)}</div>`; });
 })();
