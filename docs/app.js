@@ -43,6 +43,8 @@
   }
   const getBin = (n, v) => openFile(`d/${n}`, v), getK = (n, v) => openFile(`k/${n}`, v);
   const soft = (p) => p.catch((e) => { if (e instanceof AuthError) throw e; return null; });
+  // wie soft, aber unterscheidet "Datei gibt es nicht" (404 -> null) von Netzfehlern (-> undefined, später erneut versuchen)
+  const tryLoad = (p) => p.catch((e) => { if (e instanceof AuthError) throw e; return /^404 /.test(e.message) ? null : undefined; });
 
   const S = {
     repo: { meta: null, current: [], archive: null, watch: [], runs: null },
@@ -109,9 +111,11 @@
     return out;
   }
   async function loadKatalog() {
-    if (S.kat) return S.kat;
-    const meta = await soft(getK("meta.bin"));
-    const items = meta ? unpackK(await soft(getK("items.bin", meta.items_version))) : [];
+    if (S.kat && !S.kat.failed) return S.kat;
+    const meta = await tryLoad(getK("meta.bin")), raw = meta ? await tryLoad(getK("items.bin", meta.items_version)) : null;
+    if (meta === undefined || (meta && raw === undefined)) { S.katErr = true; return { meta: null, items: [], byId: new Map(), byNo: new Map(), failed: true }; }
+    S.katErr = false;
+    const items = unpackK(raw);
     const first = items.reduce((m, o) => (o.first_seen && o.first_seen < m ? o.first_seen : m), "9999");
     const firstN = items.filter((o) => o.first_seen === first).length;
     for (const o of items) {
@@ -129,7 +133,8 @@
   const bitAt = (arr, i) => (arr[i >> 3] >> (i & 7)) & 1;
   async function loadRange() {
     if (S.rng !== undefined) return S.rng;
-    const d = await soft(getK("range.bin"));
+    const d = await tryLoad(getK("range.bin"));
+    if (d === undefined) return null;
     if (!d) return (S.rng = null);
     const N = d.ids.length, st = d.stores.filter((s) => d.range[s.id]).map((s) => ({ ...s, r: b64bits(d.range[s.id]), k: b64bits((d.stock || {})[s.id]), n: Math.min(s.n || 0, N) }));
     const cnt = new Uint16Array(N), known = new Uint16Array(N);
@@ -141,7 +146,8 @@
   const carries = (o, sid) => { const R = S.rng, s = R?.byId[sid]; if (!s || o.ri == null || o.ri >= s.n) return null; return bitAt(s.r, o.ri) === 1; };
   async function loadFacets() {
     if (S.facets !== undefined) return S.facets;
-    const d = await soft(getK("facets.bin"));
+    const d = await tryLoad(getK("facets.bin"));
+    if (d === undefined) return null;
     if (!d) return (S.facets = null);
     const by = new Map(), matBy = new Map(), ppl = new Map(), pc = new Map(), pr_ = new Map();
     for (const [n, ids] of Object.entries(d.designer || {})) for (const id of ids) by.set(id, n);
@@ -153,7 +159,8 @@
   }
   async function loadDetails() {
     if (S.details !== undefined) return S.details;
-    const d = await soft(getK("details.bin"));
+    const d = await tryLoad(getK("details.bin"));
+    if (d === undefined) return null;
     if (!d) return (S.details = null);
     const T = d.s, ix = Object.fromEntries(d.f.map((f, i) => [f, i])), m = new Map();
     for (const row of d.r) m.set(row[0], Object.fromEntries(d.f.slice(1).map((f) => [f, T[row[ix[f]]]])));
@@ -242,7 +249,7 @@
       { k: "preis", l: "Preis", base: 1, pre: "für", any: "jeden Preis", t: "range", get: (o) => o.price },
       { k: "zust", g: "Was", l: "Zustand", pre: "im Zustand", t: "multi", get: (o) => [o.condition || "ohne Angabe"] },
       { k: "grund", g: "Was", l: "Grund", pre: "mit Grund", t: "multi", get: (o) => [o.reason_discount || "ohne Angabe"], search: true },
-      { k: "regulaer", g: "Was", l: "Noch im Sortiment?", t: "single", opts: [["ja", "noch im Sortiment"], ["nein", "nicht mehr im Sortiment"]], test: (o, v) => (v === "ja") === !!(o.art && !o.art.gone) },
+      { k: "regulaer", g: "Was", l: "Im Sortiment?", t: "single", opts: [["ja", "die regulär im Sortiment sind"], ["weg", "die aus dem Sortiment ausgelistet sind"], ["unbekannt", "ohne Treffer in den Sortimentsdaten"]], test: (o, v) => (v === "ja" ? !!(o.art && !o.art.gone) : v === "weg" ? !!o.art?.gone : !o.art) },
       { k: "gemerkt", g: "Was", l: "Nur gemerkte Artikel", t: "toggle", txt: "nur gemerkte Artikel", test: (o) => FAVS().has(o.no) },
       { k: "rabatt", g: "Preis", l: "Rabatt", pre: "mit", t: "single", opts: [["30", "mind. 30 % Rabatt"], ["40", "mind. 40 % Rabatt"], ["50", "mind. 50 % Rabatt"]], test: (o, v) => (o.disc ?? 0) >= +v },
       { k: "seit", g: "Zeit", l: "Eingestellt", pre: "eingestellt", t: "single", opts: [["1", "heute"], ["3", "in den letzten 3 Tagen"], ["7", "in den letzten 7 Tagen"], ["30", "in den letzten 30 Tagen"]], test: (o, v) => !o.base && o.age < +v },
@@ -374,10 +381,11 @@
   const img = (src, alt = "") => (src ? `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" decoding="async">` : "");
   const fundHint = (a) => { const n = fundNow().get(a.no); return n ? `<span class="fh"><b>${n.length} ${n.length === 1 ? "Angebot" : "Angebote"}</b> ab ${eur(Math.min(...n.map((o) => o.price)))}</span>` : ""; };
   const mineB = (o) => (isMine(o.mid) ? `<b>${esc(o.market)}</b>` : esc(o.market));
-  const offerName = (o) => `${nv(o)}${esc(o.art ? o.art.name : o.title)} <span style="font-weight:400">${esc(o.art ? o.art.kind : o.product_description || "")}</span>`;
+  const shortKind = (o) => (o.art ? o.art.kind : String(o.product_description || "").split(",")[0].slice(0, 48));
+  const offerName = (o) => `${nv(o)}${esc(o.art ? o.art.name : o.title)} <span style="font-weight:400">${esc(shortKind(o))}</span>`;
   function rowsFund(list, sortable = true) {
     const th = (k, l, c = "") => (sortable ? `<th class="${c}" data-sortby="${k}" ${S.sort.fund === k ? 'aria-sort="descending"' : ""}>${l}</th>` : `<th class="${c}">${l}</th>`);
-    return `<div class="tw"><table><thead><tr><th></th>${th("markt", "Artikel und Markt")}<th class="hide">Zustand</th>${th("neu", "eingestellt", "hide")}${th("preis", "Preis", "r")}${th("rabatt", "Rabatt", "r")}<th></th></tr></thead><tbody>${list.map((o) => `<tr data-go="#/angebot?id=${encodeURIComponent(o.id)}"><td class="im">${img(o.thumb)}</td><td><div class="nm">${offerName(o)}</div><div class="loc">${mineB(o)}<span class="only-m"> · ${esc(o.condition || "")}</span></div><div class="kd">${o.art ? esc(ausOf(o.art)) : esc(o.offer_description || "").slice(0, 80)}${!o.art ? " · <span class='up'>nicht im Sortiment</span>" : o.art.gone ? " · <span class='up'>ausgelistet</span>" : ""}</div></td><td class="hide">${esc(o.condition || "–")}<div class="kd">${esc(o.reason_discount || "")}</div></td><td class="hide tn">${o.base ? "seit Beginn" : o.active ? ago(o.age) : `${fS(o.start)}–${fS(o.end)}<div class="kd">${daysBetween(o.start, o.end)} Tage da</div>`}</td><td class="r">${pr(o.price)}<div class="kd"><s>${eur(o.orig)}</s></div></td><td class="r tn dn">${o.disc != null ? `−${o.disc} %` : ""}</td><td>${favBtn(o.no, o.art ? o.art.name : o.title)}</td></tr>`).join("")}</tbody></table></div>`;
+    return `<div class="tw"><table><thead><tr><th></th>${th("markt", "Artikel und Markt")}<th class="hide">Zustand</th>${th("neu", "eingestellt", "hide")}${th("preis", "Preis", "r")}${th("rabatt", "Rabatt", "r")}<th></th></tr></thead><tbody>${list.map((o) => `<tr data-go="#/angebot?id=${encodeURIComponent(o.id)}"><td class="im">${img(o.thumb)}</td><td><div class="nm">${offerName(o)}</div><div class="loc">${mineB(o)}<span class="only-m"> · ${esc(o.condition || "")}</span></div>${o.art ? `<div class="kd">${esc(ausOf(o.art))}${o.art.gone ? " · <span class='up'>ausgelistet</span>" : ""}</div>` : ""}</td><td class="hide">${esc(o.condition || "–")}<div class="kd">${esc(o.reason_discount || "")}</div></td><td class="hide tn">${o.base ? "seit Beginn" : o.active ? ago(o.age) : `${fS(o.start)}–${fS(o.end)}<div class="kd">${daysBetween(o.start, o.end)} Tage da</div>`}</td><td class="r">${pr(o.price)}<div class="kd"><s>${eur(o.orig)}</s></div></td><td class="r tn dn">${o.disc != null ? `−${o.disc} %` : ""}</td><td>${favBtn(o.no, o.art ? o.art.name : o.title)}</td></tr>`).join("")}</tbody></table></div>`;
   }
   function rowsSort(list, grp = "aus", sortable = true) {
     const th = (k, l, c = "") => (sortable ? `<th class="${c}" data-sortby="${k}" ${S.sort.sort === k ? 'aria-sort="descending"' : ""}>${l}</th>` : `<th class="${c}">${l}</th>`);
@@ -392,7 +400,7 @@
   }
   const mini = (list) => `<div class="tw"><table><tbody>${list.map((a) => `<tr data-go="#/artikel?id=${encodeURIComponent(a.id)}"><td class="im">${img(a.thumb)}</td><td><div class="nm">${esc(a.name)} <span style="font-weight:400">${esc(a.kind)}</span></div><div class="kd">${esc(ausOf(a))}${a.nMk != null ? ` · in ${a.nMk} Märkten` : ""}</div></td><td class="r">${pr(a.price)}</td></tr>`).join("")}</tbody></table></div>`;
   function tiles(list, fund) {
-    return `<div class="imgs">${list.map((o) => { const a = fund ? o.art : o, c = a ? lastChg(a) : null; return `<div data-go="${fund ? `#/angebot?id=${encodeURIComponent(o.id)}` : `#/artikel?id=${encodeURIComponent(o.id)}`}">${favBtn(o.no, a ? a.name : o.title)}${img(fund ? o.thumb : o.thumb)}<div class="n">${fund ? nv(o) : ""}${esc(a ? a.name : o.title)}</div><div class="k">${esc(a ? a.kind : o.product_description || "")}<br>${esc(a ? ausOf(a) : "")}</div>
+    return `<div class="imgs">${list.map((o) => { const a = fund ? o.art : o, c = a ? lastChg(a) : null; return `<div data-go="${fund ? `#/angebot?id=${encodeURIComponent(o.id)}` : `#/artikel?id=${encodeURIComponent(o.id)}`}">${favBtn(o.no, a ? a.name : o.title)}${img(fund ? o.thumb : o.thumb)}<div class="n">${fund ? nv(o) : ""}${esc(a ? a.name : o.title)}</div><div class="k">${esc(fund ? shortKind(o) : a.kind)}${a ? `<br>${esc(ausOf(a))}` : ""}</div>
       <div class="p">${pr(o.price)}${fund ? `<s class="kd">${eur(o.orig)}</s>${o.disc != null ? `<span class="dn tn">−${o.disc} %</span>` : ""}` : a.prev ? `<s class="kd">${eur(a.prev)}</s>` : c && c.d >= dIso(30) ? `<span class="tn ${c.to < c.from ? "dn" : "up"}">${c.to < c.from ? "−" : "+"}${Math.abs(Math.round((c.to / c.from - 1) * 100))} %</span>` : ""}</div>
       <div class="f">${fund ? `<span class="loc">${mineB(o)}</span> · ${esc(o.condition || "")} · ${o.active ? (o.base ? "seit Beginn" : ago(o.age)) : "weg"}` : `${o.nMk != null ? `${o.nMk} Märkte` : ""}${fundNow().has(o.no) ? `${o.nMk != null ? " · " : ""}<b>${fundNow().get(o.no).length} in der Fundgrube</b>` : ""}`}</div></div>`; }).join("")}</div>`;
   }
@@ -429,8 +437,9 @@
   }
   const SORTS = {
     fund: { neu: (a, b) => (b.base ? "" : b.first_seen || "").localeCompare(a.base ? "" : a.first_seen || ""), preis: (a, b) => a.price - b.price, rabatt: (a, b) => (b.disc ?? -1) - (a.disc ?? -1), markt: (a, b) => (isMine(b.mid) - isMine(a.mid)) || a.market.localeCompare(b.market, "de") },
-    sort: { chg: (a, b) => (lastChg(b)?.d || day(b.first) || "").localeCompare(lastChg(a)?.d || day(a.first) || ""), preis: (a, b) => a.price - b.price, verb: (a, b) => (a.nMk ?? 999) - (b.nMk ?? 999), bew: (a, b) => b.rating - a.rating || b.rcount - a.rcount, name: (a, b) => a.name.localeCompare(b.name, "de") || a.kind.localeCompare(b.kind, "de") },
+    sort: { chg: (a, b) => (lastChg(b)?.d || day(b.first) || "").localeCompare(lastChg(a)?.d || day(a.first) || ""), preis: (a, b) => a.price - b.price, teuer: (a, b) => b.price - a.price, neu: (a, b) => (day(b.first) || "").localeCompare(day(a.first) || ""), verb: (a, b) => (a.nMk ?? 999) - (b.nMk ?? 999), bew: (a, b) => b.rating - a.rating || b.rcount - a.rcount, name: (a, b) => a.name.localeCompare(b.name, "de") || a.kind.localeCompare(b.kind, "de") },
   };
+  const SORT_L = { fund: [["neu", "neueste zuerst"], ["preis", "günstigste zuerst"], ["rabatt", "höchster Rabatt zuerst"], ["markt", "nach Markt, meine zuerst"]], sort: [["chg", "letzte Änderung zuerst"], ["preis", "günstigste zuerst"], ["teuer", "teuerste zuerst"], ["neu", "neueste zuerst"], ["verb", "seltenste zuerst"], ["bew", "beste Bewertung zuerst"], ["name", "Name A–Z"]] };
   function pageList(tab) {
     const f = S.f[tab], list = apply(tab, f).sort(SORTS[tab][S.sort[tab]] || SORTS[tab][Object.keys(SORTS[tab])[0]]);
     const title = tab === "fund" ? "Fundgrube" : "Sortiment", cnt = `${nf(list.length)} ${tab === "fund" ? "Angebote" : "Artikel"}`;
@@ -441,7 +450,7 @@
     const part = list.slice(0, S.shown);
     const body = !list.length ? `<div class="empty">Kein ${tab === "fund" ? "Angebot" : "Artikel"} passt zu diesem Satz. Entferne eine Angabe.</div>` : S.view[tab] === "kacheln" ? tiles(part, tab === "fund") : tab === "fund" ? rowsFund(part) : rowsSort(part, S.grp);
     return `<h1>${title}<small class="tn">${cnt}</small></h1><div class="lay">${innerWidth >= 1000 ? sideFilters(tab, f) : ""}<div style="min-width:0">${filterSentence(tab, f)}
-      <div class="bar"><div class="l"><input type="search" id="q-${tab}" data-q="${tab}" placeholder="Name oder Artikelnummer" value="${esc(f.q || "")}" aria-label="Suchen">${isCustom ? `<button class="lnk" data-clear>zurücksetzen</button>` : ""}${tab === "fund" && isCustom ? `<button class="lnk" data-savesearch>Diese Suche merken</button>` : ""}<button class="lnk" data-export="${tab}">als CSV</button></div><div class="seg">${viewSeg}</div></div>
+      <div class="bar"><div class="l"><input type="search" id="q-${tab}" data-q="${tab}" placeholder="Name oder Artikelnummer" value="${esc(f.q || "")}" aria-label="Suchen">${isCustom ? `<button class="lnk" data-clear>zurücksetzen</button>` : ""}${tab === "fund" && isCustom ? `<button class="lnk" data-savesearch>Diese Suche merken</button>` : ""}<select class="srt" id="srt-${tab}" data-srt="${tab}" aria-label="Sortierung">${SORT_L[tab].map(([k, l]) => `<option value="${k}" ${S.sort[tab] === k ? "selected" : ""}>${l}</option>`).join("")}</select><button class="lnk" data-export="${tab}">als CSV</button></div><div class="seg">${viewSeg}</div></div>
       ${g ? `<div class="gp"><b>Was ist ein guter Preis?</b> ${g.full ? "Seit Beginn der Erfassung" : "Unter den aktuellen Angeboten"} passten ${nf(g.n)} Angebote zu dieser Suche. Das günstigste Viertel lag unter <b>${eur(g.q1)}</b>, das günstigste bei ${eur(g.lo)}.${g.dw != null ? ` Ein Angebot war meist nach ${g.dw} Tagen weg.` : ""}</div>` : ""}
       ${body}${moreBtn(list.length)}</div></div>`;
   }
@@ -484,7 +493,7 @@
     const a = S.kat.byNo.get(no), all = (fundAll().get(no) || []).slice().sort((x, y) => (x.active === y.active ? (y.first_seen || "").localeCompare(x.first_seen || "") : y.active - x.active)), ref = all[0];
     if (!ref && !a) return `<button class="back" data-back>← zurück</button><h1>Nichts gefunden</h1><p class="kd">Zur Artikelnummer ${fNo(no)} gibt es weder einen Sortimentseintrag noch ein Fundgrube-Angebot.</p>`;
     const nm = a ? a.name : ref.title, kd = a ? a.kind : ref.product_description;
-    return `<button class="back" data-back>← zurück</button><div class="top2"><div class="big">${img(a ? `${K_IMG}${a.img}?f=s` : ref?.image ? `${ref.image}?f=s` : "")}</div><div><div class="crumb">${a ? "Sortiment" : "nicht im Sortiment"} · Art. ${fNo(no)}</div><h1>${esc(nm)} ${favBtn(no, nm)}</h1><div class="kd2">${esc(kd || "")}</div>
+    return `<button class="back" data-back>← zurück</button><div class="top2"><div class="big">${img(a ? `${K_IMG}${a.img}?f=s` : ref?.image ? `${ref.image}?f=s` : "")}</div><div><div class="crumb">${a ? "Sortiment" : "in den Sortimentsdaten noch nicht erfasst"} · Art. ${fNo(no)}</div><h1>${esc(nm)} ${favBtn(no, nm)}</h1><div class="kd2">${esc(kd || "")}</div>
       ${coreFacts(a, "")}<dl class="kv"><dt>Fundgrube</dt><dd>${all.filter((o) => o.active).length} aktuell · ${all.length} insgesamt${S.repo.archive ? "" : " (Archiv lädt)"}</dd>${all.length ? `<dt>Preise</dt><dd>${eur(Math.min(...all.map((o) => o.price)))} bis ${eur(Math.max(...all.map((o) => o.price)))}</dd><dt>Märkte</dt><dd>${new Set(all.map((o) => o.mid)).size}</dd>` : ""}</dl>${a ? `<div class="btns"><button class="btn pri" data-go="#/artikel?id=${encodeURIComponent(a.id)}">Artikel im Sortiment</button></div>` : ""}</div></div>
       <div class="sec"><div class="h"><h2>Alle Angebote dieses Artikels</h2></div>${timeline(a, all)}${rowsFund(all, false)}</div>`;
   }
@@ -495,7 +504,7 @@
       <div class="top2"><div class="big">${img(o.image ? `${o.image}?f=s` : a ? `${K_IMG}${a.img}?f=s` : "")}</div><div>
         <div class="crumb">Fundgrube › <button class="lnk" data-go="#/markt?id=${encodeURIComponent(o.mid)}">${esc(o.market)}</button> · ${o.active ? (o.base ? "seit Beginn der Erfassung" : `eingestellt ${ago(o.age)}`) : `${o.base ? "seit Beginn" : fD(o.start)} bis ${fD(o.end)}, nicht mehr da`}</div><h1>${esc(nm)} ${favBtn(o.no, nm)}</h1><div class="kd2">${esc(a ? a.kind : o.product_description || "")}${a ? ` · ${esc(ausOf(a))}` : ""}</div>
         <div class="bigpr">${pr(o.price)}</div><div>regulär ${eur(o.orig)}${o.disc != null ? ` · <span class="dn">−${o.disc} %</span>` : ""}${a && Math.abs(a.price - (o.orig || 0)) > 0.01 ? ` · heute im Sortiment ${eur(a.price)}` : ""}</div>
-        <dl class="kv"><dt>Markt</dt><dd>${isMine(o.mid) ? "<b>" : ""}<button class="lnk" data-go="#/markt?id=${encodeURIComponent(o.mid)}">${esc(o.market)}</button>${isMine(o.mid) ? "</b> · einer deiner Märkte" : ""}</dd><dt>Zustand</dt><dd>${esc(o.condition || "–")}${o.condition_description ? `<div class="kd">${esc(o.condition_description)}</div>` : ""}</dd><dt>Grund</dt><dd>${esc(o.reason_discount || "–")}</dd>${o.offer_description ? `<dt>Beschreibung</dt><dd>${esc(o.offer_description)}</dd>` : ""}${o.additional_info ? `<dt>Hinweis</dt><dd>${esc(o.additional_info)}</dd>` : ""}<dt>Artikel</dt><dd>${fNo(o.no)}${!a ? " · <span class='up'>nicht im Sortiment</span>" : a.gone ? " · <span class='up'>ausgelistet</span>" : ""}</dd><dt>Angebot</dt><dd class="tn">${esc(o.offer_number || "")}</dd></dl>${a ? `<h2 style="margin-top:18px">Zum Artikel</h2>${coreFacts(a)}` : ""}
+        <dl class="kv"><dt>Markt</dt><dd>${isMine(o.mid) ? "<b>" : ""}<button class="lnk" data-go="#/markt?id=${encodeURIComponent(o.mid)}">${esc(o.market)}</button>${isMine(o.mid) ? "</b> · einer deiner Märkte" : ""}</dd><dt>Zustand</dt><dd>${esc(o.condition || "–")}${o.condition_description ? `<div class="kd">${esc(o.condition_description)}</div>` : ""}</dd><dt>Grund</dt><dd>${esc(o.reason_discount || "–")}</dd>${o.offer_description ? `<dt>Beschreibung</dt><dd>${esc(o.offer_description)}</dd>` : ""}${o.additional_info ? `<dt>Hinweis</dt><dd>${esc(o.additional_info)}</dd>` : ""}<dt>Artikel</dt><dd>${fNo(o.no)}${!a ? ` · <span class="kd">${S.kat?.failed ? "Sortiment nicht geladen" : "in den Sortimentsdaten noch nicht erfasst"}</span>` : a.gone ? " · <span class='up'>ausgelistet</span>" : ""}</dd><dt>Angebot</dt><dd class="tn">${esc(o.offer_number || "")}</dd></dl>${a ? `<h2 style="margin-top:18px">Zum Artikel</h2>${coreFacts(a)}` : ""}
         <div class="btns">${a ? `<button class="btn pri" data-go="#/artikel?id=${encodeURIComponent(a.id)}">Artikel im Sortiment</button>` : ""}${o.link ? `<a class="btn" href="${esc(o.link)}" target="_blank" rel="noopener">Bei IKEA ansehen ↗</a>` : ""}</div></div></div>
       <div class="sec"><div class="h"><h2>Dieser Artikel in der Fundgrube</h2><span class="kd">${all.length + 1} Angebote · ${new Set([o, ...all].map((x) => x.mid)).size} Märkte${S.repo.archive ? "" : " · Archiv lädt"}</span></div>${timeline(a, [o, ...all])}${all.length ? rowsFund(all, false) : ""}</div>`;
   }
@@ -653,7 +662,8 @@
       if (orig === "sortiment" && p.get("markt")) { location.replace(`#/markt?id=${encodeURIComponent(p.get("markt"))}`); return; }
       if (name === "sortiment") { if (p.get("bereich")) { S.f.sort = { bereich: [p.get("bereich")] }; history.replaceState(null, "", "#/sortiment"); } if (p.get("des")) { S.f.sort = { des: [p.get("des")] }; history.replaceState(null, "", "#/sortiment"); } if (p.get("q")) { S.f.sort = { q: p.get("q") }; history.replaceState(null, "", "#/sortiment"); } if (p.get("coll")) { S.f.sort = { coll: [p.get("coll")], stand: "auch" }; S.grp = "prod"; history.replaceState(null, "", "#/sortiment"); } }
       app.innerHTML = frame(tab, `<p class="wait">lädt …</p>`);
-      await loadKatalog();
+      const katNow = await loadKatalog();
+      if (katNow.failed) { S.kat = katNow; for (const o of FALL()) linkOffer(o); } else if (S.kat?.failed) S.kat = katNow;
       const detailPage = ["artikel", "angebot", "produkt"].includes(name);
       const needR = ["sortiment", "markt", "analyse", "start"].includes(name) || detailPage, needF = ["sortiment", "analyse"].includes(name) || detailPage;
       await Promise.all([needR ? loadRange() : null, needF ? loadFacets() : null, detailPage ? loadDetails() : null]);
@@ -670,6 +680,7 @@
       else if (tab === "analyse") page = pageAna(p.get("b") || "sortiment");
       else if (tab === "daten") page = await pageDaten();
       else page = await pageEinst();
+      if (S.kat?.failed) page = `<div class="err">Die Sortimentsdaten konnten nicht geladen werden (Verbindung?). Ohne sie fehlen Sortiment, Artikeldetails und die Zuordnung der Fundgrube-Angebote. <button class="lnk" data-retry>Erneut versuchen</button></div>` + page;
       app.innerHTML = frame(tab, page);
       document.title = { start: "Start", fundgrube: "Fundgrube", sortiment: "Sortiment", analyse: "Analyse", daten: "Daten", einstellungen: "Einstellungen" }[tab] + " · Zweite Chance";
       const want = scrollMem.get(location.hash); scrollTo(0, want != null ? want : keepScroll ? y : 0); keepScroll = false;
@@ -733,6 +744,7 @@
     if (d.notify) { const r = S.rules.find((x) => x.id === d.notify); if (!r) { toast("Dieser Eintrag stammt aus der Sicherung und ist erst mit verbundenem Hilfsdienst änderbar."); return; } const onNow = r.notify !== false && r.enabled !== false; r.notify = !onNow; r.enabled = true; await persistRules(); memo.clear(); return rerender(); }
     if (d.delrule) { const r = S.rules.find((x) => x.id === d.delrule); if (!r || !confirmTwice(`„${isFavRule(r) ? r.name : ruleText(r)}“ entfernen?`)) return; S.rules = S.rules.filter((x) => x.id !== r.id); await persistRules(true); memo.clear(); toast("Entfernt. Früherer Stand bleibt wiederherstellbar."); return rerender(); }
     if (d.restore) { if (!confirmTwice("Diesen früheren Stand der Merkliste wiederherstellen?")) return; try { const snap = await worker.call("GET", null, { path: `/api/history?id=${encodeURIComponent(d.restore)}` }); S.rules = ZC.dedupeRules(snap.rules || []).map(withId); S.hist = null; await persistRules(true); memo.clear(); toast("Früherer Stand wiederhergestellt."); rerender(); } catch (err) { toast(`Nicht möglich: ${esc(err.message)}`); } return; }
+    if (d.retry !== undefined) { S.kat = null; memo.clear(); return render(); }
     if (d.logout !== undefined) { lsSet(LS.key, null); lsSet(LS.pw, null); location.reload(); }
   });
   document.addEventListener("change", (e) => {
@@ -741,6 +753,7 @@
     if (d.mine) { setF(tab, d.mine, t.checked ? [...MINE()] : []); return rerender(); }
     if (d.tg) { setF(tab, d.tg, t.checked); S.open = null; return rerender(); }
     if (d.range) { const cur = S.f[tab][d.range] || {}; setF(tab, d.range, { ...cur, [d.side]: t.value }); return rerender(); }
+    if (d.srt) { S.sort[d.srt] = t.value; return rerender(); }
     if (d.cmp !== undefined) { S.cmp = t.value; return rerender(); }
     if (d.minepick) { const m = MINE(); lsSet(LS.mine, t.checked ? [...new Set([...m, d.minepick])] : m.filter((x) => x !== d.minepick)); memo.clear(); return rerender(); }
   });
