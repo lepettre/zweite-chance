@@ -328,7 +328,7 @@
     return `<aside class="side" aria-label="Filter">${defs.filter((d) => d.base).map(box).join("")}${["Was", "Preis", "Zeit", "Wo"].map((g) => [g, defs.filter((d) => !d.base && d.g === g)]).filter(([, l]) => l.length).map(([g, l]) => `<div class="grp">${g}</div>${l.map(box).join("")}`).join("")}</aside>`;
   }
   function filterSentence(tab, f) {
-    const slot = (d) => { const set = on(f[d.k]); return `<span class="slot">${d.pre ? esc(d.pre) + " " : ""}<button class="${set ? "set" : ""}" data-pop="${d.k}" aria-expanded="${S.open === d.k}">${esc(set ? valTxt(d, f[d.k]) : d.any || "…")}</button>${set && !d.base ? `<button class="x" data-reset="${d.k}" aria-label="Angabe entfernen">✕</button>` : ""}${d.post ? " " + esc(d.post) : ""}${S.open === d.k ? `<div class="pop">${optList(d, tab, f)}</div>` : ""}</span>`; };
+    const slot = (d) => { const set = on(f[d.k]); return `<span class="slot">${d.pre ? esc(d.pre) + " " : ""}<button class="${set ? "set" : ""}" data-pop="${d.k}" aria-expanded="${S.open === d.k}">${esc(set ? valTxt(d, f[d.k]) : d.any || "…")}</button>${set && !d.base ? `<button class="x" data-reset="${d.k}" aria-label="Angabe entfernen">entfernen</button>` : ""}${d.post ? " " + esc(d.post) : ""}${S.open === d.k ? `<div class="pop">${optList(d, tab, f)}</div>` : ""}</span>`; };
     const defs = defsOf(tab), base = defs.filter((d) => d.base), extra = defs.filter((d) => !d.base && (on(f[d.k]) || S.open === d.k)), rest = defs.filter((d) => !d.base && !on(f[d.k]) && S.open !== d.k);
     const groups = ["Was", "Preis", "Zeit", "Wo"].map((g) => [g, rest.filter((d) => d.g === g)]).filter(([, l]) => l.length);
     return `<div class="q">${base.map(slot).join(" ")}${extra.length ? ", " + extra.map(slot).join(", ") : ""}. <span class="slot"><button class="add" data-pop="__add" aria-expanded="${S.open === "__add"}">+ Angabe</button>${S.open === "__add" ? `<div class="pop">${groups.map(([g, l]) => `<h4>${g}</h4>${l.map((d) => `<button class="opt" style="width:100%;text-align:left" data-addk="${d.k}"><span>${esc(d.l)}</span></button>`).join("")}`).join("")}</div>` : ""}</span></div>`;
@@ -421,6 +421,19 @@
       <div class="p">${pr(o.price)}${fund ? `<s class="kd">${eur(o.orig)}</s>${o.disc != null ? `<span class="dn tn">−${o.disc} %</span>` : ""}` : a.prev ? `<s class="kd">${eur(a.prev)}</s>` : c && c.d >= dIso(30) ? `<span class="tn ${c.to < c.from ? "dn" : "up"}">${c.to < c.from ? "−" : "+"}${Math.abs(Math.round((c.to / c.from - 1) * 100))} %</span>` : ""}</div>
       <div class="f">${fund ? `<span class="loc">${mineB(o)}</span> · ${esc(o.condition || "")} · ${o.active ? (o.base ? "seit Beginn" : ago(o.age)) : "weg"}` : `${o.nMk != null ? `${o.nMk} Märkte` : ""}${fundNow().has(o.no) ? `${o.nMk != null ? " · " : ""}<b>${fundNow().get(o.no).length} in der Fundgrube</b>` : ""}`}</div></div>`; }).join("")}</div>`;
   }
+  // Kacheln mit Gruppierung: eine Kachel je Produkt (alle Farben und Größen zusammen), bei Serie/Kollektion mit Zwischenüberschrift
+  function tilesGrouped(list, grp) {
+    const prods = new Map(); for (const a of list) { const k = a.name + "|" + a.kind; prods.set(k, [...(prods.get(k) || []), a]); }
+    let last = null, out = "";
+    for (const vs of prods.values()) {
+      const a = vs.find((x) => !x.gone) || vs[0], ps = vs.map((x) => x.price), cols = [...new Set(vs.flatMap((x) => x.cols.slice(0, 1)))], total = Math.max(vs.length, ...vs.map((x) => x.nvar || 0)), offers = vs.reduce((n, x) => n + (fundNow().get(x.no)?.length || 0), 0);
+      if (grp !== "prod" && a.name !== last) { last = a.name; out += `<div class="tg">${esc(grp === "koll" ? "Kollektion " : "Serie ")}${esc(a.name)}</div>`; }
+      out += `<div data-go="#/artikel?id=${encodeURIComponent(a.id)}">${favBtn(a.no, a.name)}${img(a.thumb)}<div class="n">${esc(a.name)}</div><div class="k">${esc(a.kind)}</div>
+        <div class="p">${Math.min(...ps) === Math.max(...ps) ? pr(ps[0]) : `<span class="kd">ab</span> ${pr(Math.min(...ps))}`}</div>
+        <div class="f">${cols.length ? cols.slice(0, 8).map(sq_).join("") + " " : ""}${vs.length} ${vs.length === 1 ? "Farbe/Größe" : "Farben/Größen"}${total > vs.length ? `, ${total - vs.length} weitere bei IKEA` : ""}${offers ? ` · <b>${offers} in der Fundgrube</b>` : ""}</div></div>`;
+    }
+    return `<div class="imgs">${out}</div>`;
+  }
   const moreBtn = (n) => (n > S.shown ? `<p><button class="btn" data-showmore>${nf(Math.min(150, n - S.shown))} weitere zeigen (${nf(n - S.shown)} übrig)</button></p>` : "");
 
   /* ================= Seiten ================= */
@@ -472,7 +485,7 @@
     const isCustom = Object.keys(f).some((k) => on(f[k]));
     const g = tab === "fund" && isCustom ? goodPrice(f) : null;
     const part = list.slice(0, S.shown);
-    const body = !list.length ? `<div class="empty">Kein ${tab === "fund" ? "Angebot" : "Artikel"} passt zu diesem Satz. Entferne eine Angabe.</div>` : S.view[tab] === "kacheln" ? tiles(part, tab === "fund") : tab === "fund" ? rowsFund(part) : rowsSort(part, S.grp);
+    const body = !list.length ? `<div class="empty">Kein ${tab === "fund" ? "Angebot" : "Artikel"} passt zu diesem Satz. Entferne eine Angabe.</div>` : S.view[tab] === "kacheln" ? (tab === "sort" && S.grp !== "aus" ? tilesGrouped(part, S.grp) : tiles(part, tab === "fund")) : tab === "fund" ? rowsFund(part) : rowsSort(part, S.grp);
     return `<h1>${title}<small class="tn">${cnt}</small></h1>${tab === "sort" ? `<p class="kd" style="margin:-4px 0 10px">alles, was IKEA Deutschland regulär verkauft · ${nf(S.kat.items.filter((a) => !a.stub && !a.gone).length)} Artikel erfasst</p>` : `<p class="kd" style="margin:-4px 0 10px">Einzelstücke mit Rabatt in den IKEA-Märkten</p>`}<div class="lay">${innerWidth >= 1000 ? sideFilters(tab, f) : ""}<div style="min-width:0">${filterSentence(tab, f)}
       <div class="bar"><div class="l"><input type="search" id="q-${tab}" data-q="${tab}" placeholder="Name oder Artikelnummer" value="${esc(f.q || "")}" aria-label="Suchen">${isCustom ? `<button class="lnk" data-clear>zurücksetzen</button>` : ""}${tab === "fund" && isCustom ? `<button class="lnk" data-savesearch>Diese Suche merken</button>` : ""}<select class="srt" id="srt-${tab}" data-srt="${tab}" aria-label="Sortierung">${SORT_L[tab].map(([k, l]) => `<option value="${k}" ${S.sort[tab] === k ? "selected" : ""}>${l}</option>`).join("")}</select><button class="lnk" data-export="${tab}">als CSV</button></div><div class="seg">${viewSeg}</div></div>
       ${g ? `<div class="gp"><b>Was ist ein guter Preis?</b> ${g.full ? "Seit Beginn der Erfassung" : "Unter den aktuellen Angeboten"} passten ${nf(g.n)} Angebote zu dieser Suche. Das günstigste Viertel lag unter <b>${eur(g.q1)}</b>, das günstigste bei ${eur(g.lo)}.${g.dw != null ? ` Ein Angebot war meist nach ${g.dw} Tagen weg.` : ""}</div>` : ""}

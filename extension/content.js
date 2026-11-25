@@ -25,7 +25,7 @@
       if (k) body += `<div class="p"><b>Preis bei IKEA:</b> ${eur(k.price)}${k.prev ? ` (vorher ${eur(k.prev)})` : ""}${k.changes ? `<br>Spanne ${eur(k.lo)} – ${eur(k.hi)} · ${k.changes} Änderung${k.changes === 1 ? "" : "en"}${k.last_change ? `, zuletzt ${day(k.last_change)}` : ""}` : `<br>Preis unverändert seit ${day(k.since)}`}${k.last ? "<br><b>Letzte Chance</b> laut IKEA" : ""}${k.status === "gone" ? "<br><b>Nicht mehr im Sortiment</b>" : ""}</div>`;
     }
     const title = r.error ? "Zweite Chance" : n ? `Fundgrube: ${n}× ab ${eur(r.offers[0].price)}` : "Fundgrube: nicht vorrätig";
-    root.innerHTML = `<style>${CSS}</style><div class="c"><div class="h"><span>🏷️</span><span>${esc(title)}</span><small>${r.updated ? "Stand " + day(r.updated) : ""}</small><span class="x" title="Schließen">✕</span></div><div class="b" ${n || r.error || k ? "" : "hidden"}>${body}</div></div>`;
+    root.innerHTML = `<style>${CSS}</style><div class="c"><div class="h"><span>${esc(title)}</span><small>${r.updated ? "Stand " + day(r.updated) : ""}</small><span class="x" title="Schließen">schließen</span></div><div class="b" ${n || r.error || k ? "" : "hidden"}>${body}</div></div>`;
     const b = root.querySelector(".b");
     root.querySelector(".h").addEventListener("click", (e) => { if (e.target.classList.contains("x")) host.remove(); else b.hidden = !b.hidden; });
     document.documentElement.appendChild(host);
