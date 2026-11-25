@@ -8,3 +8,4 @@
 - Öffentlich so wenig wie möglich: veröffentlichte Daten sind verschlüsselt, README bleibt neutral.
 - Antworten an den Nutzer immer maximal kurz.
 - Vor jeder Änderung erst fragen, möglichst als anklickbare Auswahl (Multiple Choice); erst nach Antwort ändern.
+- Jede Änderung: Versionsnummer (APP_VERSION in docs/app.js) erhöhen, Changelog und bei neuen Daten den Datenstandard im verschlüsselten Handbuch ergänzen (python -m tracker.docsec seal; Ergänzungen ohne Passwort als handbuch/Changelog+<Version>.md, neueste stehen oben).
