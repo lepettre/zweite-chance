@@ -73,7 +73,7 @@
     o._a = 1;
     return o;
   }
-  const linkOffer = (o) => { o.art = S.kat?.byNo.get(o.no) || null; o.top = o.art?.top || "ohne Zuordnung"; o.thumb = o.image ? `${o.image}?f=xs` : o.art ? o.art.thumb : ""; return o; };
+  const linkOffer = (o) => { o.art = S.kat?.byNo.get(o.no) || null; o.top = o.art?.top || "Artikel noch nicht erfasst"; o.thumb = o.image ? `${o.image}?f=xs` : o.art ? o.art.thumb : ""; return o; };
   async function loadRepo() {
     const meta = await soft(getBin("meta.bin"));
     if (!meta) { S.repo.meta = null; return; }
@@ -95,11 +95,11 @@
   // Sortiment (k/items.bin) – Gegenstück zu katalog/model.py
   function unpackK(d) {
     if (!d) return [];
-    const T = d.s, ix = Object.fromEntries(d.f.map((f, i) => [f, i])), STR = ["id", "no", "type", "name", "kind", "measure", "slug", "img", "cat", "vfrom", "vto", "tag", "first_seen", "last_seen", "status", "ph", "log", "col", "ctx"], out = [];
+    const T = d.s, ix = Object.fromEntries(d.f.map((f, i) => [f, i])), STR = ["id", "no", "type", "name", "kind", "measure", "slug", "img", "cat", "vfrom", "vto", "tag", "first_seen", "last_seen", "status", "ph", "log", "col", "ctx", "hfb", "pa", "vars"], out = [];
     for (const row of d.r) {
       const o = {};
       for (const f of STR) o[f] = ix[f] === undefined ? "" : T[row[ix[f]]];
-      for (const f of ["price", "prev", "last", "online", "missing", "rating", "rcount"]) o[f] = ix[f] === undefined ? 0 : row[ix[f]];
+      for (const f of ["price", "prev", "last", "online", "missing", "rating", "rcount", "nvar"]) o[f] = ix[f] === undefined ? 0 : row[ix[f]];
       const cp = (o.cat || "").split(" › "); o.top = cp[0] || "–"; o.sub = cp[1] || ""; o.sub2 = cp[2] || "";
       o.coll = /\b(19|20)\d\d\b/.test(o.name || "") ? o.name : null;     // Kollektion: Name mit Jahreszahl, z. B. IKEA PS 2026, STOCKHOLM 2025
       o.ph = o.ph ? JSON.parse(o.ph) : [[o.first_seen, o.price]];
@@ -260,7 +260,7 @@
       { k: "bereich", l: "Bereich", base: 1, pre: "aus", any: "allen Bereichen", t: "multi", get: (o) => [o.top] },
       { k: "farbe", l: "Farbe", base: 1, pre: "in", any: "jeder Farbe", t: "multi", get: (o) => (o.cols.length ? o.cols : ["ohne Angabe"]) },
       { k: "preis", l: "Preis", base: 1, pre: "für", any: "jeden Preis", t: "range", get: (o) => o.price },
-      { k: "wo", l: "Verfügbarkeit", base: 1, need: "R", pre: "", any: "egal wo erhältlich", t: "single", opts: [["mine", "erhältlich in meinen Märkten"], ["notmine", "nicht in meinen Märkten erhältlich"], ["selten", "in höchstens 5 Märkten erhältlich"], ["fast", "in fast allen Märkten erhältlich"]],
+      { k: "wo", l: "Verfügbarkeit", base: 1, need: "R", pre: "", any: "in beliebigen Märkten", t: "single", opts: [["mine", "erhältlich in meinen Märkten"], ["notmine", "nicht in meinen Märkten erhältlich"], ["selten", "in höchstens 5 Märkten erhältlich"], ["fast", "in fast allen Märkten erhältlich"]],
         test: (o, v) => { if (o.nMk == null) return false; if (v === "selten") return o.nMk >= 1 && o.nMk <= 5; if (v === "fast") return o.nKn >= 10 && o.nMk / o.nKn >= 0.9; const c = MINE().map((m) => carries(o, m)).filter((x) => x !== null); if (!c.length) return false; return v === "mine" ? c.some(Boolean) : !c.some(Boolean); } },
       { k: "coll", g: "Was", l: "Kollektion", pre: "aus der Kollektion", t: "multi", get: (o) => (o.coll ? [o.coll] : []), ord: (a, b) => b.localeCompare(a, "de") },
       { k: "sub", g: "Was", l: "Unterkategorie", pre: "in", t: "multi", get: (o) => (o.sub ? [o.sub] : []), search: true },
@@ -283,12 +283,20 @@
   const hay = (o) => o._h || (o._h = fold(`${o.name || o.title} ${o.kind || o.product_description} ${o.offer_description || ""} ${o.no} ${fNo(o.no)} ${o.col || ""} ${o.market || ""} ${o.cat || ""}`));
   const qok = (o, q) => { if (!q) return true; const terms = fold(q).split(/\s+/).filter(Boolean); const h = hay(o); return terms.every((t) => h.includes(t)); };
   function passAll(o, tab, f, ex) {
-    if (tab === "fund" && !f.zeit && !o.active) return false;
+    if (tab === "fund" && !f.zeit && !o.active && !S.asof) return false;
     if (!qok(o, f.q)) return false;
     for (const d of defsOf(tab)) if (d.k !== ex && !ok1(d, o, f[d.k])) return false;
     return true;
   }
-  const srcOf = (tab, f) => { const k = tab === "fund" ? (f.zeit ? "s-fall" + (S.repo.archive ? 1 : 0) : "s-fa") : "s-kat"; if (!memo.has(k)) memo.set(k, tab === "fund" ? (f.zeit ? FALL() : FA()) : S.kat.items.filter((o) => !o.stub)); return memo.get(k); };
+  // Zeitmaschine: Stand an einem früheren Tag aus Preisverlauf, Erscheinen/Auslisten und Fundgrube-Zeiträumen rekonstruieren
+  const priceAt = (a, D) => { let v = a.ph[0]?.[1]; for (const [t, p] of a.ph) if (day(t) <= D && p != null) v = p; return v; };
+  function itemsAt(D) { return S.kat.items.filter((a) => !a.stub && day(a.first || a.first_seen) <= D && (!a.gone || day(a.gone) > D)).map((a) => { const c = Object.create(a); c.price = priceAt(a, D); c.prev = null; c.gone = null; c.ph = a.ph.filter((p) => day(p[0]) <= D); return c; }); }
+  function offersAt(D) { return FALL().filter((o) => (o.base ? day(S.baseTs) <= D : o.start <= D) && (!o.end || o.end >= D)).map((o) => { const c = Object.create(o); c.active = true; c.age = o.base ? 999 : daysBetween(o.start, D); return c; }); }
+  const srcOf = (tab, f) => {
+    const at = S.asof, k = at ? `s-at-${tab}-${at}-${S.repo.archive ? 1 : 0}` : tab === "fund" ? (f.zeit ? "s-fall" + (S.repo.archive ? 1 : 0) : "s-fa") : "s-kat";
+    if (!memo.has(k)) memo.set(k, at ? (tab === "fund" ? offersAt(at) : itemsAt(at)) : tab === "fund" ? (f.zeit ? FALL() : FA()) : S.kat.items.filter((o) => !o.stub));
+    return memo.get(k);
+  };
   const apply = (tab, f, ex) => srcOf(tab, f).filter((o) => passAll(o, tab, f, ex));
   function optsOf(d, tab, f) {
     const k = `o|${tab}|${d.k}|${JSON.stringify(f)}`;
@@ -349,7 +357,7 @@
   }
   function lanes(list, cur, label) {
     const W = 760, pl = 210, pr_ = 12, rh = 24, H = list.length * rh + 22, x = (d) => pl + (Math.min(Math.max(ms(d), X0()), X1()) - X0()) / Math.max(1, X1() - X0()) * (W - pl - pr_);
-    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Wann jede Variante im Sortiment war">${axisMonths(x, H)}${list.map((a, i) => { const y = i * rh + 4, s = a.first || S.t0, e = a.gone || TODAY; return `<g data-go="#/artikel?id=${encodeURIComponent(a.id)}" style="cursor:pointer"><text x="0" y="${y + 13}" class="lab" style="font-weight:${a.id === cur ? 700 : 500}">${esc(label(a)).slice(0, 34)}</text>
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Wann jede Farbe oder Größe im Sortiment war">${axisMonths(x, H)}${list.map((a, i) => { const y = i * rh + 4, s = a.first || S.t0, e = a.gone || TODAY; return `<g data-go="#/artikel?id=${encodeURIComponent(a.id)}" style="cursor:pointer"><text x="0" y="${y + 13}" class="lab" style="font-weight:${a.id === cur ? 700 : 500}">${esc(label(a)).slice(0, 34)}</text>
       ${a.first ? "" : `<rect x="${pl - 14}" y="${y + 4}" width="14" height="10" fill="url(#fade)"/>`}<rect x="${x(s)}" y="${y + 4}" width="${Math.max(3, x(e) - x(s))}" height="10" fill="${a.gone ? "var(--mut)" : "var(--ink)"}"/>
       ${a.first ? `<circle cx="${x(a.first)}" cy="${y + 9}" r="4" fill="var(--mark)" stroke="var(--ink)"/>` : ""}${a.gone ? `<text x="${Math.min(x(e) + 5, W - 90)}" y="${y + 13}" style="fill:var(--red)">ausgelistet ${fS(a.gone)}</text>` : ""}</g>`; }).join("")}
       <defs><linearGradient id="fade"><stop offset="0" stop-color="var(--ink)" stop-opacity="0"/><stop offset="1" stop-color="var(--ink)"/></linearGradient></defs></svg>
@@ -394,9 +402,18 @@
     const cols = S.rng ? 8 : 7;
     if (grp === "aus") return `<div class="tw"><table>${head}<tbody>${list.map(r).join("")}</tbody></table></div>`;
     if (grp === "koll") list = list.filter((a) => a.coll);
-    const key = grp === "serie" || grp === "koll" ? (a) => a.name : (a) => a.name + "|" + a.kind, g = new Map(); for (const a of list) g.set(key(a), [...(g.get(key(a)) || []), a]);
     if (!list.length) return `<div class="empty">Keine Kollektion in dieser Auswahl. Kollektionen erkennt die App am Jahr im Namen, z. B. IKEA PS 2026.</div>`;
-    return `<div class="tw"><table>${head}<tbody>${[...g.values()].map((l) => { const ps = l.map((a) => a.price), kinds = new Set(l.map((a) => a.kind)).size; return `<tr class="grp"><td colspan="${cols}">${esc(grp === "koll" ? `Kollektion ${l[0].name}` : grp === "serie" ? `Serie ${l[0].name}` : `${l[0].name} ${l[0].kind}`)} · ${grp === "serie" || grp === "koll" ? `${kinds} Produkte, ` : ""}${l.length} Variante${l.length > 1 ? "n" : ""} · ${Math.min(...ps) === Math.max(...ps) ? eur(ps[0]) : `${eur(Math.min(...ps))} bis ${eur(Math.max(...ps))}`}</td></tr>${l.map(r).join("")}`; }).join("")}</tbody></table></div>`;
+    const byProd = (l) => { const m = new Map(); for (const a of l) { const k = a.name + "|" + a.kind; m.set(k, [...(m.get(k) || []), a]); } return [...m.values()]; };
+    const prodRow = (vs) => {
+      const a = vs.find((x) => !x.gone) || vs[0], ps = vs.map((x) => x.price), cols = [...new Set(vs.flatMap((x) => x.cols.slice(0, 1)))], sizes = new Set(vs.map((x) => x.measure).filter(Boolean)).size;
+      const total = Math.max(vs.length, ...vs.map((x) => x.nvar || 0)), offers = vs.reduce((n, x) => n + (fundNow().get(x.no)?.length || 0), 0), mk = Math.max(...vs.map((x) => x.nMk ?? -1));
+      return `<tr data-go="#/artikel?id=${encodeURIComponent(a.id)}"><td class="im">${img(a.thumb)}</td><td><div class="nm">${esc(a.name)} <span style="font-weight:400">${esc(a.kind)}</span>${vs.every((x) => x.gone) ? ` <span class="chip up">ausgelistet</span>` : ""}</div>
+        <div class="kd">${cols.length ? `${cols.slice(0, 10).map(sq_).join("")} ${cols.length} ${cols.length === 1 ? "Farbe" : "Farben"}` : ""}${sizes > 1 ? `${cols.length ? ", " : ""}${sizes} Größen` : ""}${total > vs.length ? ` · ${total - vs.length} weitere bei IKEA, hier noch nicht erfasst` : ""}</div></td>
+        <td class="hide kd">${esc(a.sub || a.top)}</td><td class="r">${Math.min(...ps) === Math.max(...ps) ? pr(ps[0]) : `<span class="kd">ab</span> ${pr(Math.min(...ps))}<div class="kd">bis ${eur(Math.max(...ps))}</div>`}</td><td class="hide">${spark(a)}</td>${S.rng ? `<td class="hide tn">${mk >= 0 ? mk : "–"}</td>` : ""}<td class="hide">${offers ? `<span class="fh"><b>${offers} ${offers === 1 ? "Angebot" : "Angebote"}</b></span>` : ""}</td><td>${favBtn(a.no, a.name)}</td></tr>`;
+    };
+    if (grp === "prod") return `<div class="tw"><table>${head}<tbody>${byProd(list).map(prodRow).join("")}</tbody></table></div>`;
+    const g = new Map(); for (const a of list) g.set(a.name, [...(g.get(a.name) || []), a]);
+    return `<div class="tw"><table>${head}<tbody>${[...g.values()].map((l) => { const ps = l.map((a) => a.price), prods = byProd(l); return `<tr class="grp"><td colspan="${cols}">${esc(grp === "koll" ? `Kollektion ${l[0].name}` : `Produktfamilie ${l[0].name}`)} · ${prods.length} ${prods.length === 1 ? "Produkt" : "Produkte"}, ${l.length} Artikel · ${Math.min(...ps) === Math.max(...ps) ? eur(ps[0]) : `${eur(Math.min(...ps))} bis ${eur(Math.max(...ps))}`}</td></tr>${prods.map(prodRow).join("")}`; }).join("")}</tbody></table></div>`;
   }
   const mini = (list) => `<div class="tw"><table><tbody>${list.map((a) => `<tr data-go="#/artikel?id=${encodeURIComponent(a.id)}"><td class="im">${img(a.thumb)}</td><td><div class="nm">${esc(a.name)} <span style="font-weight:400">${esc(a.kind)}</span></div><div class="kd">${esc(ausOf(a))}${a.nMk != null ? ` · in ${a.nMk} Märkten` : ""}</div></td><td class="r">${pr(a.price)}</td></tr>`).join("")}</tbody></table></div>`;
   function tiles(list, fund) {
@@ -416,7 +433,7 @@
     const items = S.kat.items.filter((a) => !a.stub);
     const ev = [
       ...items.filter((a) => { const c = lastChg(a); return c && c.d >= dIso(30); }).map((a) => { const c = lastChg(a); return { d: c.d, a, kind: c.to < c.from ? "gesunken" : "gestiegen", t: `${eur(c.from)} → ${eur(c.to)}` }; }),
-      ...items.filter((a) => a.first && day(a.first) >= dIso(30)).map((a) => ({ d: day(a.first), a, kind: "neu", t: `neu in der Serie ${a.name}` })),
+      ...items.filter((a) => a.first && day(a.first) >= dIso(30)).map((a) => ({ d: day(a.first), a, kind: "neu", t: `neu in der Produktfamilie ${a.name}` })),
       ...items.filter((a) => a.gone && day(a.gone) >= dIso(30)).map((a) => ({ d: day(a.gone), a, kind: "ausgelistet", t: "nicht mehr im Sortiment" })),
     ].map((e) => ({ ...e, fav: FAVS().has(e.a.no) })).sort((x, y) => (y.fav - x.fav) || y.d.localeCompare(x.d));
     const favEv = ev.filter((e) => e.fav).length;
@@ -441,18 +458,25 @@
   };
   const SORT_L = { fund: [["neu", "neueste zuerst"], ["preis", "günstigste zuerst"], ["rabatt", "höchster Rabatt zuerst"], ["markt", "nach Markt, meine zuerst"]], sort: [["chg", "letzte Änderung zuerst"], ["preis", "günstigste zuerst"], ["teuer", "teuerste zuerst"], ["neu", "neueste zuerst"], ["verb", "seltenste zuerst"], ["bew", "beste Bewertung zuerst"], ["name", "Name A–Z"]] };
   function pageList(tab) {
-    const f = S.f[tab], list = apply(tab, f).sort(SORTS[tab][S.sort[tab]] || SORTS[tab][Object.keys(SORTS[tab])[0]]);
+    const f = S.f[tab]; let list = apply(tab, f).sort(SORTS[tab][S.sort[tab]] || SORTS[tab][Object.keys(SORTS[tab])[0]]);
+    if (tab === "sort" && S.grp !== "aus") {          // Gruppen zusammenhalten, Reihenfolge nach erstem Auftreten in der gewählten Sortierung
+      if (S.grp === "koll") list = list.filter((a) => a.coll);
+      const key = (a) => (S.grp === "prod" ? a.name + "|" + a.kind : a.name), first = new Map(), idx = new Map();
+      list.forEach((a, i) => { idx.set(a, i); if (!first.has(key(a))) first.set(key(a), i); });
+      list.sort((a, b) => first.get(key(a)) - first.get(key(b)) || idx.get(a) - idx.get(b));
+    }
+    const tmBar = `<div class="tm">${S.asof ? `<b>Zeitmaschine:</b> so war es am ${fD(S.asof)}. Preise, Erscheinen und Auslisten sind rekonstruiert${tab === "sort" && S.rng ? "; Verfügbarkeit je Markt zeigt die jüngste Messung" : ""}. <button class="lnk" data-asof-off>zurück zu heute</button>` : `<span class="kd">Stand am</span>`} <input type="date" id="asof-${tab}" data-asof min="${S.t0 || ""}" max="${TODAY}" value="${S.asof || ""}" aria-label="Stand an einem früheren Tag"></div>`;
     const title = tab === "fund" ? "Fundgrube" : "Sortiment", cnt = `${nf(list.length)} ${tab === "fund" ? "Angebote" : "Artikel"}`;
     const viewSeg = tab === "fund" ? `<button data-view="liste" aria-pressed="${S.view.fund !== "kacheln"}">Liste</button><button data-view="kacheln" aria-pressed="${S.view.fund === "kacheln"}">Kacheln</button>`
-      : `<span class="lab">zeigen als</span><button data-grp="aus" aria-pressed="${S.grp === "aus"}">Varianten</button><button data-grp="prod" aria-pressed="${S.grp === "prod"}">Produkte</button><button data-grp="serie" aria-pressed="${S.grp === "serie"}">Serien</button><button data-grp="koll" aria-pressed="${S.grp === "koll"}">Kollektionen</button><span class="lab">·</span><button data-view="liste" aria-pressed="${S.view.sort !== "kacheln"}">Liste</button><button data-view="kacheln" aria-pressed="${S.view.sort === "kacheln"}">Kacheln</button>`;
+      : `<span class="lab">gruppieren</span><button data-grp="aus" aria-pressed="${S.grp === "aus"}">keine</button><button data-grp="prod" aria-pressed="${S.grp === "prod"}">nach Produkt</button><button data-grp="serie" aria-pressed="${S.grp === "serie"}">nach Familie</button><button data-grp="koll" aria-pressed="${S.grp === "koll"}">nach Kollektion</button><span class="lab">·</span><button data-view="liste" aria-pressed="${S.view.sort !== "kacheln"}">Liste</button><button data-view="kacheln" aria-pressed="${S.view.sort === "kacheln"}">Kacheln</button>`;
     const isCustom = Object.keys(f).some((k) => on(f[k]));
     const g = tab === "fund" && isCustom ? goodPrice(f) : null;
     const part = list.slice(0, S.shown);
     const body = !list.length ? `<div class="empty">Kein ${tab === "fund" ? "Angebot" : "Artikel"} passt zu diesem Satz. Entferne eine Angabe.</div>` : S.view[tab] === "kacheln" ? tiles(part, tab === "fund") : tab === "fund" ? rowsFund(part) : rowsSort(part, S.grp);
-    return `<h1>${title}<small class="tn">${cnt}</small></h1><div class="lay">${innerWidth >= 1000 ? sideFilters(tab, f) : ""}<div style="min-width:0">${filterSentence(tab, f)}
+    return `<h1>${title}<small class="tn">${cnt}</small></h1>${tab === "sort" ? `<p class="kd" style="margin:-4px 0 10px">alles, was IKEA Deutschland regulär verkauft · ${nf(S.kat.items.filter((a) => !a.stub && !a.gone).length)} Artikel erfasst</p>` : `<p class="kd" style="margin:-4px 0 10px">Einzelstücke mit Rabatt in den IKEA-Märkten</p>`}<div class="lay">${innerWidth >= 1000 ? sideFilters(tab, f) : ""}<div style="min-width:0">${filterSentence(tab, f)}
       <div class="bar"><div class="l"><input type="search" id="q-${tab}" data-q="${tab}" placeholder="Name oder Artikelnummer" value="${esc(f.q || "")}" aria-label="Suchen">${isCustom ? `<button class="lnk" data-clear>zurücksetzen</button>` : ""}${tab === "fund" && isCustom ? `<button class="lnk" data-savesearch>Diese Suche merken</button>` : ""}<select class="srt" id="srt-${tab}" data-srt="${tab}" aria-label="Sortierung">${SORT_L[tab].map(([k, l]) => `<option value="${k}" ${S.sort[tab] === k ? "selected" : ""}>${l}</option>`).join("")}</select><button class="lnk" data-export="${tab}">als CSV</button></div><div class="seg">${viewSeg}</div></div>
       ${g ? `<div class="gp"><b>Was ist ein guter Preis?</b> ${g.full ? "Seit Beginn der Erfassung" : "Unter den aktuellen Angeboten"} passten ${nf(g.n)} Angebote zu dieser Suche. Das günstigste Viertel lag unter <b>${eur(g.q1)}</b>, das günstigste bei ${eur(g.lo)}.${g.dw != null ? ` Ein Angebot war meist nach ${g.dw} Tagen weg.` : ""}</div>` : ""}
-      ${body}${moreBtn(list.length)}</div></div>`;
+      ${tmBar}${body}${moreBtn(list.length)}</div></div>`;
   }
   // Kern-Details eines Sortimentsartikels – auf jeder Artikel-, Angebots- und Produktseite gleich
   function coreFacts(a, extra = "") {
@@ -461,7 +485,7 @@
     const missMine = S.rng ? MINE().filter((m) => carries(a, m) === false) : [];
     return `${D?.desc ? `<p class="kd" style="margin:12px 0 0;max-width:62ch;color:var(--ink2)">${esc(D.desc)}</p>` : ""}
       <dl class="kv">${extra}<dt>Design</dt><dd>${people.length && !IOS.test(people[0]) ? people.map((n) => `<button class="lnk" data-desfilter="${esc(n)}">${esc(n)}</button>`).join(", ") + (D?.designer && people.join("/") !== D.designer ? ` <span class="kd">(bei IKEA: ${esc(D.designer)})</span>` : "") : D || F?.by.has(a.id) ? "<span class='kd'>kein Name genannt (IKEA of Sweden)</span>" : "<span class='kd'>noch nicht abgerufen</span>"}</dd>
-        ${D?.material ? `<dt>Material</dt><dd>${esc(D.material)}</dd>` : ""}<dt>Variante</dt><dd>${esc(ausOf(a) || "–")}</dd>${D && (D.w || D.h || D.d) ? `<dt>Maße</dt><dd>${esc([D.w && `B ${D.w}`, D.h && `H ${D.h}`, D.d && `T ${D.d}`].filter(Boolean).join(" · "))}</dd>` : ""}
+        ${D?.material ? `<dt>Material</dt><dd>${esc(D.material)}</dd>` : ""}<dt>Farbe/Größe</dt><dd>${esc(ausOf(a) || "–")}${a.nvar > 1 ? ` <span class="kd">· ${a.nvar} Farben/Größen insgesamt</span>` : ""}</dd>${D && (D.w || D.h || D.d) ? `<dt>Maße</dt><dd>${esc([D.w && `B ${D.w}`, D.h && `H ${D.h}`, D.d && `T ${D.d}`].filter(Boolean).join(" · "))}</dd>` : ""}
         <dt>Kategorie</dt><dd><button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top] }))}">${esc(a.top)}</button>${a.sub ? ` › <button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top], sub: [a.sub] }))}">${esc(a.sub)}</button>` : ""}${a.sub2 ? ` › <button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top], sub: [a.sub], sub2: [a.sub2] }))}">${esc(a.sub2)}</button>` : ""}</dd>
         ${a.coll ? `<dt>Kollektion</dt><dd><button class="lnk" data-crumb="${esc(JSON.stringify({ coll: [a.coll], stand: "auch" }))}">${esc(a.coll)}</button></dd>` : ""}
         <dt>Preis im Sortiment</dt><dd>${eur(a.price)}${a.prev ? ` <span class="kd">vorher ${eur(a.prev)}</span>` : ""}</dd>
@@ -480,12 +504,12 @@
       <div class="top2"><div><div class="big">${img(a.img ? `${K_IMG}${a.img}?f=s` : "")}</div>${gallery.length > 1 ? `<div class="alts">${gallery.map((g2) => `<a href="${K_IMG}${esc(g2)}?f=xl" target="_blank" rel="noopener" style="width:58px;height:58px;border:1px solid var(--rule);padding:3px;display:block">${img(`${K_IMG}${g2}?f=xxs`)}</a>`).join("")}</div>` : ""}</div><div>
         <div class="crumb"><button class="lnk" data-crumb="">Sortiment</button> › <button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top] }))}">${esc(a.top)}</button>${a.sub ? ` › <button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top], sub: [a.sub] }))}">${esc(a.sub)}</button>` : ""}${a.sub2 ? ` › <button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top], sub: [a.sub], sub2: [a.sub2] }))}">${esc(a.sub2)}</button>` : ""} · Art. ${fNo(a.no)}${a.coll ? ` · <button class="lnk" data-crumb="${esc(JSON.stringify({ coll: [a.coll], stand: "auch" }))}">Kollektion ${esc(a.coll)}</button>` : ""}</div><h1>${esc(a.name)} ${favBtn(a.no, a.name)}</h1><div class="kd2">${esc(a.kind)}${a.measure ? `, ${esc(a.measure)}` : ""}</div>
         <div class="bigpr">${pr(a.price)}</div>${a.prev ? `<div class="dn">reduziert, vorher ${eur(a.prev)}${a.vto ? ` · gilt bis ${fD(a.vto)}` : ""}</div>` : c ? `<div class="${c.to < c.from ? "dn" : "up"}">${c.to < c.from ? "gesenkt" : "erhöht"} am ${fD(c.d)} von ${eur(c.from)}</div>` : `<div class="kd">Preis seit Beginn der Erfassung unverändert</div>`}
-        ${prods.length > 1 ? `<div class="alts" role="group" aria-label="Varianten">${prods.map((x) => `<button data-go="#/artikel?id=${encodeURIComponent(x.id)}" aria-pressed="${x.id === a.id}" title="${esc(ausOf(x))}">${img(x.thumb, ausOf(x))}</button>`).join("")}</div><div class="kd">Variante: ${esc(ausOf(a))} · ${prods.length} Varianten</div>` : ""}
+        ${prods.length > 1 ? `<div class="alts" role="group" aria-label="Farben und Größen">${prods.map((x) => `<button data-go="#/artikel?id=${encodeURIComponent(x.id)}" aria-pressed="${x.id === a.id}" title="${esc(ausOf(x))}">${img(x.thumb, ausOf(x))}</button>`).join("")}</div><div class="kd">${esc(ausOf(a))} · ${prods.length} von ${Math.max(prods.length, a.nvar || 0)} Farben/Größen erfasst</div>` : ""}
         ${now.length ? `<div class="hint"><b>Gerade ${now.length} ${now.length === 1 ? "Angebot" : "Angebote"} in der Fundgrube</b> ab ${eur(Math.min(...now.map((o) => o.price)))}${now.some((o) => isMine(o.mid)) ? `, davon ${now.filter((o) => isMine(o.mid)).length} in deinen Märkten` : ""}. <button data-scroll="fg">ansehen</button></div>` : all.length ? `<div class="hint" style="border-color:var(--rule)">Zuletzt in der Fundgrube am ${fD(all.filter((o) => o.end).sort((x, y) => y.end.localeCompare(x.end))[0]?.end)} · insgesamt ${all.length} Angebote</div>` : ""}
         ${coreFacts(a)}
         <div class="btns"><a class="btn" href="${K_P}${esc(a.slug)}/" target="_blank" rel="noopener">Bei IKEA ansehen ↗</a></div></div></div>
       <div class="sec"><div class="h"><h2>Preis und Fundgrube</h2><span class="kd">${a.ph.length - 1} Preisänderung${a.ph.length === 2 ? "" : "en"} · ${all.length} Fundgrube-Angebote${S.repo.archive ? "" : " (Archiv lädt)"}</span></div>${timeline(a, all)}</div>
-      ${serie.length > 1 ? `<div class="sec"><div class="h"><h2>${serie.length > prods.length ? `Serie ${esc(a.name)}` : "Varianten"}</h2><span class="kd">wann welche Variante im Sortiment war · antippen zum Wechseln${serie.length > 40 ? " · die 40 jüngsten" : ""}</span></div>${lanes(serie.sort((x, y) => x.kind.localeCompare(y.kind, "de") || (x.col || "").localeCompare(y.col || "", "de")).slice(0, 40), a.id, (x) => (serie.length > prods.length ? `${x.kind}, ${x.col}` : ausOf(x) || x.kind))}</div>` : ""}
+      ${serie.length > 1 ? `<div class="sec"><div class="h"><h2>${serie.length > prods.length ? `Produktfamilie ${esc(a.name)}` : "Farben und Größen"}</h2><span class="kd">wann welche Variante im Sortiment war · antippen zum Wechseln${serie.length > 40 ? " · die 40 jüngsten" : ""}</span></div>${lanes(serie.sort((x, y) => x.kind.localeCompare(y.kind, "de") || (x.col || "").localeCompare(y.col || "", "de")).slice(0, 40), a.id, (x) => (serie.length > prods.length ? `${x.kind}, ${x.col}` : ausOf(x) || x.kind))}</div>` : ""}
       <div class="sec"><div class="two"><div><div class="h2"><h2>Wo es den Artikel gibt</h2><span class="kd">${S.rng && a.nMk != null ? `${a.nMk} von ${a.nKn} Märkten` : "noch nicht gemessen"}</span></div>${S.rng && a.nMk != null ? `<p style="margin:6px 0 0;line-height:1.7"><span class="kd">${show[0]}:</span> ${show[1].map((s) => `<button class="${isMine(s.id) ? "lnk" : ""}" data-go="#/markt?id=${encodeURIComponent(s.id)}" style="${isMine(s.id) ? "" : "color:var(--ink2)"}">${isMine(s.id) ? "<b>" + esc(s.name) + "</b>" : esc(s.name)}</button>`).join(", ") || "keinem Markt"}</p>` : ""}</div>
         <div id="fg"><div class="h2"><h2>In der Fundgrube</h2></div><p class="sub">${now.length ? "aktuell, deine Märkte und günstigste zuerst" : "gerade kein Angebot"}</p>${now.length ? rowsFund(now.sort((x, y) => (isMine(y.mid) - isMine(x.mid)) || x.price - y.price), false) : ""}${all.length > now.length ? `<p class="kd" style="margin-top:8px">Früher: ${all.length - now.length} Angebote, ${eur(Math.min(...all.map((o) => o.price)))} bis ${eur(Math.max(...all.map((o) => o.price)))}, meist in ${[...all.reduce((m, o) => m.set(o.market, (m.get(o.market) || 0) + 1), new Map())].sort((x, y) => y[1] - x[1]).slice(0, 2).map((x) => esc(x[0])).join(" und ")}. <button class="lnk" data-go="#/produkt?art=${a.no}">alle ansehen</button></p>` : ""}</div></div></div>`;
   }
@@ -530,15 +554,24 @@
   }
   function pageAna(b) {
     const items = S.kat.items.filter((a) => !a.stub), act = items.filter((a) => !a.gone), tops = [...new Set(items.map((a) => a.top))];
-    const nav = [["sortiment", "Sortiment"], ["preise", "Preise"], ["serien", "Serien"], ["kollektionen", "Kollektionen"], ["designer", "Designer"], ["maerkte", "Märkte"], ["fundgrube", "Fundgrube"]];
+    const nav = [["uebersicht", "Übersicht"], ["sortiment", "Sortiment"], ["preise", "Preise"], ["serien", "Familien"], ["kollektionen", "Kollektionen"], ["designer", "Designer"], ["maerkte", "Märkte"], ["fundgrube", "Fundgrube"]];
     const weeks = Array.from({ length: 26 }, (_, i) => dIso((25 - i) * 7)), wl = weeks.map(fS), inWeek = (d, i) => d && day(d) > (i ? weeks[i - 1] : dIso(26 * 7)) && day(d) <= weeks[i];
     let body = "";
-    if (b === "sortiment") {
+    if (b === "uebersicht") {
+      const useIkea = S.ovIkea && act.some((a) => a.hfb), lvl1 = (a) => (useIkea ? a.hfb || "ohne Angabe" : a.top), lvl2 = (a) => (useIkea ? a.pa || "ohne Angabe" : a.sub || "ohne Unterkategorie");
+      const groups = [...act.reduce((m, a) => m.set(lvl1(a), [...(m.get(lvl1(a)) || []), a]), new Map())].sort((x, y) => y[1].length - x[1].length);
+      const famChips = (l) => { const m = l.reduce((mm, a) => mm.set(a.name, (mm.get(a.name) || 0) + 1), new Map()); return [...m].sort((x, y) => y[1] - x[1]).slice(0, 14).map(([n, c]) => `<button class="pill2 ${/\b(19|20)\d\d\b/.test(n) ? "coll" : ""}" data-crumb="${esc(JSON.stringify({ q: n }))}">${esc(n)} <small>${c}</small></button>`).join("") + (m.size > 14 ? ` <span class="kd">+${m.size - 14}</span>` : ""); };
+      body = `<p class="sub" style="font-size:14px;color:var(--ink2);max-width:74ch">Das ganze Sortiment auf einen Blick: je Bereich die Unterkategorien mit ihren Produktfamilien. Gelb umrandet: Kollektionen mit Jahr. Antippen öffnet das Sortiment.</p>
+        ${act.some((a) => a.hfb) ? `<div class="seg" style="margin:0 0 14px -12px"><span class="lab">Gliederung</span><button data-ov="0" aria-pressed="${!useIkea}">Kategorien der Website</button><button data-ov="1" aria-pressed="${useIkea}">IKEA-Geschäftsbereiche</button></div>` : ""}
+        ${groups.map(([g1, l]) => { const subs = [...l.reduce((m, a) => m.set(lvl2(a), [...(m.get(lvl2(a)) || []), a]), new Map())].sort((x, y) => y[1].length - x[1].length); const colls = [...new Set(l.filter((a) => a.coll).map((a) => a.coll))];
+          return `<div class="sec"><div class="h"><h2>${esc(g1)}</h2><span class="kd">${nf(l.length)} Artikel · ${nf(new Set(l.map((a) => a.name)).size)} Familien${colls.length ? ` · ${colls.length} Kollektionen` : ""} · ${eur0(Math.min(...l.map((a) => a.price)))} bis ${eur0(Math.max(...l.map((a) => a.price)))} · +${l.filter((a) => a.first && day(a.first) >= dIso(90)).length} neu in 90 Tagen</span></div>
+            <table class="ov"><tbody>${subs.map(([g2, l2]) => `<tr><td class="n"><button class="lnk" data-crumb="${esc(JSON.stringify(useIkea ? { q: "" } : { bereich: [g1], sub: [g2] }))}">${esc(g2)}</button><div class="kd">${nf(l2.length)} Artikel</div></td><td>${famChips(l2)}</td></tr>`).join("")}</tbody></table></div>`; }).join("")}`;
+    } else if (b === "sortiment") {
       const up = weeks.map((_, i) => items.filter((a) => inWeek(a.first, i)).length), down = weeks.map((_, i) => items.filter((a) => inWeek(a.gone, i)).length);
       body = `<div class="nums"><div><b class="tn">${nf(act.length)}</b><span>Artikel im Sortiment</span></div><div><b class="tn">+${nf(items.filter((a) => a.first).length)}</b><span>neu seit Beginn der Erfassung</span></div><div><b class="tn">−${nf(items.filter((a) => a.gone).length)}</b><span>ausgelistet seit Beginn</span></div><div><b class="tn">${nf(new Set(act.map((a) => a.name)).size)}</b><span>Serien</span></div></div>
         <h2>Zu- und Abgänge je Woche</h2><p class="sub">neu erschienene oder ausgelistete Artikel · der Startbestand zählt nicht als neu</p>${weekBars(up, down, wl)}
         <div class="sec two"><div><h2>Bereiche</h2><p class="sub">Artikel im Sortiment · dahinter neu seit Beginn</p>${bars(tops.map((t) => [t, act.filter((a) => a.top === t).length, `+${items.filter((a) => a.top === t && a.first).length}`]).sort((a, b2) => b2[1] - a[1]), { go: (l) => `#/sortiment?bereich=${encodeURIComponent(l)}` })}</div>
-        <div><h2>Farben</h2><p class="sub">Varianten je Farbe · mehrfarbige zählen für jede Farbe</p>${bars([...act.reduce((m, a) => { a.cols.forEach((c) => m.set(c, (m.get(c) || 0) + 1)); return m; }, new Map())].sort((a, b2) => b2[1] - a[1]).slice(0, 12), { pre: sq_ })}
+        <div><h2>Farben</h2><p class="sub">Artikel je Farbe · mehrfarbige zählen für jede Farbe</p>${bars([...act.reduce((m, a) => { a.cols.forEach((c) => m.set(c, (m.get(c) || 0) + 1)); return m; }, new Map())].sort((a, b2) => b2[1] - a[1]).slice(0, 12), { pre: sq_ })}
         <h2 style="margin-top:26px">Einzelartikel und Sets</h2><p class="sub">Set: mehrere Artikel unter einer Nummer, z. B. Regal mit Untergestell</p>${bars([["Einzelartikel", act.filter((a) => a.type === "ART").length], ["Sets", act.filter((a) => a.type === "SPR").length]])}</div></div>`;
     } else if (b === "preise") {
       const chg = (dir) => weeks.map((_, i) => items.filter((a) => a.ph.slice(1).some(([t, v], k) => inWeek(t, i) && (dir ? v < a.ph[k][1] : v > a.ph[k][1]))).length);
@@ -550,14 +583,14 @@
     } else if (b === "serien") {
       const m = items.reduce((mm, a) => mm.set(a.name, [...(mm.get(a.name) || []), a]), new Map());
       const moving = [...m].map(([n, l]) => ({ n, l, ch: l.filter((a) => a.first || a.gone).length })).filter((x) => x.l.length > 1).sort((a, b2) => b2.ch - a.ch || b2.l.length - a.l.length).slice(0, 6);
-      body = `<p class="sub" style="font-size:14px;color:var(--ink2);max-width:70ch">Eine Serie sind alle Artikel mit demselben IKEA-Namen. Jede Bahn ist eine Variante: wann sie erschien, wann sie ging. Gezeigt: die Serien mit den meisten Veränderungen.</p>
-        <div class="two" style="margin-bottom:10px"><div><h2>Größte Serien</h2><p class="sub">Varianten je Name</p>${bars([...m].map(([n, l]) => [n, l.filter((a) => !a.gone).length]).sort((a, b2) => b2[1] - a[1]).slice(0, 12), { go: (l) => `#/sortiment?q=${encodeURIComponent(l)}` })}</div><div><h2>Am stärksten verändert</h2><p class="sub">neue oder ausgelistete Varianten seit Beginn</p>${bars(moving.map((x) => [x.n, x.ch, `von ${x.l.length}`]), { go: (l) => `#/sortiment?q=${encodeURIComponent(l)}` })}</div></div>
-        ${moving.filter((x) => x.ch).map((x) => `<div class="sec"><div class="h"><h2>Serie ${esc(x.n)}</h2><span class="kd">${new Set(x.l.map((a) => a.kind)).size} Produkte · ${x.l.length} Varianten · ${x.l.filter((a) => a.first).length} neu · ${x.l.filter((a) => a.gone).length} ausgelistet</span></div>${lanes(x.l.sort((p, q) => p.kind.localeCompare(q.kind, "de") || (p.col || "").localeCompare(q.col || "", "de")).slice(0, 30), null, (p) => `${p.kind}, ${p.col}`)}</div>`).join("")}`;
+      body = `<p class="sub" style="font-size:14px;color:var(--ink2);max-width:70ch">Eine Produktfamilie sind alle Artikel mit demselben IKEA-Namen, etwa STOCKHOLM, auch über mehrere Kollektionen hinweg. Jede Bahn ist eine Farbe oder Größe: wann sie erschien, wann sie ging. Gezeigt: die Familien mit den meisten Veränderungen.</p>
+        <div class="two" style="margin-bottom:10px"><div><h2>Größte Produktfamilien</h2><p class="sub">Artikel je Name</p>${bars([...m].map(([n, l]) => [n, l.filter((a) => !a.gone).length]).sort((a, b2) => b2[1] - a[1]).slice(0, 12), { go: (l) => `#/sortiment?q=${encodeURIComponent(l)}` })}</div><div><h2>Am stärksten verändert</h2><p class="sub">neue oder ausgelistete Artikel seit Beginn</p>${bars(moving.map((x) => [x.n, x.ch, `von ${x.l.length}`]), { go: (l) => `#/sortiment?q=${encodeURIComponent(l)}` })}</div></div>
+        ${moving.filter((x) => x.ch).map((x) => `<div class="sec"><div class="h"><h2>Produktfamilie ${esc(x.n)}</h2><span class="kd">${new Set(x.l.map((a) => a.kind)).size} Produkte · ${x.l.length} Artikel · ${x.l.filter((a) => a.first).length} neu · ${x.l.filter((a) => a.gone).length} ausgelistet</span></div>${lanes(x.l.sort((p, q) => p.kind.localeCompare(q.kind, "de") || (p.col || "").localeCompare(q.col || "", "de")).slice(0, 30), null, (p) => `${p.kind}, ${p.col}`)}</div>`).join("")}`;
     } else if (b === "kollektionen") {
       const m = items.filter((a) => a.coll).reduce((mm, a) => mm.set(a.coll, [...(mm.get(a.coll) || []), a]), new Map()), ks = [...m].sort((a, b2) => b2[0].localeCompare(a[0], "de"));
-      body = `<p class="sub" style="font-size:14px;color:var(--ink2);max-width:72ch">Kollektionen sind zeitlich begrenzte Reihen mit Jahr im Namen, etwa IKEA PS 2026 oder STOCKHOLM 2025. Sie mischen Varianten und ganz verschiedene Produkte. Erkannt wird nur, was das Jahr im Namen trägt.</p>
+      body = `<p class="sub" style="font-size:14px;color:var(--ink2);max-width:72ch">Kollektionen tragen ein Jahr im Namen, etwa IKEA PS 2026 oder STOCKHOLM 2025, und mischen ganz verschiedene Produkte. Manche bleiben mehrere Jahre erhältlich; einzelne Stücke wandern später ohne Jahr ins feste Sortiment ihrer Produktfamilie.</p>
         ${ks.length ? `<div class="two"><div><h2>Kollektionen</h2><p class="sub">Artikel im Sortiment · dahinter ausgelistet</p>${bars(ks.map(([n, l]) => [n, l.filter((a) => !a.gone).length, l.some((a) => a.gone) ? `−${l.filter((a) => a.gone).length}` : ""]), { go: (l) => `#/sortiment?coll=${encodeURIComponent(l)}` })}</div><div><h2>Preisspanne</h2><p class="sub">günstigster bis teuerster Artikel</p>${bars(ks.map(([n, l]) => [n, Math.max(...l.map((a) => a.price)), `ab ${eur0(Math.min(...l.map((a) => a.price)))}`]), { fmt: eur0 })}</div></div>
-        ${ks.map(([n, l]) => `<div class="sec"><div class="h"><h2>${esc(n)}</h2><span class="kd">${new Set(l.map((a) => a.kind)).size} Produkte · ${l.length} Varianten · ${[...new Set(l.map((a) => a.top))].map(esc).join(", ")}</span></div>${lanes(l.sort((p, q) => p.kind.localeCompare(q.kind, "de") || (p.col || "").localeCompare(q.col || "", "de")).slice(0, 40), null, (p) => `${p.kind}${p.col ? ", " + p.col : ""}`)}</div>`).join("")}` : "<p class='kd'>Keine Kollektion im Sortiment gefunden.</p>"}`;
+        ${ks.map(([n, l]) => `<div class="sec"><div class="h"><h2>${esc(n)}</h2><span class="kd">${new Set(l.map((a) => a.kind)).size} Produkte · ${l.length} Artikel · ${[...new Set(l.map((a) => a.top))].map(esc).join(", ")}</span></div>${lanes(l.sort((p, q) => p.kind.localeCompare(q.kind, "de") || (p.col || "").localeCompare(q.col || "", "de")).slice(0, 40), null, (p) => `${p.kind}${p.col ? ", " + p.col : ""}`)}</div>`).join("")}` : "<p class='kd'>Keine Kollektion im Sortiment gefunden.</p>"}`;
     } else if (b === "designer") {
       const F = S.facets;
       if (!F) body = `<p class="kd">Details (Designer, Material) sind noch nicht abgerufen.</p>`;
@@ -621,7 +654,7 @@
         ${meta?.last_run?.errors ? `<dt>Hinweise</dt><dd class="kd">${esc(meta.last_run.errors)}</dd>` : ""}</dl></div>
         <div><h2>Zuletzt per Telegram gemeldet</h2><p class="sub">Einstellungen im Reiter Einstellungen</p><div class="feed">${sent.map((m) => `<div style="grid-template-columns:96px minmax(0,1fr);cursor:default"><span class="kd tn">${fDT(m.ts)}</span><span style="font-size:13px">${esc(String(m.text || "").replace(/<[^>]+>/g, "")).replace(/\n/g, "<br>")}</span></div>`).join("") || "<p class='kd'>Noch nichts gemeldet.</p>"}</div>${S.state?.outbox?.length ? `<p class="kd">${S.state.outbox.length} Nachrichten warten auf den Versand.</p>` : ""}</div></div>
       <div class="sec"><div class="h"><h2>Märkte</h2><span class="kd">${storeList().length}</span></div><div class="tw"><table><thead><tr><th>Markt</th><th class="r">aktiv</th><th>zuletzt ok</th><th class="hide">Fehler</th></tr></thead><tbody>${storeList().map((s) => `<tr data-go="#/markt?id=${encodeURIComponent(s.id)}"><td>${isMine(s.id) ? `<b>${esc(s.name)}</b>` : esc(s.name)}</td><td class="r tn">${nf(s.active)}</td><td class="tn">${rel(s.last_ok)}</td><td class="hide kd">${esc(s.error || s.last_error || "")}</td></tr>`).join("")}</tbody></table></div></div>
-      <div class="sec"><div class="h"><h2>Begriffe</h2></div><dl class="dl2"><dt>Sortiment</dt><dd>alle Artikel, die IKEA Deutschland regulär verkauft</dd><dt>Bereich</dt><dd>oberste Kategorie, z. B. „Sofas & Sessel“</dd><dt>Serie</dt><dd>alle Artikel mit demselben IKEA-Namen, z. B. VIMLE</dd><dt>Produkt</dt><dd>Serie plus Art, z. B. VIMLE 3er-Sofa</dd><dt>Variante</dt><dd>ein Produkt in einer bestimmten Farbe oder Größe, mit eigener Artikelnummer</dd><dt>Set</dt><dd>mehrere Artikel, die IKEA unter einer Nummer zusammen verkauft</dd><dt>Angebot</dt><dd>ein einzelnes Teil in einer Fundgrube, mit eigenem Preis, Zustand und Markt</dd><dt>Startbestand</dt><dd>was beim Beginn der Erfassung schon da war; zählt nie als „neu“, hat kein Einstelldatum</dd><dt>Tage bis weg</dt><dd>vom ersten bis zum letzten Tag, an dem ein Angebot gelistet war</dd><dt>Verschwunden</dt><dd>erst wenn ein Angebot in zwei erfolgreichen Abrufen seines Markts fehlt</dd></dl>
+      <div class="sec"><div class="h"><h2>Begriffe</h2></div><dl class="dl2"><dt>Sortiment</dt><dd>alle Artikel, die IKEA Deutschland regulär verkauft</dd><dt>Bereich</dt><dd>oberste Kategorie, z. B. „Sofas & Sessel“</dd><dt>Produktfamilie</dt><dd>alle Artikel mit demselben IKEA-Namen, z. B. STOCKHOLM, über alle Jahre und Kollektionen</dd><dt>Kollektion</dt><dd>Reihe mit Jahr im Namen, z. B. STOCKHOLM 2025; kann mehrere Jahre laufen</dd><dt>Produkt</dt><dd>Familie plus Art, z. B. VIMLE 3er-Sofa</dd><dt>Farbe/Größe</dt><dd>ein Produkt in einer bestimmten Farbe oder Größe, mit eigener Artikelnummer</dd><dt>Set</dt><dd>mehrere Artikel, die IKEA unter einer Nummer zusammen verkauft</dd><dt>Angebot</dt><dd>ein einzelnes Teil in einer Fundgrube, mit eigenem Preis, Zustand und Markt</dd><dt>Startbestand</dt><dd>was beim Beginn der Erfassung schon da war; zählt nie als „neu“, hat kein Einstelldatum</dd><dt>Tage bis weg</dt><dd>vom ersten bis zum letzten Tag, an dem ein Angebot gelistet war</dd><dt>Verschwunden</dt><dd>erst wenn ein Angebot in zwei erfolgreichen Abrufen seines Markts fehlt</dd></dl>
         <p class="kd" style="margin-top:12px">Alle Daten liegen verschlüsselt und werden erst in diesem Browser geöffnet. Nichts wird automatisch gelöscht. IKEA liefert kein Einstelldatum; alle Zeitangaben sind Beobachtungen der Abrufe. Die alte Ansicht bleibt unter <a class="lnk" href="alt.html">alt.html</a> erreichbar.</p></div>`;
   }
   async function pageEinst() {
@@ -667,7 +700,7 @@
       const detailPage = ["artikel", "angebot", "produkt"].includes(name);
       const needR = ["sortiment", "markt", "analyse", "start"].includes(name) || detailPage, needF = ["sortiment", "analyse"].includes(name) || detailPage;
       await Promise.all([needR ? loadRange() : null, needF ? loadFacets() : null, detailPage ? loadDetails() : null]);
-      const needArch = (name === "fundgrube" && S.f.fund.zeit) || ["artikel", "produkt", "angebot"].includes(name) || (name === "analyse" && (p.get("b") || "sortiment") === "fundgrube") || (name === "start" && !S.repo.archive);
+      const needArch = (name === "fundgrube" && S.f.fund.zeit) || ["artikel", "produkt", "angebot"].includes(name) || (name === "analyse" && p.get("b") === "fundgrube") || (name === "start" && !S.repo.archive);
       if (needArch && !S.repo.archive) loadArchive().then(() => { memo.clear(); for (const o of FALL()) linkOffer(o); render(); }).catch((e) => console.warn(e));
       let page;
       if (name === "artikel") { const a = S.kat.byId.get(p.get("id")); page = a ? pageArticle(a) : `<button class="back" data-back>← zurück</button><h1>Artikel nicht gefunden</h1>`; }
@@ -677,7 +710,7 @@
       else if (tab === "start") page = pageStart();
       else if (tab === "fundgrube") page = pageList("fund");
       else if (tab === "sortiment") page = pageList("sort");
-      else if (tab === "analyse") page = pageAna(p.get("b") || "sortiment");
+      else if (tab === "analyse") page = pageAna(p.get("b") || "uebersicht");
       else if (tab === "daten") page = await pageDaten();
       else page = await pageEinst();
       if (S.kat?.failed) page = `<div class="err">Die Sortimentsdaten konnten nicht geladen werden (Verbindung?). Ohne sie fehlen Sortiment, Artikeldetails und die Zuordnung der Fundgrube-Angebote. <button class="lnk" data-retry>Erneut versuchen</button></div>` + page;
@@ -698,7 +731,7 @@
   function exportCSV(tab) {
     const list = apply(tab, S.f[tab]);
     const cols = tab === "fund" ? [["Artikel", (o) => o.art ? o.art.name : o.title], ["Beschreibung", (o) => o.product_description], ["Artikelnummer", (o) => fNo(o.no)], ["Markt", (o) => o.market], ["Zustand", (o) => o.condition], ["Grund", (o) => o.reason_discount], ["Preis", (o) => o.price], ["Regulär", (o) => o.orig], ["Rabatt %", (o) => o.disc], ["eingestellt", (o) => (o.base ? "" : o.start)], ["weg", (o) => o.end || ""]]
-      : [["Name", (a) => a.name], ["Produkt", (a) => a.kind], ["Variante", (a) => ausOf(a)], ["Artikelnummer", (a) => fNo(a.no)], ["Bereich", (a) => a.top], ["Preis", (a) => a.price], ["Vorher", (a) => a.prev || ""], ["neu seit", (a) => day(a.first) || ""], ["ausgelistet", (a) => day(a.gone) || ""], ["Märkte", (a) => a.nMk ?? ""], ["Bewertung", (a) => a.rating || ""]];
+      : [["Name", (a) => a.name], ["Produkt", (a) => a.kind], ["Farbe/Größe", (a) => ausOf(a)], ["Artikelnummer", (a) => fNo(a.no)], ["Bereich", (a) => a.top], ["Preis", (a) => a.price], ["Vorher", (a) => a.prev || ""], ["neu seit", (a) => day(a.first) || ""], ["ausgelistet", (a) => day(a.gone) || ""], ["Märkte", (a) => a.nMk ?? ""], ["Bewertung", (a) => a.rating || ""]];
     const cell = (v) => { const s = String(v ?? ""); return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
     const text = "﻿" + [cols.map((c) => c[0]).join(";"), ...list.map((o) => cols.map((c) => cell(c[1](o))).join(";"))].join("\n");
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" })); a.download = `zweite-chance_${tab === "fund" ? "fundgrube" : "sortiment"}_${TODAY}.csv`; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
@@ -731,6 +764,7 @@
     if (d.showmore !== undefined) { S.shown += 150; return rerender(); }
     if (d.view) { S.view[tab] = d.view; lsSet(LS.view, S.view); return rerender(); }
     if (d.grp) { S.grp = d.grp; return rerender(); }
+    if (d.ov) { S.ovIkea = d.ov === "1"; return rerender(); }
     if (d.heat) { S.heatSort = d.heat; return rerender(); }
     if (d.scroll) { document.getElementById(d.scroll)?.scrollIntoView({ behavior: "smooth" }); return; }
     if (d.export) return exportCSV(d.export);
@@ -744,6 +778,7 @@
     if (d.notify) { const r = S.rules.find((x) => x.id === d.notify); if (!r) { toast("Dieser Eintrag stammt aus der Sicherung und ist erst mit verbundenem Hilfsdienst änderbar."); return; } const onNow = r.notify !== false && r.enabled !== false; r.notify = !onNow; r.enabled = true; await persistRules(); memo.clear(); return rerender(); }
     if (d.delrule) { const r = S.rules.find((x) => x.id === d.delrule); if (!r || !confirmTwice(`„${isFavRule(r) ? r.name : ruleText(r)}“ entfernen?`)) return; S.rules = S.rules.filter((x) => x.id !== r.id); await persistRules(true); memo.clear(); toast("Entfernt. Früherer Stand bleibt wiederherstellbar."); return rerender(); }
     if (d.restore) { if (!confirmTwice("Diesen früheren Stand der Merkliste wiederherstellen?")) return; try { const snap = await worker.call("GET", null, { path: `/api/history?id=${encodeURIComponent(d.restore)}` }); S.rules = ZC.dedupeRules(snap.rules || []).map(withId); S.hist = null; await persistRules(true); memo.clear(); toast("Früherer Stand wiederhergestellt."); rerender(); } catch (err) { toast(`Nicht möglich: ${esc(err.message)}`); } return; }
+    if (d.asofOff !== undefined) { S.asof = null; memo.clear(); return rerender(); }
     if (d.retry !== undefined) { S.kat = null; memo.clear(); return render(); }
     if (d.logout !== undefined) { lsSet(LS.key, null); lsSet(LS.pw, null); location.reload(); }
   });
@@ -753,6 +788,7 @@
     if (d.mine) { setF(tab, d.mine, t.checked ? [...MINE()] : []); return rerender(); }
     if (d.tg) { setF(tab, d.tg, t.checked); S.open = null; return rerender(); }
     if (d.range) { const cur = S.f[tab][d.range] || {}; setF(tab, d.range, { ...cur, [d.side]: t.value }); return rerender(); }
+    if (d.asof !== undefined) { S.asof = t.value && t.value < TODAY ? t.value : null; memo.clear(); S.shown = 150; if (S.asof && !S.repo.archive) loadArchive().then(() => { memo.clear(); for (const o of FALL()) linkOffer(o); rerender(); }); return rerender(); }
     if (d.srt) { S.sort[d.srt] = t.value; return rerender(); }
     if (d.cmp !== undefined) { S.cmp = t.value; return rerender(); }
     if (d.minepick) { const m = MINE(); lsSet(LS.mine, t.checked ? [...new Set([...m, d.minepick])] : m.filter((x) => x !== d.minepick)); memo.clear(); return rerender(); }

@@ -25,6 +25,16 @@ class TestModel(unittest.TestCase):
         self.assertEqual(kivik["prev"], 399.0); self.assertEqual(kivik["tag"], "NEW_LOWER_PRICE")
         self.assertIn("90584658", items)
 
+    def test_parse_structure_and_variants(self):
+        from katalog import model
+        it = {"itemNo": "12345678", "itemType": "ART", "name": "STOCKHOLM 2025", "typeName": "Vase", "salesPrice": {"numeral": 19.99},
+              "businessStructure": {"homeFurnishingBusinessName": "Decoration", "productAreaName": "Vases"},
+              "gprDescription": {"numberOfVariants": 3, "variants": [{"id": "11111111"}, {"id": "22222222"}]}}
+        r = model.parse_item(it)
+        self.assertEqual((r["hfb"], r["pa"], r["nvar"], r["vars"]), ("Decoration", "Vases", 3, "11111111,22222222"))
+        back = model.unpack(model.pack({r["id"]: {**r, "first_seen": "d", "last_seen": "d", "status": "active", "missing": 0, "ph": [["d", 19.99]], "log": []}}))
+        self.assertEqual(back[r["id"]]["vars"], "11111111,22222222"); self.assertEqual(back[r["id"]]["nvar"], 3)
+
     def test_merge_lifecycle_never_deletes(self):
         from katalog import model
         db, items = {}, sample_items()
@@ -183,6 +193,9 @@ class TestSortiment(unittest.TestCase):
         self.s.main(["--stores", "1"])
         ids2 = self.store.read_bin("range.bin")["ids"]
         self.assertEqual(ids2[:4], ids); self.assertEqual(len(ids2), 5)
+        # Momentaufnahmen fuer die Zeitmaschine bleiben als eigene Dateien erhalten
+        d2 = self.store.read_bin("range.bin")
+        self.assertTrue(d2["snapshots"]); self.assertIsNotNone(self.store.read_bin(f"range-{d2['snapshots'][-1]}.bin"))
 
     def test_oldest_measurement_first(self):
         self.s.main(["--stores", "1"])

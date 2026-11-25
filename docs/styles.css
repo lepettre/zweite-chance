@@ -228,3 +228,13 @@ input.inp{height:36px;border:0;border-bottom:1px solid var(--ink);padding:0 2px;
   .pop{position:fixed;left:max(8px,env(safe-area-inset-left,0px));right:max(8px,env(safe-area-inset-right,0px));top:auto;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:auto;max-height:62vh;z-index:80;box-shadow:0 -6px 30px rgba(0,0,0,.25)}
   .bar .l{gap:12px}
 }
+.tm{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px;margin:10px 0 0}
+.tm input{border:0;border-bottom:1px solid var(--ink);background:none;font:inherit;padding:2px}
+.tm b{color:var(--red)}
+.ov{width:100%;border-collapse:collapse}
+.ov td{vertical-align:top;padding:7px 12px 7px 0;border-bottom:1px solid var(--rule)}
+.ov td.n{width:24%;min-width:130px}
+.pill2{display:inline-block;border:1px solid var(--rule);padding:2px 8px;margin:0 4px 4px 0;font-size:12.5px;font-weight:600;background:#fff}
+.pill2 small{color:var(--mut);font-weight:500}
+.pill2:hover{border-color:var(--ink)}
+.pill2.coll{border-color:var(--mark);box-shadow:inset 0 0 0 1px var(--mark)}
