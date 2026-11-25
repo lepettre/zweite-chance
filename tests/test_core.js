@@ -108,3 +108,11 @@ assert.deepStrictEqual(top.map((x) => x.n), [1, 2, 3]);
   assert.deepStrictEqual(["Henrik Preutz", "Anna Efverlund", "Jóna Berglind Stefánsdóttir"].sort(ZC.sortByLast), ["Anna Efverlund", "Henrik Preutz", "Jóna Berglind Stefánsdóttir"]);
   console.log("designer: ok");
 }
+
+// Folgen und Filtersätze dürfen nicht als Duplikate gelten
+{
+  const a = { sub: { k: "des", v: "Henrik Preutz" } }, b = { sub: { k: "serie", v: "STOCKHOLM" } }, c = { ui: { bereich: ["Sofas & Sessel"] } }, d = { ui: { bereich: ["Betten"] } };
+  assert.strictEqual(ZC.dedupeRules([a, b, c, d]).length, 4);
+  assert.strictEqual(ZC.ruleKey({ keywords: ["billy"] }), ZC.ruleKey({ keywords: ["BILLY"] }), "alte Schlüssel unverändert");
+  console.log("regeln: ok");
+}

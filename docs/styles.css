@@ -240,3 +240,5 @@ input.inp{height:36px;border:0;border-bottom:1px solid var(--ink);padding:0 2px;
 .pill2.coll{border-color:var(--mark);box-shadow:inset 0 0 0 1px var(--mark)}
 .imgs>.tg{grid-column:1/-1;background:var(--wash);font:700 12px var(--f);letter-spacing:.07em;text-transform:uppercase;padding:8px 12px;cursor:default}
 .slot .x{font-size:.55em;color:var(--mut);margin-left:4px;text-decoration:underline}
+.follow{font-size:11.5px;font-weight:600;border:1px solid var(--blue);color:var(--blue);padding:0 7px;margin-left:4px;vertical-align:1px;line-height:18px}
+.follow.on{background:var(--blue);color:#fff}

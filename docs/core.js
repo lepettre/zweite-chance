@@ -145,6 +145,9 @@
       r.max_price === null || r.max_price === undefined || r.max_price === "" ? "" : Number(r.max_price),
       uniq(r.conditions || [], fold)];
     if (r.min_price !== null && r.min_price !== undefined && r.min_price !== "") fields.push(`ab${Number(r.min_price)}`);
+    // Folgen und Filtersätze unterscheiden Regeln ebenfalls (nur anhängen, alte Schlüssel bleiben gleich)
+    if (rule.sub) fields.push(`sub:${rule.sub.k}:${fold(rule.sub.v || "")}`);
+    if (rule.ui) fields.push(`ui:${JSON.stringify(Object.keys(rule.ui).sort().map((k) => [k, rule.ui[k]]))}`);
     return JSON.stringify(fields);
   }
   function dedupeRules(rules) {
