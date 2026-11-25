@@ -45,7 +45,7 @@ jobs:
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then exit "$rc"; fi
       - name: Veröffentlichen
         if: steps.run.outputs.rc == '0'
-        run: bash scripts/publish.sh k range.bin
+        run: bash scripts/publish.sh k range.bin $(cd site/k && ls range-*.bin 2>/dev/null)
       - name: Fehlschlag melden (gesperrt)
         if: steps.run.outputs.rc == '2'
         run: |

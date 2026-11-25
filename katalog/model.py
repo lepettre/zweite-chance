@@ -49,6 +49,11 @@ def parse_item(it: dict) -> dict | None:
         "col": ", ".join(c.get("name", "") for c in (it.get("colors") or []) if c.get("name")),
         "ctx": (it.get("contextualImageUrl") or "").replace(IMG_PREFIX, ""),
         "rating": it.get("ratingValue") or 0, "rcount": it.get("ratingCount") or 0,
+        # IKEA-eigene Gliederung und alle Varianten des Produkts (auch solche, die in keiner Liste stehen)
+        "hfb": (it.get("businessStructure") or {}).get("homeFurnishingBusinessName", ""),
+        "pa": (it.get("businessStructure") or {}).get("productAreaName", ""),
+        "nvar": int((it.get("gprDescription") or {}).get("numberOfVariants") or 0),
+        "vars": ",".join(str(v.get("id")) for v in ((it.get("gprDescription") or {}).get("variants") or []) if v.get("id")),
     }
 
 
@@ -75,7 +80,7 @@ def merge(db: dict, items: list[dict], day: str, complete: bool) -> dict:
         if r["last"] and not o.get("last"):
             o["log"].append([day, "last"])
             stats["last_chance"] += 1
-        o.update({k: r[k] for k in r if k not in ("id",) and (r[k] not in ("", None) or k in ("prev", "tag", "vfrom", "vto", "last", "online", "col", "ctx", "rating", "rcount"))})
+        o.update({k: r[k] for k in r if k not in ("id",) and (r[k] not in ("", None) or k in ("prev", "tag", "vfrom", "vto", "last", "online", "col", "ctx", "rating", "rcount", "nvar"))})
         o["last_seen"], o["missing"] = day, 0
     if complete:
         for o in db.values():
@@ -91,8 +96,8 @@ def merge(db: dict, items: list[dict], day: str, complete: bool) -> dict:
 
 # ---- kompaktes Speicherformat (Zeilen + gemeinsame Zeichenketten-Tabelle), im Browser: docs/app.js (unpackK) ----
 STR = ["id", "no", "type", "name", "kind", "measure", "slug", "img", "cat", "vfrom", "vto", "tag",
-       "first_seen", "last_seen", "status", "ph", "log", "col", "ctx"]
-NUM = ["price", "prev", "last", "online", "missing", "rating", "rcount"]
+       "first_seen", "last_seen", "status", "ph", "log", "col", "ctx", "hfb", "pa", "vars"]
+NUM = ["price", "prev", "last", "online", "missing", "rating", "rcount", "nvar"]
 
 
 def pack(db: dict) -> dict:
@@ -131,7 +136,7 @@ def unpack(d: dict | None) -> dict:
         r = dict(zip(names, row))                      # aeltere Dateien kennen neuere Spalten noch nicht
         o = {f: table[r[f]] if f in r else "" for f in STR}
         for f in NUM:
-            o[f] = r.get(f, 0 if f in ("rating", "rcount") else None)
+            o[f] = r.get(f, 0 if f in ("rating", "rcount", "nvar") else None)
         o["ph"] = json.loads(o["ph"]) if o["ph"] else [[o["first_seen"], o["price"]]]
         o["log"] = json.loads(o["log"]) if o["log"] else []
         out[o["id"]] = o

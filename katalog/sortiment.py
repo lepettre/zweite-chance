@@ -114,7 +114,10 @@ def main(argv=None) -> int:
     done = [s for s in todo if stores[s].get("day") == ts[:10]]
     if not done and blocked.is_set():
         return 2
-    store.write_bin("range.bin", {"v": 1, "updated": ts, "ids": ids, "stores": [stores[k] for k in sorted(stores)], "range": rng, "stock": stk})
+    snaps = sorted(set(cur.get("snapshots", [])) | {ts[:10]})
+    out = {"v": 1, "updated": ts, "ids": ids, "stores": [stores[k] for k in sorted(stores)], "range": rng, "stock": stk}
+    store.write_bin(f"range-{ts[:10]}.bin", out)                      # Momentaufnahme fuer die Zeitmaschine, wird nie ueberschrieben
+    store.write_bin("range.bin", {**out, "snapshots": snaps})
     print(f"[sortiment] fertig: {len(done)} Maerkte gemessen, {len(failed)} fehlgeschlagen, {round(time.time() - t0)} s")
     return 0
 
