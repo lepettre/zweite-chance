@@ -98,7 +98,8 @@
       const o = {};
       for (const f of STR) o[f] = ix[f] === undefined ? "" : T[row[ix[f]]];
       for (const f of ["price", "prev", "last", "online", "missing", "rating", "rcount"]) o[f] = ix[f] === undefined ? 0 : row[ix[f]];
-      o.top = (o.cat || "").split(" › ")[0] || "–"; o.sub = (o.cat || "").split(" › ")[1] || "";
+      const cp = (o.cat || "").split(" › "); o.top = cp[0] || "–"; o.sub = cp[1] || ""; o.sub2 = cp[2] || "";
+      o.coll = /\b(19|20)\d\d\b/.test(o.name || "") ? o.name : null;     // Kollektion: Name mit Jahreszahl, z. B. IKEA PS 2026, STOCKHOLM 2025
       o.ph = o.ph ? JSON.parse(o.ph) : [[o.first_seen, o.price]];
       o.log = o.log ? JSON.parse(o.log) : [];
       o.cols = (o.col || "").split(", ").filter(Boolean);
@@ -254,6 +255,9 @@
       { k: "preis", l: "Preis", base: 1, pre: "für", any: "jeden Preis", t: "range", get: (o) => o.price },
       { k: "wo", l: "Verfügbarkeit", base: 1, need: "R", pre: "", any: "egal wo erhältlich", t: "single", opts: [["mine", "erhältlich in meinen Märkten"], ["notmine", "nicht in meinen Märkten erhältlich"], ["selten", "in höchstens 5 Märkten erhältlich"], ["fast", "in fast allen Märkten erhältlich"]],
         test: (o, v) => { if (o.nMk == null) return false; if (v === "selten") return o.nMk >= 1 && o.nMk <= 5; if (v === "fast") return o.nKn >= 10 && o.nMk / o.nKn >= 0.9; const c = MINE().map((m) => carries(o, m)).filter((x) => x !== null); if (!c.length) return false; return v === "mine" ? c.some(Boolean) : !c.some(Boolean); } },
+      { k: "coll", g: "Was", l: "Kollektion", pre: "aus der Kollektion", t: "multi", get: (o) => (o.coll ? [o.coll] : []), ord: (a, b) => b.localeCompare(a, "de") },
+      { k: "sub", g: "Was", l: "Unterkategorie", pre: "in", t: "multi", get: (o) => (o.sub ? [o.sub] : []), search: true },
+      { k: "sub2", g: "Was", l: "Rubrik", pre: "in", t: "multi", get: (o) => (o.sub2 ? [o.sub2] : []), search: true },
       { k: "des", g: "Was", l: "Designer", pre: "von", need: "F", t: "multi", get: (o) => S.facets.ppl.get(o.id) || (S.facets.by.has(o.id) ? ["ohne Namen (IKEA of Sweden)"] : ["noch unbekannt"]), ord: (a, b) => ((a.startsWith("ohne") || a.startsWith("noch")) - (b.startsWith("ohne") || b.startsWith("noch"))) || ZC.sortByLast(a, b), search: true },
       { k: "mat", g: "Was", l: "Material", pre: "aus", need: "F", t: "multi", get: (o) => [S.facets.matBy.get(o.id) || "noch unbekannt"], search: true },
       { k: "typ", g: "Was", l: "Einzelartikel oder Set", t: "single", opts: [["ART", "nur Einzelartikel"], ["SPR", "nur Sets"]], test: (o, v) => o.type === v },
@@ -381,8 +385,10 @@
     const r = (a) => { const c = lastChg(a); return `<tr data-go="#/artikel?id=${encodeURIComponent(a.id)}"><td class="im">${img(a.thumb)}</td><td><div class="nm">${esc(a.name)} <span style="font-weight:400">${esc(a.kind)}</span>${a.first && day(a.first) >= dIso(30) ? ` <span class="chip">neu</span>` : ""}${a.gone ? ` <span class="chip up">ausgelistet</span>` : ""}${a.last && !a.gone ? ` <span class="chip">letzte Chance</span>` : ""}</div><div class="kd">${esc(ausOf(a))}</div></td><td class="hide kd">${esc(a.sub || a.top)}</td><td class="r">${pr(a.price)}${a.prev ? `<div class="kd"><s>${eur(a.prev)}</s></div>` : c ? `<div class="kd tn ${c.to < c.from ? "dn" : "up"}">${c.to < c.from ? "▼" : "▲"} ${Math.abs(Math.round((c.to / c.from - 1) * 100))} % am ${fS(c.d)}</div>` : ""}</td><td class="hide">${spark(a)}</td>${S.rng ? `<td class="hide tn">${a.nMk != null ? `<span class="bar5"><i style="width:${a.nMk / Math.max(1, a.nKn) * 100}%"></i></span>${a.nMk}` : "–"}</td>` : ""}<td class="hide">${fundHint(a)}</td><td>${favBtn(a.no, a.name)}</td></tr>`; };
     const cols = S.rng ? 8 : 7;
     if (grp === "aus") return `<div class="tw"><table>${head}<tbody>${list.map(r).join("")}</tbody></table></div>`;
-    const key = grp === "serie" ? (a) => a.name : (a) => a.name + "|" + a.kind, g = new Map(); for (const a of list) g.set(key(a), [...(g.get(key(a)) || []), a]);
-    return `<div class="tw"><table>${head}<tbody>${[...g.values()].map((l) => { const ps = l.map((a) => a.price), kinds = new Set(l.map((a) => a.kind)).size; return `<tr class="grp"><td colspan="${cols}">${esc(grp === "serie" ? `Serie ${l[0].name}` : `${l[0].name} ${l[0].kind}`)} · ${grp === "serie" ? `${kinds} Produkte, ` : ""}${l.length} Variante${l.length > 1 ? "n" : ""} · ${Math.min(...ps) === Math.max(...ps) ? eur(ps[0]) : `${eur(Math.min(...ps))} bis ${eur(Math.max(...ps))}`}</td></tr>${l.map(r).join("")}`; }).join("")}</tbody></table></div>`;
+    if (grp === "koll") list = list.filter((a) => a.coll);
+    const key = grp === "serie" || grp === "koll" ? (a) => a.name : (a) => a.name + "|" + a.kind, g = new Map(); for (const a of list) g.set(key(a), [...(g.get(key(a)) || []), a]);
+    if (!list.length) return `<div class="empty">Keine Kollektion in dieser Auswahl. Kollektionen erkennt die App am Jahr im Namen, z. B. IKEA PS 2026.</div>`;
+    return `<div class="tw"><table>${head}<tbody>${[...g.values()].map((l) => { const ps = l.map((a) => a.price), kinds = new Set(l.map((a) => a.kind)).size; return `<tr class="grp"><td colspan="${cols}">${esc(grp === "koll" ? `Kollektion ${l[0].name}` : grp === "serie" ? `Serie ${l[0].name}` : `${l[0].name} ${l[0].kind}`)} · ${grp === "serie" || grp === "koll" ? `${kinds} Produkte, ` : ""}${l.length} Variante${l.length > 1 ? "n" : ""} · ${Math.min(...ps) === Math.max(...ps) ? eur(ps[0]) : `${eur(Math.min(...ps))} bis ${eur(Math.max(...ps))}`}</td></tr>${l.map(r).join("")}`; }).join("")}</tbody></table></div>`;
   }
   const mini = (list) => `<div class="tw"><table><tbody>${list.map((a) => `<tr data-go="#/artikel?id=${encodeURIComponent(a.id)}"><td class="im">${img(a.thumb)}</td><td><div class="nm">${esc(a.name)} <span style="font-weight:400">${esc(a.kind)}</span></div><div class="kd">${esc(ausOf(a))}${a.nMk != null ? ` · in ${a.nMk} Märkten` : ""}</div></td><td class="r">${pr(a.price)}</td></tr>`).join("")}</tbody></table></div>`;
   function tiles(list, fund) {
@@ -429,7 +435,7 @@
     const f = S.f[tab], list = apply(tab, f).sort(SORTS[tab][S.sort[tab]] || SORTS[tab][Object.keys(SORTS[tab])[0]]);
     const title = tab === "fund" ? "Fundgrube" : "Sortiment", cnt = `${nf(list.length)} ${tab === "fund" ? "Angebote" : "Artikel"}`;
     const viewSeg = tab === "fund" ? `<button data-view="liste" aria-pressed="${S.view.fund !== "kacheln"}">Liste</button><button data-view="kacheln" aria-pressed="${S.view.fund === "kacheln"}">Kacheln</button>`
-      : `<span class="lab">zeigen als</span><button data-grp="aus" aria-pressed="${S.grp === "aus"}">Varianten</button><button data-grp="prod" aria-pressed="${S.grp === "prod"}">Produkte</button><button data-grp="serie" aria-pressed="${S.grp === "serie"}">Serien</button><span class="lab">·</span><button data-view="liste" aria-pressed="${S.view.sort !== "kacheln"}">Liste</button><button data-view="kacheln" aria-pressed="${S.view.sort === "kacheln"}">Kacheln</button>`;
+      : `<span class="lab">zeigen als</span><button data-grp="aus" aria-pressed="${S.grp === "aus"}">Varianten</button><button data-grp="prod" aria-pressed="${S.grp === "prod"}">Produkte</button><button data-grp="serie" aria-pressed="${S.grp === "serie"}">Serien</button><button data-grp="koll" aria-pressed="${S.grp === "koll"}">Kollektionen</button><span class="lab">·</span><button data-view="liste" aria-pressed="${S.view.sort !== "kacheln"}">Liste</button><button data-view="kacheln" aria-pressed="${S.view.sort === "kacheln"}">Kacheln</button>`;
     const isCustom = Object.keys(f).some((k) => on(f[k]));
     const g = tab === "fund" && isCustom ? goodPrice(f) : null;
     const part = list.slice(0, S.shown);
@@ -449,7 +455,7 @@
     const show = yes.length <= no.length ? ["nur in", yes] : ["fehlt in", no];
     return `<button class="back" data-back>← zurück</button>
       <div class="top2"><div><div class="big">${img(a.img ? `${K_IMG}${a.img}?f=s` : "")}</div>${gallery.length > 1 ? `<div class="alts">${gallery.map((g2) => `<a href="${K_IMG}${esc(g2)}?f=xl" target="_blank" rel="noopener" style="width:58px;height:58px;border:1px solid var(--rule);padding:3px;display:block">${img(`${K_IMG}${g2}?f=xxs`)}</a>`).join("")}</div>` : ""}</div><div>
-        <div class="crumb">Sortiment › ${esc(a.top)}${a.sub ? ` › ${esc(a.sub)}` : ""} · Art. ${fNo(a.no)}</div><h1>${esc(a.name)} ${favBtn(a.no, a.name)}</h1><div class="kd2">${esc(a.kind)}${a.measure ? `, ${esc(a.measure)}` : ""}</div>
+        <div class="crumb"><button class="lnk" data-crumb="">Sortiment</button> › <button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top] }))}">${esc(a.top)}</button>${a.sub ? ` › <button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top], sub: [a.sub] }))}">${esc(a.sub)}</button>` : ""}${a.sub2 ? ` › <button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top], sub: [a.sub], sub2: [a.sub2] }))}">${esc(a.sub2)}</button>` : ""} · Art. ${fNo(a.no)}${a.coll ? ` · <button class="lnk" data-crumb="${esc(JSON.stringify({ coll: [a.coll], stand: "auch" }))}">Kollektion ${esc(a.coll)}</button>` : ""}</div><h1>${esc(a.name)} ${favBtn(a.no, a.name)}</h1><div class="kd2">${esc(a.kind)}${a.measure ? `, ${esc(a.measure)}` : ""}</div>
         <div class="bigpr">${pr(a.price)}</div>${a.prev ? `<div class="dn">reduziert, vorher ${eur(a.prev)}${a.vto ? ` · gilt bis ${fD(a.vto)}` : ""}</div>` : c ? `<div class="${c.to < c.from ? "dn" : "up"}">${c.to < c.from ? "gesenkt" : "erhöht"} am ${fD(c.d)} von ${eur(c.from)}</div>` : `<div class="kd">Preis seit Beginn der Erfassung unverändert</div>`}
         ${prods.length > 1 ? `<div class="alts" role="group" aria-label="Varianten">${prods.map((x) => `<button data-go="#/artikel?id=${encodeURIComponent(x.id)}" aria-pressed="${x.id === a.id}" title="${esc(ausOf(x))}">${img(x.thumb, ausOf(x))}</button>`).join("")}</div><div class="kd">Variante: ${esc(ausOf(a))} · ${prods.length} Varianten</div>` : ""}
         ${now.length ? `<div class="hint"><b>Gerade ${now.length} ${now.length === 1 ? "Angebot" : "Angebote"} in der Fundgrube</b> ab ${eur(Math.min(...now.map((o) => o.price)))}${now.some((o) => isMine(o.mid)) ? `, davon ${now.filter((o) => isMine(o.mid)).length} in deinen Märkten` : ""}. <button data-scroll="fg">ansehen</button></div>` : all.length ? `<div class="hint" style="border-color:var(--rule)">Zuletzt in der Fundgrube am ${fD(all.filter((o) => o.end).sort((x, y) => y.end.localeCompare(x.end))[0]?.end)} · insgesamt ${all.length} Angebote</div>` : ""}
@@ -505,7 +511,7 @@
   }
   function pageAna(b) {
     const items = S.kat.items.filter((a) => !a.stub), act = items.filter((a) => !a.gone), tops = [...new Set(items.map((a) => a.top))];
-    const nav = [["sortiment", "Sortiment"], ["preise", "Preise"], ["serien", "Serien"], ["designer", "Designer"], ["maerkte", "Märkte"], ["fundgrube", "Fundgrube"]];
+    const nav = [["sortiment", "Sortiment"], ["preise", "Preise"], ["serien", "Serien"], ["kollektionen", "Kollektionen"], ["designer", "Designer"], ["maerkte", "Märkte"], ["fundgrube", "Fundgrube"]];
     const weeks = Array.from({ length: 26 }, (_, i) => dIso((25 - i) * 7)), wl = weeks.map(fS), inWeek = (d, i) => d && day(d) > (i ? weeks[i - 1] : dIso(26 * 7)) && day(d) <= weeks[i];
     let body = "";
     if (b === "sortiment") {
@@ -528,6 +534,11 @@
       body = `<p class="sub" style="font-size:14px;color:var(--ink2);max-width:70ch">Eine Serie sind alle Artikel mit demselben IKEA-Namen. Jede Bahn ist eine Variante: wann sie erschien, wann sie ging. Gezeigt: die Serien mit den meisten Veränderungen.</p>
         <div class="two" style="margin-bottom:10px"><div><h2>Größte Serien</h2><p class="sub">Varianten je Name</p>${bars([...m].map(([n, l]) => [n, l.filter((a) => !a.gone).length]).sort((a, b2) => b2[1] - a[1]).slice(0, 12), { go: (l) => `#/sortiment?q=${encodeURIComponent(l)}` })}</div><div><h2>Am stärksten verändert</h2><p class="sub">neue oder ausgelistete Varianten seit Beginn</p>${bars(moving.map((x) => [x.n, x.ch, `von ${x.l.length}`]), { go: (l) => `#/sortiment?q=${encodeURIComponent(l)}` })}</div></div>
         ${moving.filter((x) => x.ch).map((x) => `<div class="sec"><div class="h"><h2>Serie ${esc(x.n)}</h2><span class="kd">${new Set(x.l.map((a) => a.kind)).size} Produkte · ${x.l.length} Varianten · ${x.l.filter((a) => a.first).length} neu · ${x.l.filter((a) => a.gone).length} ausgelistet</span></div>${lanes(x.l.sort((p, q) => p.kind.localeCompare(q.kind, "de") || (p.col || "").localeCompare(q.col || "", "de")).slice(0, 30), null, (p) => `${p.kind}, ${p.col}`)}</div>`).join("")}`;
+    } else if (b === "kollektionen") {
+      const m = items.filter((a) => a.coll).reduce((mm, a) => mm.set(a.coll, [...(mm.get(a.coll) || []), a]), new Map()), ks = [...m].sort((a, b2) => b2[0].localeCompare(a[0], "de"));
+      body = `<p class="sub" style="font-size:14px;color:var(--ink2);max-width:72ch">Kollektionen sind zeitlich begrenzte Reihen mit Jahr im Namen, etwa IKEA PS 2026 oder STOCKHOLM 2025. Sie mischen Varianten und ganz verschiedene Produkte. Erkannt wird nur, was das Jahr im Namen trägt.</p>
+        ${ks.length ? `<div class="two"><div><h2>Kollektionen</h2><p class="sub">Artikel im Sortiment · dahinter ausgelistet</p>${bars(ks.map(([n, l]) => [n, l.filter((a) => !a.gone).length, l.some((a) => a.gone) ? `−${l.filter((a) => a.gone).length}` : ""]), { go: (l) => `#/sortiment?coll=${encodeURIComponent(l)}` })}</div><div><h2>Preisspanne</h2><p class="sub">günstigster bis teuerster Artikel</p>${bars(ks.map(([n, l]) => [n, Math.max(...l.map((a) => a.price)), `ab ${eur0(Math.min(...l.map((a) => a.price)))}`]), { fmt: eur0 })}</div></div>
+        ${ks.map(([n, l]) => `<div class="sec"><div class="h"><h2>${esc(n)}</h2><span class="kd">${new Set(l.map((a) => a.kind)).size} Produkte · ${l.length} Varianten · ${[...new Set(l.map((a) => a.top))].map(esc).join(", ")}</span></div>${lanes(l.sort((p, q) => p.kind.localeCompare(q.kind, "de") || (p.col || "").localeCompare(q.col || "", "de")).slice(0, 40), null, (p) => `${p.kind}${p.col ? ", " + p.col : ""}`)}</div>`).join("")}` : "<p class='kd'>Keine Kollektion im Sortiment gefunden.</p>"}`;
     } else if (b === "designer") {
       const F = S.facets;
       if (!F) body = `<p class="kd">Details (Designer, Material) sind noch nicht abgerufen.</p>`;
@@ -630,7 +641,7 @@
       if ((orig === "aktuell" || orig === "archiv") && p.get("s")) S.f.fund = { ...S.f.fund, markt: [p.get("s")] };
       if (orig === "maerkte") p.set("b", "maerkte");
       if (orig === "sortiment" && p.get("markt")) { location.replace(`#/markt?id=${encodeURIComponent(p.get("markt"))}`); return; }
-      if (name === "sortiment") { if (p.get("bereich")) { S.f.sort = { bereich: [p.get("bereich")] }; history.replaceState(null, "", "#/sortiment"); } if (p.get("des")) { S.f.sort = { des: [p.get("des")] }; history.replaceState(null, "", "#/sortiment"); } if (p.get("q")) { S.f.sort = { q: p.get("q") }; history.replaceState(null, "", "#/sortiment"); } }
+      if (name === "sortiment") { if (p.get("bereich")) { S.f.sort = { bereich: [p.get("bereich")] }; history.replaceState(null, "", "#/sortiment"); } if (p.get("des")) { S.f.sort = { des: [p.get("des")] }; history.replaceState(null, "", "#/sortiment"); } if (p.get("q")) { S.f.sort = { q: p.get("q") }; history.replaceState(null, "", "#/sortiment"); } if (p.get("coll")) { S.f.sort = { coll: [p.get("coll")], stand: "auch" }; S.grp = "prod"; history.replaceState(null, "", "#/sortiment"); } }
       app.innerHTML = frame(tab, `<p class="wait">lädt …</p>`);
       await loadKatalog();
       const needR = ["sortiment", "artikel", "markt", "analyse", "start"].includes(name), needF = ["sortiment", "artikel", "analyse"].includes(name);
@@ -701,6 +712,7 @@
     if (d.heat) { S.heatSort = d.heat; return rerender(); }
     if (d.scroll) { document.getElementById(d.scroll)?.scrollIntoView({ behavior: "smooth" }); return; }
     if (d.export) return exportCSV(d.export);
+    if (d.crumb !== undefined) { S.f.sort = d.crumb ? JSON.parse(d.crumb) : {}; S.grp = d.crumb && JSON.parse(d.crumb).coll ? "prod" : S.grp; location.hash = "#/sortiment"; return; }
     if (d.desfilter) { S.f.sort = { des: [d.desfilter] }; location.hash = "#/sortiment"; return; }
     if (d.savesearch !== undefined) {
       const f = JSON.parse(JSON.stringify(S.f.fund)), name = sentence("fund", f).replace(/^Zeige aktuelle /, "");
