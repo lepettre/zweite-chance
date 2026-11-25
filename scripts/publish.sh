@@ -15,6 +15,11 @@ cp docs/index.html docs/app.js docs/core.js docs/styles.css docs/alt.html docs/a
 cp docs/manifest.webmanifest out/pub/
 cp -r docs/icons out/pub/icons
 touch out/pub/.nojekyll
+# Jede Veröffentlichung bekommt eine eigene Versionsmarke, damit Browser nie eine alte App aus dem Zwischenspeicher nehmen
+V="$(git rev-parse --short HEAD 2>/dev/null || date +%s)"
+for f in out/pub/index.html out/pub/alt.html; do
+  sed -i -E "s#(src|href)=\"(app|app-alt|core)\.js\"#\1=\"\2.js?v=$V\"#g; s#href=\"(styles|styles-alt)\.css\"#href=\"\1.css?v=$V\"#g" "$f"
+done
 [ -d "$fresh/d" ] && cp -r "$fresh/d" out/pub/d
 [ -d "$fresh/k" ] && cp -r "$fresh/k" out/pub/k
 if [ "$OWN" = none ]; then
