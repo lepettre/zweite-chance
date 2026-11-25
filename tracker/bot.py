@@ -100,7 +100,7 @@ def _line(grp: list[dict]) -> str:
     price = _eur(o.get("price")) + (f"–{_eur(grp[-1].get('price'))}" if len(grp) > 1 and grp[-1].get("price") != o.get("price") else "")
     cond = o.get("condition") or o.get("reason_discount") or ""
     return (f"{n}<a href=\"{e(o['link'])}\">{e(o['title'])}</a> {e(o.get('product_description', ''))}\n"
-            f"   📍 {e(o['store'])} · <b>{price}</b>{pct}" + (f" · {e(cond)}" if cond else ""))
+            f"   <b>{e(o['store'])}</b> · <b>{price}</b>{pct}" + (f" · {e(cond)}" if cond else ""))
 
 
 def _chunks(head: str, lines: list[str], limit: int = 3500) -> list[str]:
@@ -158,7 +158,7 @@ def manage(cmd: str, text: str, db: dict, meta: dict) -> list[str]:
                     f"Bestätigung {yes + 1} von 2: <code>/vergiss {n}{' ja' * (yes + 1)}</code>"]
         rules.pop(n - 1)
         watch._worker_request("PUT", {"rules": rules, "groups": w.get("groups") or {}}, confirm_delete=True)
-        return [f"🗑 „{html.escape(r.get('name', ''))}“ gelöscht. Übrig: {len(rules)}. "
+        return [f"„{html.escape(r.get('name', ''))}“ gelöscht. Übrig: {len(rules)}. "
                 f"Der alte Stand bleibt im Verlauf erhalten (Web-App → Merkliste → Frühere Stände)."]
     # merke
     t = text
@@ -179,7 +179,7 @@ def manage(cmd: str, text: str, db: dict, meta: dict) -> list[str]:
     watch._worker_request("PUT", {"rules": rules, "groups": w.get("groups") or {}})
     n = len(search(db, terms, store_ids)) if not max_price else \
         len([o for o in search(db, terms, store_ids) if (o.get("price") or 0) <= max_price])
-    return [f"✅ Regel {len(rules)} angelegt: {_rule_line(len(rules), rules[-1], stores).split(chr(10), 1)[1].strip()}\n"
+    return [f"Regel {len(rules)} angelegt: {_rule_line(len(rules), rules[-1], stores).split(chr(10), 1)[1].strip()}\n"
             f"Aktuell {n} Treffer. Neue Treffer melde ich ab dem nächsten Abruf."]
 
 
@@ -200,14 +200,14 @@ def answer(text: str, db: dict, meta: dict, now: datetime | None = None, max_gro
             when = "unbekannt"
         return [f"Stand: <b>{when}</b>\n{meta.get('active', '?')} aktive Angebote · "
                 f"{lr.get('stores_ok', '?')}/{lr.get('stores_total', '?')} Märkte ok"
-                + (f"\n⚠️ {html.escape(lr['errors'][:300])}" if lr.get("errors") else "")]
+                + (f"\nHinweis: {html.escape(lr['errors'][:300])}" if lr.get("errors") else "")]
     since = (now - timedelta(hours=24)).isoformat() if cmd == "neu" else None
     if cmd == "suche" and not terms and not store_ids:
         return [HELP]
     found = search(db, terms, store_ids, since)
     where = ", ".join(sorted({s["name"] for s in stores if s["id"] in store_ids})) if store_ids else "allen Märkten"
     what = " ".join(terms)
-    title = ("🆕 Neu (24 Std.)" if cmd == "neu" else "🔎") + (f" „{html.escape(what)}“" if what else "") + f" in {html.escape(where)}"
+    title = ("Neu (24 Std.)" if cmd == "neu" else "Suche") + (f" „{html.escape(what)}“" if what else "") + f" in {html.escape(where)}"
     if not found:
         return [f"{title}\nNichts gefunden."]
     groups = _group(found)

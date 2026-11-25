@@ -224,7 +224,7 @@ def find_hits(rules: list[dict], db: dict, events: list[dict], notified: dict,
     return hits
 
 
-WHY = {"new": "🆕 Neu", "reappeared": "🔁 Wieder da", "price_drop": "📉 Preis gesenkt"}
+WHY = {"new": "Neu", "reappeared": "Wieder da", "price_drop": "Preis gesenkt"}
 
 
 def _fmt_eur(v):
@@ -235,12 +235,12 @@ def format_hit(rule_name, why, o) -> str:
     e = html.escape
     lines = [f"<b>{e(WHY.get(why, why))} · {e(rule_name)}</b>",
              f"<a href=\"{e(o['link'])}\">{e(o['title'])}</a> – {e(o.get('product_description', ''))}",
-             f"📍 {e(o['store'])}",
-             f"💶 <b>{_fmt_eur(o.get('price'))}</b> statt {_fmt_eur(o.get('original_price'))}"
+             f"Markt: <b>{e(o['store'])}</b>",
+             f"Preis: <b>{_fmt_eur(o.get('price'))}</b> statt {_fmt_eur(o.get('original_price'))}"
              + (f" (−{o['discount_pct']:.0f} %)" if o.get("discount_pct") is not None else "")]
     cond = " · ".join(x for x in [o.get("condition"), o.get("reason_discount"), o.get("additional_info")] if x)
     if cond:
-        lines.append(f"🏷 {e(cond)}")
+        lines.append(f"Zustand: {e(cond)}")
     lines.append(f"<code>Art. {e(o.get('article_number', ''))} · Angebot {e(o.get('offer_number', ''))}</code>")
     return "\n".join(lines)
 
@@ -272,7 +272,7 @@ def format_group(rule_name, why, offers: list[dict], max_lines: int = 8) -> str:
     for o in offers[:max_lines]:
         pct = f" (−{o['discount_pct']:.0f} %)" if o.get("discount_pct") is not None else ""
         cond = o.get("condition") or o.get("reason_discount") or ""
-        lines.append(f"📍 {e(o['store'])} · <a href=\"{e(o['link'])}\"><b>{_fmt_eur(o.get('price'))}</b></a>{pct}"
+        lines.append(f"<b>{e(o['store'])}</b> · <a href=\"{e(o['link'])}\"><b>{_fmt_eur(o.get('price'))}</b></a>{pct}"
                      + (f" · {e(cond)}" if cond else ""))
     if len(offers) > max_lines:
         lines.append(f"… und {len(offers) - max_lines} weitere")
