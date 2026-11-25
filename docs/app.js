@@ -164,15 +164,15 @@
     const d = await tryLoad(getK("facets.bin"));
     if (d === undefined) return null;
     if (!d) return (S.facets = null);
-    const by = new Map(), matBy = new Map(), ppl = new Map(), pc = new Map(), pr_ = new Map();
+    const by = new Map(), matBy = new Map(), ppl = new Map(), pc = new Map(), pr_ = new Map(), praw = new Map();
     for (const [n, ids] of Object.entries(d.designer || {})) for (const id of ids) by.set(id, n);
     for (const [n, ids] of Object.entries(d.material || {})) for (const id of ids) matBy.set(id, n);
     const pm = ZC.designerPeople(Object.keys(d.designer || {}).filter((r) => !IOS.test(r)));
-    for (const [raw, ids] of Object.entries(d.designer || {})) { const ps = pm.get(raw); if (!ps) continue; const names = [...new Set(ps.map((x) => x.name))]; for (const x of ps) pr_.set(x.name, x.resolved); for (const id of ids) ppl.set(id, names); for (const n of names) pc.set(n, (pc.get(n) || 0) + ids.length); }
+    for (const [raw, ids] of Object.entries(d.designer || {})) { const ps = pm.get(raw); if (!ps) continue; const names = [...new Set(ps.map((x) => x.name))]; for (const x of ps) pr_.set(x.name, x.resolved); for (const id of ids) ppl.set(id, names); for (const n of names) { pc.set(n, (pc.get(n) || 0) + ids.length); praw.set(n, [...(praw.get(n) || []), raw]); } }
     const persons = [...pc].map(([name, n]) => ({ name, n, resolved: pr_.get(name) })).sort((a, b) => ZC.sortByLast(a.name, b.name));
     for (const [id, c] of Object.entries(d.cat || {})) { const a = S.kat?.byId.get(id); if (a && !a.cat) { a.cat = c; const cp = c.split(" › "); a.top = cp[0] || "–"; a.sub = cp[1] || ""; a.sub2 = cp[2] || ""; a._h = null; } }
     for (const [id, c] of Object.entries(d.col || {})) { const a = S.kat?.byId.get(id); if (a && !a.col) { a.col = c; a.cols = c.split(/,\s*/).filter(Boolean); } }
-    return (S.facets = { by, matBy, ppl, persons, materials: Object.keys(d.material || {}).sort((a, b) => a.localeCompare(b, "de")), n: d.n, raw: Object.keys(d.designer || {}) });
+    return (S.facets = { by, matBy, ppl, praw, persons, materials: Object.keys(d.material || {}).sort((a, b) => a.localeCompare(b, "de")), n: d.n, raw: Object.keys(d.designer || {}) });
   }
   async function loadDetails() {
     if (S.details !== undefined) return S.details;
@@ -225,7 +225,13 @@
   }
   const allRules = () => { const own = new Set(S.rules.map((r) => r.id)); return ZC.dedupeRules([...S.repo.watch.filter((r) => !own.has(r.id)), ...S.rules]); };
   const isFavRule = (r) => (r.article_numbers || []).length === 1 && !(r.keywords || []).length && !(r.stores || []).length && !r.ui;
-  const favRules = () => allRules().filter(isFavRule), searchRules = () => allRules().filter((r) => !isFavRule(r));
+  const isSubRule = (r) => !!r.sub;
+  const favRules = () => allRules().filter(isFavRule), searchRules = () => allRules().filter((r) => !isFavRule(r) && !isSubRule(r)), subRules = () => allRules().filter(isSubRule);
+  const SUBL = { des: "Designer", serie: "Serie", koll: "Kollektion" };
+  const subLabel = (sub) => `${SUBL[sub.k] || ""} ${sub.v}`;
+  const subItem = (sub, a) => (sub.k === "des" ? (S.facets?.ppl.get(a.id) || []).includes(sub.v) : a.name === sub.v);
+  const seriesOf = (a) => (a.coll ? a.name.replace(/\s*\b(19|20)\d\d\b\s*/, " ").trim() : a.name);   // STOCKHOLM 2025 -> Serie STOCKHOLM
+  const followBtn = (k, v) => { const on_ = allRules().some((r) => r.sub && r.sub.k === k && r.sub.v === v); return `<button class="follow ${on_ ? "on" : ""}" data-follow="${esc(JSON.stringify({ k, v }))}" aria-pressed="${on_}">${on_ ? "folge ich" : "folgen"}</button>`; };
   const FAVS = () => { if (!memo.has("favs")) memo.set("favs", new Set(favRules().map((r) => ZC.normArticle(r.article_numbers[0])))); return memo.get("favs"); };
   const memo = new Map();
   async function toggleFav(no, label) {
@@ -246,7 +252,7 @@
     return memo.get(k);
   }
   const ruleHits = (r, list = FA()) => { const f = ruleMatcher(r); return list.filter((o) => (r.ui ? o.active || r.ui.zeit : true) && f(o)); };
-  const ruleText = (r) => (r.ui ? sentence("fund", r.ui).replace(/^Zeige aktuelle /, "").replace(/^./, (c) => c.toUpperCase()) : r.name || "Suche");
+  const ruleText = (r) => (r.sub ? `Folgen: ${subLabel(r.sub)}` : r.ui ? sentence("fund", r.ui).replace(/^Zeige aktuelle /, "").replace(/^./, (c) => c.toUpperCase()) : r.name || "Suche");
   function goodPrice(f, r) {
     const list = FALL(), fx = r ? (r.ui ? { ...r.ui, zeit: "alle" } : null) : { ...f, zeit: "alle" };
     const all = fx ? list.filter((o) => passAll(o, "fund", fx)) : list.filter(ZC.compileRule({ ...r, enabled: true }));
@@ -479,6 +485,8 @@
       <div class="sec"><div class="two">
         <div><div class="h2"><h2>Gemerkte Artikel</h2><span class="kd">Herz an jedem Artikel</span></div><div class="watch">${favArts.map((a) => { const n = fundNow().get(a.no), all = fundAll().get(a.no) || [], lastSeen = all.filter((o) => !o.active).sort((x, y) => (y.end || "").localeCompare(x.end || ""))[0]; return `<div class="r" data-go="${a.id ? `#/artikel?id=${encodeURIComponent(a.id)}` : `#/produkt?art=${a.no}`}">${img(a.thumb) || "<span></span>"}<div><b>${esc(a.name)}</b> ${esc(a.kind || "")}<div class="kd">${a.id ? `${esc(ausOf(a))} · regulär ${eur(a.price)}` : fNo(a.no)}</div></div><div class="tn" style="text-align:right;font-size:13px">${n ? `<b>${n.length} ${n.length === 1 ? "Angebot" : "Angebote"}</b><div class="kd">ab ${eur(Math.min(...n.map((o) => o.price)))}</div>` : `<span class="kd">gerade nicht</span>${lastSeen ? `<div class="kd">zuletzt ${fS(lastSeen.end)}</div>` : ""}`}</div></div>`; }).join("") || `<p class="kd">Keine.</p>`}</div></div>
         <div><div class="h2"><h2>Gespeicherte Suchen</h2><button class="lnk" data-go="#/fundgrube" style="font-size:13px">neue Suche in der Fundgrube</button></div>${searches.map((r) => { const g = goodPrice(null, r); return `<div class="rulebox"><div class="s" data-runsearch="${esc(r.id)}" style="cursor:pointer">${esc(ruleText(r))}</div><button class="sw" role="switch" aria-checked="${r.notify !== false && r.enabled !== false}" data-notify="${esc(r.id)}" aria-label="Benachrichtigung"></button><div class="m">${ruleHits(r).length} aktuell${g ? ` · bisher ${g.n} Angebote, das günstigste Viertel unter ${eur0(g.q1)}${g.dw != null ? `, meist nach ${g.dw} Tagen weg` : ""}` : ""} · Telegram ${r.notify !== false && r.enabled !== false ? "an" : "aus"}</div><button class="lnk" style="font-size:12.5px" data-runsearch="${esc(r.id)}">bearbeiten</button></div>`; }).join("") || `<p class="kd">Keine. In der Fundgrube Angaben wählen und „Diese Suche merken“.</p>`}</div></div></div>
+      ${subRules().length ? `<div class="sec"><div class="h"><h2>Ich folge</h2><span class="kd">letzte 30 Tage · Fundgrube in meinen Märkten</span></div><div class="feed">${subRules().map((r) => { const its = items.filter((a) => subItem(r.sub, a)), nNew = its.filter((a) => a.first && day(a.first) >= dIso(30)).length, nGone = its.filter((a) => a.gone && day(a.gone) >= dIso(30)).length, nChg = its.filter((a) => { const c = lastChg(a); return c && c.d >= dIso(30); }).length, nF = fa.filter((o) => o.art && subItem(r.sub, o.art) && (!(r.stores || []).length || r.stores.includes(o.mid))).length;
+        return `<div style="grid-template-columns:minmax(0,1fr) auto" data-go="#/sortiment" data-pre="${esc(JSON.stringify(r.sub.k === "des" ? { des: [r.sub.v] } : r.sub.k === "koll" ? { coll: [r.sub.v], stand: "auch" } : { q: r.sub.v }))}"><span><b>${esc(subLabel(r.sub))}</b> <span class="kd">${nf(its.filter((a) => !a.gone).length)} Artikel</span></span><span class="kd tn">${[nNew && `${nNew} neu`, nGone && `${nGone} ausgelistet`, nChg && `${nChg} Preisänderungen`, nF && `<b>${nF} in der Fundgrube</b>`].filter(Boolean).join(" · ") || "keine Änderung"}</span></div>`; }).join("")}</div></div>` : ""}
       <div class="sec"><div class="h"><h2>Änderungen im Sortiment</h2><span class="kd">gemerkte zuerst · letzte 30 Tage · ${nf(ev.length)} insgesamt</span></div><div class="feed">${ev.slice(0, 12).map((e) => `<div class="ev" data-go="#/artikel?id=${encodeURIComponent(e.a.id)}"><span class="kd tn">${fS(e.d)}</span>${img(e.a.thumb) || "<span></span>"}<span class="t"><span class="chip ${e.kind === "gesunken" ? "dn" : e.kind === "gestiegen" || e.kind === "ausgelistet" ? "up" : ""}">${e.kind === "gesunken" ? "Preis ▼" : e.kind === "gestiegen" ? "Preis ▲" : e.kind}</span>${e.fav ? ` <span class="chip">gemerkt</span>` : ""} <b>${esc(e.a.name)}</b> ${esc(e.a.kind)}<br><span class="kd">${esc(e.a.col)}</span> · ${esc(e.t)}</span></div>`).join("") || `<p class="kd">Keine Änderungen.</p>`}</div>${ev.length > 12 ? `<p><button class="lnk" data-go="#/analyse?b=sortiment">alle in der Analyse</button></p>` : ""}</div>
       ${mine.length ? `<div class="sec"><div class="h"><h2>Meine Märkte</h2><button data-go="#/analyse?b=maerkte">alle Märkte vergleichen</button></div><div class="two">${mine.map((m) => { const act = items.filter((a) => !a.gone), carr = S.rng ? act.filter((a) => carries(a, m)).length : null; return `<div data-go="#/markt?id=${encodeURIComponent(m)}" style="cursor:pointer;padding:8px 0;border-bottom:1px solid var(--rule)"><div style="font-size:21px;font-weight:700;letter-spacing:-.02em">${esc(nameOf(m))} <span class="lnk" style="font-size:14px">›</span></div><div class="kd">${nf(fa.filter((o) => o.mid === m).length)} Angebote in der Fundgrube, davon ${nf(fa.filter((o) => o.mid === m && isNewV(o)).length)} neu seit deinem letzten Besuch${carr != null ? ` · führt ${nf(carr)} von ${nf(act.length)} Artikeln (${Math.round(carr / act.length * 100)} %)` : ""}</div></div>`; }).join("")}</div></div>` : ""}`;
   }
@@ -514,10 +522,11 @@
     const D = S.details?.get(a.id), F = S.facets, people = F?.ppl.get(a.id) || (D?.designer ? [D.designer] : []);
     const missMine = S.rng ? MINE().filter((m) => carries(a, m) === false) : [];
     return `${D?.desc ? `<p class="kd" style="margin:12px 0 0;max-width:62ch;color:var(--ink2)">${esc(D.desc)}</p>` : ""}
-      <dl class="kv">${extra}<dt>Design</dt><dd>${people.length && !IOS.test(people[0]) ? people.map((n) => `<button class="lnk" data-desfilter="${esc(n)}">${esc(n)}</button>`).join(", ") + (D?.designer && people.join("/") !== D.designer ? ` <span class="kd">(bei IKEA: ${esc(D.designer)})</span>` : "") : D || F?.by.has(a.id) ? "<span class='kd'>kein Name genannt (IKEA of Sweden)</span>" : "<span class='kd'>noch nicht abgerufen</span>"}</dd>
+      <dl class="kv">${extra}<dt>Design</dt><dd>${people.length && !IOS.test(people[0]) ? people.map((n) => `<button class="lnk" data-desfilter="${esc(n)}">${esc(n)}</button> ${followBtn("des", n)}`).join(", ") + (D?.designer && people.join("/") !== D.designer ? ` <span class="kd">(bei IKEA: ${esc(D.designer)})</span>` : "") : D || F?.by.has(a.id) ? "<span class='kd'>kein Name genannt (IKEA of Sweden)</span>" : "<span class='kd'>noch nicht abgerufen</span>"}</dd>
         ${D?.material ? `<dt>Material</dt><dd>${esc(D.material)}</dd>` : ""}<dt>Farbe/Größe</dt><dd>${esc(ausOf(a) || "–")}${a.nvar > 1 ? ` <span class="kd">· ${a.nvar} Farben/Größen insgesamt</span>` : ""}</dd>${D && (D.w || D.h || D.d) ? `<dt>Maße</dt><dd>${esc([D.w && `B ${D.w}`, D.h && `H ${D.h}`, D.d && `T ${D.d}`].filter(Boolean).join(" · "))}</dd>` : ""}
         <dt>Kategorie</dt><dd><button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top] }))}">${esc(a.top)}</button>${a.sub ? ` › <button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top], sub: [a.sub] }))}">${esc(a.sub)}</button>` : ""}${a.sub2 ? ` › <button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top], sub: [a.sub], sub2: [a.sub2] }))}">${esc(a.sub2)}</button>` : ""}</dd>
-        ${a.coll ? `<dt>Kollektion</dt><dd><button class="lnk" data-crumb="${esc(JSON.stringify({ coll: [a.coll], stand: "auch" }))}">${esc(a.coll)}</button></dd>` : ""}
+        <dt>Serie</dt><dd><button class="lnk" data-crumb="${esc(JSON.stringify({ q: seriesOf(a) }))}">${esc(seriesOf(a))}</button> ${followBtn("serie", seriesOf(a))}</dd>
+        ${a.coll ? `<dt>Kollektion</dt><dd><button class="lnk" data-crumb="${esc(JSON.stringify({ coll: [a.coll], stand: "auch" }))}">${esc(a.coll)}</button> ${followBtn("koll", a.coll)}</dd>` : ""}
         <dt>Preis im Sortiment</dt><dd>${eur(a.price)}${a.prev ? ` <span class="kd">vorher ${eur(a.prev)}</span>` : ""}</dd>
         <dt>Bewertung</dt><dd>${a.rcount ? `${String(a.rating).replace(".", ",")} von 5 · ${nf(a.rcount)} Stimmen` : "–"}</dd><dt>Im Sortiment</dt><dd>${a.first ? `seit ${fD(day(a.first))}` : "schon vor Beginn der Erfassung"}${a.gone ? ` · <span class="up">ausgelistet am ${fD(day(a.gone))}</span>` : ""}${a.last && !a.gone ? " · <b>letzte Chance</b>" : ""}</dd>
         ${S.rng ? `<dt>Märkte</dt><dd>${a.nMk != null ? `${a.nMk} von ${a.nKn}` : "noch nicht gemessen"}${MINE().length ? (missMine.length ? ` · <span class="up">fehlt in ${esc(missMine.map(nameOf).join(", "))}</span>` : " · in deinen Märkten") : ""}</dd>` : ""}</dl>`;
@@ -728,7 +737,7 @@
       const katNow = await loadKatalog();
       if (katNow.failed) { S.kat = katNow; for (const o of FALL()) linkOffer(o); } else if (S.kat?.failed) S.kat = katNow;
       const detailPage = ["artikel", "angebot", "produkt"].includes(name);
-      const needR = ["sortiment", "markt", "analyse", "start"].includes(name) || detailPage, needF = ["sortiment", "analyse"].includes(name) || detailPage;
+      const needR = ["sortiment", "markt", "analyse", "start"].includes(name) || detailPage, needF = ["sortiment", "analyse", "start"].includes(name) || detailPage;
       await Promise.all([needR ? loadRange() : null, needF ? loadFacets() : null, detailPage ? loadDetails() : null]);
       const needArch = (name === "fundgrube" && S.f.fund.zeit) || ["artikel", "produkt", "angebot"].includes(name) || (name === "analyse" && p.get("b") === "fundgrube") || (name === "start" && !S.repo.archive);
       if (needArch && !S.repo.archive) loadArchive().then(() => { memo.clear(); for (const o of FALL()) linkOffer(o); render(); }).catch((e) => console.warn(e));
@@ -778,6 +787,7 @@
       if (d.pre === "newmine") S.f.fund = { markt: [...MINE()], besuch: true };
       if (d.pre === "favchg") S.f.sort = { gemerkt: true, chg: "any" };
       if (d.pre?.startsWith("markt:")) S.f.fund = { markt: [d.pre.slice(6)] };
+      if (d.pre?.startsWith("{")) { S.f.sort = JSON.parse(d.pre); if (S.f.sort.coll) S.grp = "prod"; }
       scrollMem.set(location.hash, scrollY);
       if (location.hash === d.go) return render();
       location.hash = d.go; return;
@@ -798,6 +808,18 @@
     if (d.heat) { S.heatSort = d.heat; return rerender(); }
     if (d.scroll) { document.getElementById(d.scroll)?.scrollIntoView({ behavior: "smooth" }); return; }
     if (d.export) return exportCSV(d.export);
+    if (d.follow) {
+      const { k, v } = JSON.parse(d.follow), mine = S.rules.filter((r) => r.sub && r.sub.k === k && r.sub.v === v);
+      if (allRules().some((r) => r.sub && r.sub.k === k && r.sub.v === v)) {
+        if (!mine.length) { toast("Dieser Eintrag stammt aus der Sicherung und ist erst mit verbundenem Hilfsdienst änderbar."); return; }
+        if (!confirmTwice(`${subLabel({ k, v })} nicht mehr folgen?`)) return;
+        S.rules = S.rules.filter((r) => !mine.includes(r)); await persistRules(true); toast("Nicht mehr gefolgt. Früherer Stand bleibt wiederherstellbar.");
+      } else {
+        S.rules.push({ id: newId(), name: `Folgen: ${subLabel({ k, v })}`, enabled: true, notify: true, sub: { k, v, raw: k === "des" ? S.facets?.praw.get(v) || [v] : undefined }, stores: MINE() });
+        if (await persistRules()) toast(`Du folgst ${esc(subLabel({ k, v }))}. Telegram meldet Neuheiten, Auslistungen, Preisänderungen und Fundgrube-Angebote in deinen Märkten.`);
+      }
+      memo.clear(); return rerender();
+    }
     if (d.crumb !== undefined) { S.f.sort = d.crumb ? JSON.parse(d.crumb) : {}; S.grp = d.crumb && JSON.parse(d.crumb).coll ? "prod" : S.grp; location.hash = "#/sortiment"; return; }
     if (d.desfilter) { S.f.sort = { des: [d.desfilter] }; location.hash = "#/sortiment"; return; }
     if (d.savesearch !== undefined) {

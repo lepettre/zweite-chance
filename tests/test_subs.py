@@ -1,0 +1,48 @@
+import unittest
+
+
+class TestSubs(unittest.TestCase):
+    def setUp(self):
+        from tracker import subs
+        self.subs = subs
+        self.db = {
+            "1": {"id": "1", "no": "1", "name": "STOCKHOLM 2025", "kind": "Vase", "slug": "s-1", "first_seen": "2026-11-20", "status": "active", "log": [], "ph": [["2026-11-20", 20.0]], "price": 20.0},
+            "2": {"id": "2", "no": "2", "name": "STOCKHOLM", "kind": "Tisch", "slug": "s-2", "first_seen": "2026-11-01", "status": "active", "log": [], "ph": [["2026-11-01", 100.0], ["2026-11-20", 80.0]], "price": 80.0},
+            "3": {"id": "3", "no": "3", "name": "TERTIAL", "kind": "Leuchte", "slug": "s-3", "first_seen": "2026-11-01", "status": "gone", "log": [["2026-11-20", "gone"]], "ph": [["2026-11-01", 15.0]], "price": 15.0},
+        }
+        self.des = {"H Preutz/W Braasch": {"3"}}
+        subs._CAT = {"db": self.db, "by_no": {o["no"]: o for o in self.db.values()}, "designer": self.des}
+
+    def tearDown(self):
+        self.subs._CAT = None
+
+    def test_kollektion_ist_nicht_serie(self):
+        self.assertTrue(self.subs.item_matches({"k": "koll", "v": "STOCKHOLM 2025"}, self.db["1"], self.des))
+        self.assertFalse(self.subs.item_matches({"k": "serie", "v": "STOCKHOLM"}, self.db["1"], self.des))
+        self.assertTrue(self.subs.item_matches({"k": "serie", "v": "STOCKHOLM"}, self.db["2"], self.des))
+
+    def test_folgen_regel_trifft_nicht_alles(self):
+        from tracker import watch
+        rule = {"name": "Folgen", "sub": {"k": "des", "v": "Henrik Preutz", "raw": ["H Preutz/W Braasch"]}, "stores": ["066"]}
+        self.assertTrue(watch.matches(rule, {"article_number": "3", "store_id": "066", "title": "TERTIAL"}))
+        self.assertFalse(watch.matches(rule, {"article_number": "3", "store_id": "999", "title": "TERTIAL"}), "anderer Markt")
+        self.assertFalse(watch.matches(rule, {"article_number": "1", "store_id": "066", "title": "STOCKHOLM 2025"}))
+
+    def test_tagesmeldungen_einmalig(self):
+        rules = [{"id": "a", "sub": {"k": "serie", "v": "STOCKHOLM"}}, {"id": "b", "sub": {"k": "des", "v": "Henrik Preutz", "raw": ["H Preutz/W Braasch"]}}]
+        keys = {}
+        msgs = self.subs.catalog_messages(rules, self.db, "2026-11-20", self.des, keys)
+        self.assertEqual(len(msgs), 2)
+        self.assertIn("Preis gesenkt", msgs[0]); self.assertIn("ausgelistet", msgs[1])
+        self.assertEqual(self.subs.catalog_messages(rules, self.db, "2026-11-20", self.des, keys), [], "nicht doppelt")
+
+
+class TestRuleKeys(unittest.TestCase):
+    def test_folgen_und_filter_keine_duplikate(self):
+        from tracker import watch
+        rules = [{"sub": {"k": "des", "v": "A"}}, {"sub": {"k": "serie", "v": "B"}}, {"ui": {"bereich": ["X"]}}, {"ui": {"bereich": ["Y"]}}]
+        self.assertEqual(len(watch.dedupe_rules(rules)), 4)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -161,6 +161,12 @@ def main(argv=None) -> int:
     runs = (meta.get("runs") or []) + [run]
     store.write_bin("meta.bin", {"updated": ts, "items_version": version, "last_run": run, "runs": runs, "gaps": gap, "schema": 1})
     print(f"[katalog] fertig: {run}")
+    if items and not blocked:                       # Folgen: neue, ausgelistete, im Preis geaenderte Artikel melden
+        try:
+            from tracker import subs
+            subs.notify_catalog(db, day)
+        except Exception as ex:
+            print(f"[katalog] Folgen-Meldungen fehlgeschlagen: {ex}")
     return 2 if blocked and not items else 0
 
 

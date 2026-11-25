@@ -28,6 +28,9 @@ def _list(v):
 def matches(rule: dict, o: dict) -> bool:
     if rule.get("enabled") is False:
         return False
+    if rule.get("sub"):                       # Folgen (Designer/Serie/Kollektion): Zuordnung ueber das Sortiment
+        from . import subs
+        return subs.offer_matches(rule, o)
     hay = fold(" ".join([o.get("title", ""), o.get("product_description", ""), o.get("offer_description", "")]))
     kws = [fold(k) for k in _list(rule.get("keywords")) if k]
     arts = [norm_article(a) for a in _list(rule.get("article_numbers")) if a]
@@ -124,6 +127,10 @@ def rule_key(rule: dict, groups: dict | None = None) -> str:
     ]
     if r.get("min_price") not in ("", None):            # neues Feld: nur anhaengen, alte Schluessel bleiben gleich
         parts.append(f"ab{r['min_price']}")
+    if r.get("sub"):                                    # Folgen und Filtersaetze unterscheiden Regeln ebenfalls
+        parts.append(f"sub:{r['sub'].get('k')}:{fold(r['sub'].get('v', ''))}")
+    if r.get("ui"):
+        parts.append("ui:" + json.dumps(sorted(r["ui"].items()), ensure_ascii=False, sort_keys=True))
     return "|".join(parts)
 
 

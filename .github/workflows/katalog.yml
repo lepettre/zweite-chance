@@ -29,6 +29,9 @@ jobs:
     timeout-minutes: 120
     env:
       ZC_PASSWORD: ${{ secrets.ZC_PASSWORD }}
+      WORKER_URL: ${{ secrets.WORKER_URL }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       GH_TOKEN: ${{ github.token }}
       SITEMAP: ${{ inputs.sitemap }}
       FILL: ${{ inputs.fill }}
@@ -60,7 +63,7 @@ jobs:
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then exit "$rc"; fi
       - name: Veröffentlichen
         if: steps.run.outputs.rc == '0'
-        run: bash scripts/publish.sh k items.bin meta.bin gaps.bin
+        run: bash scripts/publish.sh k items.bin meta.bin gaps.bin subsent.bin
       - name: Wochensicherung
         continue-on-error: true
         if: steps.run.outputs.rc == '0'
