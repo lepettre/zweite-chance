@@ -110,6 +110,20 @@
     }
     return out;
   }
+  // Welche Artikel sind Farben/Größen DESSELBEN Produkts? Maßgeblich ist IKEAs eigene Variantenliste (Feld vars).
+  // Artikel, für die sie noch nicht erfasst ist: vorläufig gleicher Name + Art + Maß.
+  function groupProducts(items) {
+    const byId = new Map(items.map((o) => [o.id, o])), parent = new Map(), find = (x) => { while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
+    const latest = items.reduce((m, o) => (o.last_seen > m ? o.last_seen : m), "");
+    const hasVars = items.some((x) => x.vars);
+    for (const o of items) parent.set(o.id, o.id);
+    for (const o of items) {
+      const vs = (o.vars || "").split(",").filter(Boolean);
+      o.varsKnown = vs.length > 0 || (hasVars && o.last_seen === latest);
+      for (const v of vs) { const other = byId.get(v) || byId.get("s" + v) || byId.get(v.replace(/^s/, "")); if (other) parent.set(find(other.id), find(o.id)); }
+    }
+    for (const o of items) o.pk = o.varsKnown ? "v:" + find(o.id) : `f:${o.name}|${o.kind}|${o.measure}`;
+  }
   async function loadKatalog() {
     if (S.kat && !S.kat.failed) return S.kat;
     const meta = await tryLoad(getK("meta.bin")), raw = meta ? await tryLoad(getK("items.bin", meta.items_version)) : null;
@@ -125,6 +139,7 @@
       o.stub = o.status === "stub";
     }
     S.kat = { meta, items, first, byId: new Map(items.map((o) => [o.id, o])), byNo: new Map(items.filter((o) => !o.stub).map((o) => [o.no, o])) };
+    groupProducts(items);
     S.t0 = [first, day(S.baseTs)].filter((x) => x && x !== "9999").sort()[0] || dIso(180);
     for (const o of FALL()) linkOffer(o);
     return S.kat;
@@ -403,7 +418,7 @@
     if (grp === "aus") return `<div class="tw"><table>${head}<tbody>${list.map(r).join("")}</tbody></table></div>`;
     if (grp === "koll") list = list.filter((a) => a.coll);
     if (!list.length) return `<div class="empty">Keine Kollektion in dieser Auswahl. Kollektionen erkennt die App am Jahr im Namen, z. B. IKEA PS 2026.</div>`;
-    const byProd = (l) => { const m = new Map(); for (const a of l) { const k = a.name + "|" + a.kind; m.set(k, [...(m.get(k) || []), a]); } return [...m.values()]; };
+    const byProd = (l) => { const m = new Map(); for (const a of l) { const k = a.pk; m.set(k, [...(m.get(k) || []), a]); } return [...m.values()]; };
     const prodRow = (vs) => {
       const a = vs.find((x) => !x.gone) || vs[0], ps = vs.map((x) => x.price), cols = [...new Set(vs.flatMap((x) => x.cols.slice(0, 1)))], sizes = new Set(vs.map((x) => x.measure).filter(Boolean)).size;
       const total = Math.max(vs.length, ...vs.map((x) => x.nvar || 0)), offers = vs.reduce((n, x) => n + (fundNow().get(x.no)?.length || 0), 0), mk = Math.max(...vs.map((x) => x.nMk ?? -1));
@@ -423,7 +438,7 @@
   }
   // Kacheln mit Gruppierung: eine Kachel je Produkt (alle Farben und Größen zusammen), bei Serie/Kollektion mit Zwischenüberschrift
   function tilesGrouped(list, grp) {
-    const prods = new Map(); for (const a of list) { const k = a.name + "|" + a.kind; prods.set(k, [...(prods.get(k) || []), a]); }
+    const prods = new Map(); for (const a of list) { const k = a.pk; prods.set(k, [...(prods.get(k) || []), a]); }
     let last = null, out = "";
     for (const vs of prods.values()) {
       const a = vs.find((x) => !x.gone) || vs[0], ps = vs.map((x) => x.price), cols = [...new Set(vs.flatMap((x) => x.cols.slice(0, 1)))], total = Math.max(vs.length, ...vs.map((x) => x.nvar || 0)), offers = vs.reduce((n, x) => n + (fundNow().get(x.no)?.length || 0), 0);
@@ -474,7 +489,7 @@
     const f = S.f[tab]; let list = apply(tab, f).sort(SORTS[tab][S.sort[tab]] || SORTS[tab][Object.keys(SORTS[tab])[0]]);
     if (tab === "sort" && S.grp !== "aus") {          // Gruppen zusammenhalten, Reihenfolge nach erstem Auftreten in der gewählten Sortierung
       if (S.grp === "koll") list = list.filter((a) => a.coll);
-      const key = (a) => (S.grp === "prod" ? a.name + "|" + a.kind : a.name), first = new Map(), idx = new Map();
+      const key = (a) => (S.grp === "prod" ? a.pk : a.name), first = new Map(), idx = new Map();
       list.forEach((a, i) => { idx.set(a, i); if (!first.has(key(a))) first.set(key(a), i); });
       list.sort((a, b) => first.get(key(a)) - first.get(key(b)) || idx.get(a) - idx.get(b));
     }
@@ -506,7 +521,7 @@
         ${S.rng ? `<dt>Märkte</dt><dd>${a.nMk != null ? `${a.nMk} von ${a.nKn}` : "noch nicht gemessen"}${MINE().length ? (missMine.length ? ` · <span class="up">fehlt in ${esc(missMine.map(nameOf).join(", "))}</span>` : " · in deinen Märkten") : ""}</dd>` : ""}</dl>`;
   }
   function pageArticle(a) {
-    const prods = S.kat.items.filter((x) => !x.stub && x.name === a.name && x.kind === a.kind), serie = S.kat.items.filter((x) => !x.stub && x.name === a.name);
+    const prods = S.kat.items.filter((x) => !x.stub && x.pk === a.pk), serie = S.kat.items.filter((x) => !x.stub && x.name === a.name);
     const now = fundNow().get(a.no) || [], all = fundAll().get(a.no) || [], c = lastChg(a), D = S.details?.get(a.id), F = S.facets;
     const people = F?.ppl.get(a.id) || (D?.designer ? [D.designer] : []);
     const missMine = S.rng ? MINE().filter((m) => carries(a, m) === false) : [];
