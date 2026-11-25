@@ -7,3 +7,4 @@
 - Datenerhalt und Zuverlässigkeit gehen vor Geschwindigkeit; trotzdem schlank und schnell bauen.
 - Öffentlich so wenig wie möglich: veröffentlichte Daten sind verschlüsselt, README bleibt neutral.
 - Antworten an den Nutzer immer maximal kurz.
+- Vor jeder Änderung erst fragen, möglichst als anklickbare Auswahl (Multiple Choice); erst nach Antwort ändern.
