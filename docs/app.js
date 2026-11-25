@@ -2,7 +2,7 @@
    Datenschicht wie bisher (verschlüsselte Dateien unter d/ und k/, Merkliste über den Worker). Die alte Oberfläche liegt unter alt.html. */
 (function () {
   "use strict";
-  const APP_VERSION = "2.15";       // bei jeder Änderung erhöhen und im Handbuch-Changelog eintragen
+  const APP_VERSION = "2.16";       // bei jeder Änderung erhöhen und im Handbuch-Changelog eintragen
   /* ================= Grundlagen ================= */
   const $ = (s, el = document) => el.querySelector(s);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
