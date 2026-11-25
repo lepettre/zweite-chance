@@ -269,3 +269,35 @@ class TestFacets(unittest.TestCase):
                             "c": {"designer": "X", "material": "Stahl"}, "d": {"designer": "Y"}})
         self.assertEqual(f["designer"], {"X": ["a", "c"], "Y": ["d"]}); self.assertEqual(f["n"], 4)
         self.assertEqual(f["material"]["Holz"], ["a", "b"]); self.assertEqual(f["material"]["Stahl"], ["c"])
+
+
+class TestLaender(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        os.environ["TRACKER_ROOT"] = str(self.tmp); os.environ["KATALOG_DATA"] = str(self.tmp / "k"); os.environ["ZC_PASSWORD"] = "pw"
+        import importlib
+        import katalog.store, katalog.laender
+        importlib.reload(katalog.store); importlib.reload(katalog.laender)
+        self.store, self.l = katalog.store, katalog.laender
+        page = json.loads((FIX / "plp_sample.json").read_text())["productListPage"]
+        self.l.category_ids = lambda cc, lang: ["c1"]
+        self.l.fetch_category = lambda cc, lang, key: page
+        self.l.ecb_rates = lambda: {"DKK": 7.46}
+        self.l.api.pause = lambda: None
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        for k in ("TRACKER_ROOT", "KATALOG_DATA"):
+            os.environ.pop(k, None)
+
+    def test_country_files_and_matrix(self):
+        self.assertEqual(self.l.main(["--only", "dk,pl"]), 0)
+        idx = self.store.read_bin("intl-index.bin")
+        self.assertEqual(set(idx["countries"]), {"dk", "pl"}); self.assertEqual(idx["rates"]["DKK"], 7.46)
+        m = self.store.read_bin("intl.bin")
+        self.assertEqual([c["cc"] for c in m["countries"]], ["dk", "pl"], "Prioritaetsreihenfolge")
+        self.assertEqual(len(m["ids"]), 4); self.assertEqual(len(m["p"]["dk"]), 4)
+        self.assertEqual(len(m["x"]), 4, "ohne deutsches Sortiment gilt alles als nur im Ausland")
+        # zweiter Lauf: nichts faellig, Daten bleiben
+        self.assertEqual(self.l.main([]), 0)
+        self.assertEqual(len(self.store.read_bin("intl.bin")["ids"]), 4)

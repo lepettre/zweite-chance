@@ -174,6 +174,21 @@
     for (const [id, c] of Object.entries(d.col || {})) { const a = S.kat?.byId.get(id); if (a && !a.col) { a.col = c; a.cols = c.split(/,\s*/).filter(Boolean); } }
     return (S.facets = { by, matBy, ppl, praw, persons, materials: Object.keys(d.material || {}).sort((a, b) => a.localeCompare(b, "de")), n: d.n, raw: Object.keys(d.designer || {}) });
   }
+  // Ländervergleich (k/intl.bin): Preis je Land für jeden Artikel, Wechselkurse der EZB
+  async function loadIntl() {
+    if (S.intl !== undefined) return S.intl;
+    const d = await tryLoad(getK("intl.bin"));
+    if (d === undefined) return null;
+    if (!d || !d.ids?.length) return (S.intl = null);
+    return (S.intl = { ...d, pos: new Map(d.ids.map((x, i) => [x, i])) });
+  }
+  const CN = (() => { try { const dn = new Intl.DisplayNames(["de"], { type: "region" }); return (cc) => dn.of(cc.toUpperCase()); } catch { return (cc) => cc.toUpperCase(); } })();
+  const toEur = (c, v) => { if (v == null) return null; if (c.cur === "EUR") return v; const r = S.intl?.rates?.[c.cur]; return r ? v / r : null; };
+  const local = (c, v) => { try { return new Intl.NumberFormat("de-DE", { style: "currency", currency: c.cur || "EUR", maximumFractionDigits: v >= 1000 ? 0 : 2 }).format(v); } catch { return `${nf(v)} ${c.cur}`; } };
+  function abroad(a) {      // [{c, v, eur}] je Land, in dem es den Artikel gibt
+    const I = S.intl, i = I?.pos.get(a.id); if (i == null) return [];
+    return I.countries.map((c) => ({ c, v: I.p[c.cc]?.[i] })).filter((x) => x.v != null).map((x) => ({ ...x, eur: toEur(x.c, x.v) }));
+  }
   async function loadDetails() {
     if (S.details !== undefined) return S.details;
     const d = await tryLoad(getK("details.bin"));
@@ -297,10 +312,12 @@
       { k: "rabattk", g: "Preis", l: "Reduziert", t: "toggle", txt: "mit durchgestrichenem Vorher-Preis", test: (o) => !!o.prev },
       { k: "neu", g: "Zeit", l: "Neu im Sortiment", pre: "neu seit", t: "single", opts: [["7", "7 Tagen"], ["30", "30 Tagen"], ["90", "90 Tagen"]], test: (o, v) => !!o.first && day(o.first) >= dIso(+v) },
       { k: "fehlt", g: "Wo", l: "Fehlt in Markt", pre: "die fehlen in", need: "R", t: "multi", get: (o) => (S.rng ? S.rng.st.filter((s) => carries(o, s.id) === false).map((s) => s.id) : []), lab: nameOf, ord: (a, b) => (isMine(b) - isMine(a)) || nameOf(a).localeCompare(nameOf(b), "de"), search: true },
+      { k: "ausland", g: "Wo", l: "Andere Länder", need: "I", t: "single", opts: [["10", "im Ausland mind. 10 % günstiger"], ["25", "im Ausland mind. 25 % günstiger"], ["teurer", "in Deutschland am günstigsten"], ["nurde", "in keinem gemessenen Land außer Deutschland"]],
+        test: (o, v) => { const ab = abroad(o); if (v === "nurde") return S.intl?.pos && !ab.length; const e = ab.map((x) => x.eur).filter((x) => x != null); if (!e.length || !o.price) return false; const min = Math.min(...e); return v === "teurer" ? min >= o.price : min <= o.price * (1 - +v / 100); } },
       { k: "fund", g: "Wo", l: "Gerade in der Fundgrube", t: "toggle", txt: "gerade auch in der Fundgrube", test: (o) => fundNow().has(o.no) },
     ],
   };
-  const defsOf = (tab) => DEF[tab].filter((d) => !d.need || (d.need === "R" ? !!S.rng : !!S.facets));
+  const defsOf = (tab) => DEF[tab].filter((d) => !d.need || (d.need === "R" ? !!S.rng : d.need === "I" ? !!S.intl : !!S.facets));
   const on = (v) => !(v == null || v === "" || v === false || (Array.isArray(v) && !v.length) || (typeof v === "object" && !Array.isArray(v) && !v.min && !v.max));
   const ok1 = (d, o, v) => { if (!on(v)) return d.dflt ? d.dflt(o) : true; if (d.t === "multi") return d.get(o).some((x) => v.includes(x)); if (d.t === "range") { const x = d.get(o); return x != null && (!v.min || x >= +v.min) && (!v.max || x <= +v.max); } return d.test(o, v); };
   const hay = (o) => o._h || (o._h = fold(`${o.name || o.title} ${o.kind || o.product_description} ${o.offer_description || ""} ${o.no} ${fNo(o.no)} ${o.col || ""} ${o.market || ""} ${o.cat || ""}`));
@@ -531,6 +548,13 @@
         <dt>Bewertung</dt><dd>${a.rcount ? `${String(a.rating).replace(".", ",")} von 5 · ${nf(a.rcount)} Stimmen` : "–"}</dd><dt>Im Sortiment</dt><dd>${a.first ? `seit ${fD(day(a.first))}` : "schon vor Beginn der Erfassung"}${a.gone ? ` · <span class="up">ausgelistet am ${fD(day(a.gone))}</span>` : ""}${a.last && !a.gone ? " · <b>letzte Chance</b>" : ""}</dd>
         ${S.rng ? `<dt>Märkte</dt><dd>${a.nMk != null ? `${a.nMk} von ${a.nKn}` : "noch nicht gemessen"}${MINE().length ? (missMine.length ? ` · <span class="up">fehlt in ${esc(missMine.map(nameOf).join(", "))}</span>` : " · in deinen Märkten") : ""}</dd>` : ""}</dl>`;
   }
+  function intlSection(a) {
+    if (!S.intl) return "";
+    const ab = abroad(a).sort((x, y) => (x.eur ?? 1e9) - (y.eur ?? 1e9)), missing = S.intl.countries.filter((c) => !ab.some((x) => x.c.cc === c.cc));
+    return `<div class="sec"><div class="h"><h2>In anderen Ländern</h2><span class="kd">${ab.length} von ${S.intl.countries.length} gemessenen Ländern · Kurse der EZB${S.intl.rates?._day ? ` vom ${fD(S.intl.rates._day)}` : ""}</span></div>
+      ${ab.length ? `<div class="tw"><table><thead><tr><th>Land</th><th class="r">Preis dort</th><th class="r">in Euro</th><th class="r">zu Deutschland</th></tr></thead><tbody>${ab.map((x) => { const d = x.eur != null && a.price ? Math.round((x.eur / a.price - 1) * 100) : null; return `<tr><td>${esc(CN(x.c.cc))}</td><td class="r tn">${local(x.c, x.v)}</td><td class="r tn">${x.eur != null ? eur(x.eur) : "–"}</td><td class="r tn ${d == null ? "" : d < 0 ? "dn" : d > 0 ? "up" : ""}">${d == null ? "–" : d === 0 ? "gleich" : `${d > 0 ? "+" : "−"}${Math.abs(d)} %`}</td></tr>`; }).join("")}</tbody></table></div>` : `<p class="kd">In keinem gemessenen Land im Sortiment.</p>`}
+      ${missing.length && ab.length ? `<p class="kd" style="margin-top:8px">Nicht im Sortiment: ${missing.map((c) => esc(CN(c.cc))).join(", ")}</p>` : ""}</div>`;
+  }
   function pageArticle(a) {
     const prods = S.kat.items.filter((x) => !x.stub && x.pk === a.pk), serie = S.kat.items.filter((x) => !x.stub && x.name === a.name);
     const now = fundNow().get(a.no) || [], all = fundAll().get(a.no) || [], c = lastChg(a), D = S.details?.get(a.id), F = S.facets;
@@ -549,6 +573,7 @@
         <div class="btns"><a class="btn" href="${K_P}${esc(a.slug)}/" target="_blank" rel="noopener">Bei IKEA ansehen ↗</a></div></div></div>
       <div class="sec"><div class="h"><h2>Preis und Fundgrube</h2><span class="kd">${a.ph.length - 1} Preisänderung${a.ph.length === 2 ? "" : "en"} · ${all.length} Fundgrube-Angebote${S.repo.archive ? "" : " (Archiv lädt)"}</span></div>${timeline(a, all)}</div>
       ${serie.length > 1 ? `<div class="sec"><div class="h"><h2>${serie.length > prods.length ? `Serie ${esc(a.name)}` : "Farben und Größen"}</h2><span class="kd">wann welche Variante im Sortiment war · antippen zum Wechseln${serie.length > 40 ? " · die 40 jüngsten" : ""}</span></div>${lanes(serie.sort((x, y) => x.kind.localeCompare(y.kind, "de") || (x.col || "").localeCompare(y.col || "", "de")).slice(0, 40), a.id, (x) => (serie.length > prods.length ? `${x.kind}, ${x.col}` : ausOf(x) || x.kind))}</div>` : ""}
+      ${intlSection(a)}
       <div class="sec"><div class="two"><div><div class="h2"><h2>Wo es den Artikel gibt</h2><span class="kd">${S.rng && a.nMk != null ? `${a.nMk} von ${a.nKn} Märkten` : "noch nicht gemessen"}</span></div>${S.rng && a.nMk != null ? `<p style="margin:6px 0 0;line-height:1.7"><span class="kd">${show[0]}:</span> ${show[1].map((s) => `<button class="${isMine(s.id) ? "lnk" : ""}" data-go="#/markt?id=${encodeURIComponent(s.id)}" style="${isMine(s.id) ? "" : "color:var(--ink2)"}">${isMine(s.id) ? "<b>" + esc(s.name) + "</b>" : esc(s.name)}</button>`).join(", ") || "keinem Markt"}</p>` : ""}</div>
         <div id="fg"><div class="h2"><h2>In der Fundgrube</h2></div><p class="sub">${now.length ? "aktuell, deine Märkte und günstigste zuerst" : "gerade kein Angebot"}</p>${now.length ? rowsFund(now.sort((x, y) => (isMine(y.mid) - isMine(x.mid)) || x.price - y.price), false) : ""}${all.length > now.length ? `<p class="kd" style="margin-top:8px">Früher: ${all.length - now.length} Angebote, ${eur(Math.min(...all.map((o) => o.price)))} bis ${eur(Math.max(...all.map((o) => o.price)))}, meist in ${[...all.reduce((m, o) => m.set(o.market, (m.get(o.market) || 0) + 1), new Map())].sort((x, y) => y[1] - x[1]).slice(0, 2).map((x) => esc(x[0])).join(" und ")}. <button class="lnk" data-go="#/produkt?art=${a.no}">alle ansehen</button></p>` : ""}</div></div></div>`;
   }
@@ -630,6 +655,22 @@
       body = `<p class="sub" style="font-size:14px;color:var(--ink2);max-width:72ch">Kollektionen tragen ein Jahr im Namen, etwa IKEA PS 2026 oder STOCKHOLM 2025, und mischen ganz verschiedene Produkte. Manche bleiben mehrere Jahre erhältlich; einzelne Stücke wandern später ohne Jahr ins feste Sortiment ihrer Serie.</p>
         ${ks.length ? `<div class="two"><div><h2>Kollektionen</h2><p class="sub">Artikel im Sortiment · dahinter ausgelistet</p>${bars(ks.map(([n, l]) => [n, l.filter((a) => !a.gone).length, l.some((a) => a.gone) ? `−${l.filter((a) => a.gone).length}` : ""]), { go: (l) => `#/sortiment?coll=${encodeURIComponent(l)}` })}</div><div><h2>Preisspanne</h2><p class="sub">günstigster bis teuerster Artikel</p>${bars(ks.map(([n, l]) => [n, Math.max(...l.map((a) => a.price)), `ab ${eur0(Math.min(...l.map((a) => a.price)))}`]), { fmt: eur0 })}</div></div>
         ${ks.map(([n, l]) => `<div class="sec"><div class="h"><h2>${esc(n)}</h2><span class="kd">${new Set(l.map((a) => a.kind)).size} Produkte · ${l.length} Artikel · ${[...new Set(l.map((a) => a.top))].map(esc).join(", ")}</span></div>${lanes(l.sort((p, q) => p.kind.localeCompare(q.kind, "de") || (p.col || "").localeCompare(q.col || "", "de")).slice(0, 40), null, (p) => `${p.kind}${p.col ? ", " + p.col : ""}`)}</div>`).join("")}` : "<p class='kd'>Keine Kollektion im Sortiment gefunden.</p>"}`;
+    } else if (b === "laender") {
+      const I = S.intl;
+      if (!I) body = `<p class="kd">Noch keine Länderdaten. Die Messung läuft wöchentlich je Land, zuerst Dänemark, Polen, Schweden, Finnland und die Niederlande.</p>`;
+      else {
+        const rows = I.countries.map((c) => { const col = I.p[c.cc] || [], common = [], cheaper = []; let n = 0, only = 0;
+          I.ids.forEach((id, i) => { const v = col[i]; if (v == null) return; n++; const a = S.kat.byId.get(id); if (!a || a.stub || a.gone) { only++; return; } const e = toEur(c, v); if (e != null && a.price) { common.push(e / a.price); if (e < a.price * 0.95) cheaper.push(1); } });
+          return { c, n, only, common: common.length, idx: qn(common, 0.5), cheaper: common.length ? Math.round(cheaper.length / common.length * 100) : null }; });
+        const sel = S.intlCc && I.p[S.intlCc] ? S.intlCc : I.countries[0].cc, col = I.p[sel] || [];
+        const onlyThere = I.ids.map((id, i) => [id, col[i]]).filter(([id, v]) => v != null && !(S.kat.byId.get(id) && !S.kat.byId.get(id).stub && !S.kat.byId.get(id).gone)).slice(0, 200);
+        const cSel = I.countries.find((c) => c.cc === sel);
+        body = `<p class="sub" style="font-size:14px;color:var(--ink2);max-width:72ch">Dieselben IKEA-Listen in anderen Ländern, je Land einmal pro Woche erfasst. Preise in Euro nach EZB-Kurs; Preisniveau = mittleres Verhältnis bei Artikeln, die es auch in Deutschland gibt.</p>
+          <div class="tw"><table><thead><tr><th>Land</th><th class="r">Artikel</th><th class="r">auch in DE</th><th class="r">nur dort</th><th class="r">Preisniveau</th><th class="r">günstiger als DE</th><th class="hide">Stand</th></tr></thead><tbody>${rows.map((r) => `<tr data-intl="${esc(r.c.cc)}" style="cursor:pointer"><td><b>${esc(CN(r.c.cc))}</b> <span class="kd">${esc(r.c.cur)}</span></td><td class="r tn">${nf(r.n)}</td><td class="r tn">${nf(r.common)}</td><td class="r tn">${nf(r.only)}</td><td class="r tn ${r.idx == null ? "" : r.idx < 1 ? "dn" : "up"}">${r.idx == null ? "–" : `${Math.round(r.idx * 100)} %`}</td><td class="r tn">${r.cheaper == null ? "–" : r.cheaper + " % der Artikel"}</td><td class="hide kd">${fD(day(r.c.updated))}</td></tr>`).join("")}</tbody></table></div>
+          <p class="kd" style="margin-top:6px">Preisniveau 100 % = wie in Deutschland. Zeile antippen zeigt unten die Artikel, die es nur dort gibt.</p>
+          <div class="sec"><div class="h"><h2>Nur in ${esc(CN(sel))}, nicht in Deutschland</h2><span class="kd">${nf(rows.find((r) => r.c.cc === sel)?.only || 0)} Artikel${onlyThere.length === 200 ? " · die ersten 200" : ""}</span></div>
+          <div class="tw"><table><tbody>${onlyThere.map(([id, v]) => { const x = I.x[id] || ["", "", "", "", "", ""]; return `<tr><td class="im">${x[2] ? img(`${x[2]}?f=xs`) : ""}</td><td><div class="nm">${esc(x[0])} <span style="font-weight:400">${esc(x[1])}</span></div><div class="kd">${esc((x[5] || "").split(" › ").slice(0, 2).join(" › "))}</div></td><td class="r tn">${local(cSel, v)}${toEur(cSel, v) != null && cSel.cur !== "EUR" ? `<div class="kd">${eur(toEur(cSel, v))}</div>` : ""}</td><td>${x[4] ? `<a class="lnk" href="${esc(x[4])}" target="_blank" rel="noopener">bei IKEA</a>` : ""}</td></tr>`; }).join("")}</tbody></table></div></div>`;
+      }
     } else if (b === "designer") {
       const F = S.facets;
       if (!F) body = `<p class="kd">Details (Designer, Material) sind noch nicht abgerufen.</p>`;
@@ -677,7 +718,7 @@
           <div><h2>Farben</h2><p class="sub">Angebote je Farbe, soweit der Artikel bekannt ist</p>${bars([...every.reduce((m, o) => { (o.art?.cols || []).forEach((c) => m.set(c, (m.get(c) || 0) + 1)); return m; }, new Map())].sort((a, b2) => b2[1] - a[1]).slice(0, 10), { pre: sq_ })}</div>
           <div><h2>Neu eingestellt nach Wochentag</h2><p class="sub">ohne Startbestand</p>${bars(["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map((w, k) => [w, all.filter((o) => (new Date(o.first_seen).getDay() + 6) % 7 === k).length]))}</div></div>`;
     }
-    return `<h1>Analyse</h1><div class="anav" role="group" aria-label="Bereich">${nav.map(([k, l]) => `<button data-go="#/analyse?b=${k}" aria-pressed="${b === k}">${l}</button>`).join("")}<button disabled title="kommt später">Länder</button></div>${body}`;
+    return `<h1>Analyse</h1><div class="anav" role="group" aria-label="Bereich">${nav.map(([k, l]) => `<button data-go="#/analyse?b=${k}" aria-pressed="${b === k}">${l}</button>`).join("")}<button data-go="#/analyse?b=laender" aria-pressed="${b === "laender"}">Länder</button></div>${body}`;
   }
   async function pageDaten() {
     const meta = S.repo.meta, km = S.kat.meta;
@@ -738,7 +779,8 @@
       if (katNow.failed) { S.kat = katNow; for (const o of FALL()) linkOffer(o); } else if (S.kat?.failed) S.kat = katNow;
       const detailPage = ["artikel", "angebot", "produkt"].includes(name);
       const needR = ["sortiment", "markt", "analyse", "start"].includes(name) || detailPage, needF = ["sortiment", "analyse", "start"].includes(name) || detailPage;
-      await Promise.all([needR ? loadRange() : null, needF ? loadFacets() : null, detailPage ? loadDetails() : null]);
+      const needI = ["sortiment", "artikel"].includes(name) || (name === "analyse" && p.get("b") === "laender");
+      await Promise.all([needR ? loadRange() : null, needF ? loadFacets() : null, detailPage ? loadDetails() : null, needI ? loadIntl() : null]);
       const needArch = (name === "fundgrube" && S.f.fund.zeit) || ["artikel", "produkt", "angebot"].includes(name) || (name === "analyse" && p.get("b") === "fundgrube") || (name === "start" && !S.repo.archive);
       if (needArch && !S.repo.archive) loadArchive().then(() => { memo.clear(); for (const o of FALL()) linkOffer(o); render(); }).catch((e) => console.warn(e));
       let page;
@@ -776,7 +818,7 @@
     const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" })); a.download = `zweite-chance_${tab === "fund" ? "fundgrube" : "sortiment"}_${TODAY}.csv`; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   }
   document.addEventListener("click", async (e) => {
-    const t = e.target.closest("button,[data-go],[data-runsearch],th[data-sortby],label[data-addk]");
+    const t = e.target.closest("button,[data-go],[data-runsearch],th[data-sortby],label[data-addk],[data-intl]");
     if (S.open && !e.target.closest(".pop") && !(t && t.dataset.pop)) { S.open = null; S.sq = {}; if (!t) return rerender(); }
     if (!t || t.tagName === "A") return;
     const d = t.dataset, tab = tabKey();
@@ -805,6 +847,7 @@
     if (d.view) { S.view[tab] = d.view; lsSet(LS.view, S.view); return rerender(); }
     if (d.grp) { S.grp = d.grp; return rerender(); }
     if (d.ov) { S.ovIkea = d.ov === "1"; return rerender(); }
+    if (d.intl) { S.intlCc = d.intl; return rerender(); }
     if (d.heat) { S.heatSort = d.heat; return rerender(); }
     if (d.scroll) { document.getElementById(d.scroll)?.scrollIntoView({ behavior: "smooth" }); return; }
     if (d.export) return exportCSV(d.export);
