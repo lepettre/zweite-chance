@@ -302,3 +302,9 @@ tr.bsub td.im{padding-left:14px}
 .ihl span{white-space:nowrap}.ihl b{font-weight:600;color:var(--ink)}.ihl i{font-style:normal}
 tr.bsum td.dn{white-space:nowrap}
 main.wx>.two:first-child,main.wx>.anav:first-child,main.wx>p:first-child{margin-top:18px}
+/* 2.18: Serie auf der Artikelseite als Kacheln je Produkt */
+.tg2{font:700 13px var(--f);margin:16px 0 0}
+.imgs.sm{grid-template-columns:repeat(auto-fill,minmax(104px,1fr));margin-top:6px;background:none;border:0;gap:6px}
+.imgs.sm>div{padding:6px;border:1px solid var(--rule)}.imgs.sm .k{color:var(--ink2)}.imgs.sm .p .pr{font-size:15px}
+.imgs.sm>div.cur{outline:2px solid var(--ink);outline-offset:-2px}
+.imgs.sm>div.gone img{opacity:.45}

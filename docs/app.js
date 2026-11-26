@@ -2,7 +2,7 @@
    Datenschicht wie bisher (verschlüsselte Dateien unter d/ und k/, Merkliste über den Worker). Die alte Oberfläche liegt unter alt.html. */
 (function () {
   "use strict";
-  const APP_VERSION = "2.17";       // bei jeder Änderung erhöhen und im Handbuch-Changelog eintragen
+  const APP_VERSION = "2.18";       // bei jeder Änderung erhöhen und im Handbuch-Changelog eintragen
   /* ================= Grundlagen ================= */
   const $ = (s, el = document) => el.querySelector(s);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -590,6 +590,17 @@
         <dt>Bewertung</dt><dd>${a.rcount ? `${String(a.rating).replace(".", ",")} von 5 · ${nf(a.rcount)} Stimmen` : "–"}</dd><dt>Im Sortiment</dt><dd>${a.first ? `seit ${fD(day(a.first))}` : "schon vor Beginn der Erfassung"}${a.gone ? ` · <span class="up">ausgelistet am ${fD(day(a.gone))}</span>` : ""}${a.last && !a.gone ? " · <b>letzte Chance</b>" : ""}</dd>
         ${S.rng ? `<dt>Märkte</dt><dd>${a.nMk != null ? `${a.nMk} von ${a.nKn}` : "noch nicht gemessen"}${MINE().length ? (missMine.length ? ` · <span class="up">fehlt in ${esc(missMine.map(nameOf).join(", "))}</span>` : " · in deinen Märkten") : ""}</dd>` : ""}</dl>`;
   }
+  // Serie auf der Artikelseite: Kacheln je Produkt (alle Farben/Größen), Zeitleiste nur für Varianten, die neu kamen oder gingen
+  function serieTiles(a, serie, prods) {
+    if (serie.length < 2) return "";
+    const byKind = new Map(); for (const x of serie.slice().sort((p, q) => (p.gone ? 1 : 0) - (q.gone ? 1 : 0) || p.price - q.price)) byKind.set(x.kind, [...(byKind.get(x.kind) || []), x]);
+    const kinds = [...byKind].sort((p, q) => (q[0] === a.kind) - (p[0] === a.kind) || q[1].length - p[1].length);
+    const tile = (x) => { const n = fundNow().get(x.no)?.length || 0; return `<div data-go="#/artikel?id=${encodeURIComponent(x.id)}" class="${x.id === a.id ? "cur" : ""}${x.gone ? " gone" : ""}">${img(x.thumb)}<div class="k">${esc(ausOf(x) || "–")}</div><div class="p">${pr(x.price)}</div><div class="f">${x.first ? `<span class="chip">neu ${fS(day(x.first))}</span> ` : ""}${x.gone ? `<span class="chip up">ausgelistet</span> ` : ""}${n ? `<b>${n} in der Fundgrube</b>` : ""}</div></div>`; };
+    const chg = serie.filter((x) => x.first || x.gone);
+    return `<div class="sec"><div class="h"><h2>${serie.length > prods.length ? `Serie ${esc(a.name)}` : "Farben und Größen"}</h2><span class="kd">${byKind.size} ${byKind.size === 1 ? "Produkt" : "Produkte"} · ${serie.length} Artikel${chg.length ? ` · ${chg.length} neu oder ausgelistet seit Beginn` : ""}</span></div>
+      ${kinds.map(([k, l]) => `<div class="tg2">${esc(k)} <span class="kd">${l.length}</span></div><div class="imgs sm">${l.map(tile).join("")}</div>`).join("")}
+      ${chg.length ? `<h2 style="margin-top:20px">Neu oder ausgelistet</h2>${lanes(chg.sort((p, q) => (day(q.first || q.gone) || "").localeCompare(day(p.first || p.gone) || "")).slice(0, 30), a.id, (x) => [x.kind, ausOf(x)].filter(Boolean).join(", "))}` : ""}</div>`;
+  }
   function pageArticle(a) {
     const prods = S.kat.items.filter((x) => !x.stub && x.pk === a.pk), serie = S.kat.items.filter((x) => !x.stub && x.name === a.name);
     const now = fundNow().get(a.no) || [], all = fundAll().get(a.no) || [], c = lastChg(a), D = S.details?.get(a.id), F = S.facets;
@@ -608,7 +619,7 @@
         ${coreFacts(a)}
         <div class="btns"><a class="btn" href="${K_P}${esc(a.slug)}/" target="_blank" rel="noopener">Bei IKEA ansehen ↗</a></div></div></div>
       <div class="sec"><div class="h"><h2>Preis und Fundgrube</h2><span class="kd">${a.ph.length - 1} Preisänderung${a.ph.length === 2 ? "" : "en"} · ${all.length} Fundgrube-Angebote${S.repo.archive ? "" : " (Archiv lädt)"}</span></div>${timeline(a, all)}</div>
-      ${serie.length > 1 ? `<div class="sec"><div class="h"><h2>${serie.length > prods.length ? `Serie ${esc(a.name)}` : "Farben und Größen"}</h2><span class="kd">wann welche Variante im Sortiment war · antippen zum Wechseln${serie.length > 40 ? " · die 40 jüngsten" : ""}</span></div>${lanes(serie.sort((x, y) => x.kind.localeCompare(y.kind, "de") || (x.col || "").localeCompare(y.col || "", "de")).slice(0, 40), a.id, (x) => (serie.length > prods.length ? `${x.kind}, ${x.col}` : ausOf(x) || x.kind))}</div>` : ""}
+      ${serieTiles(a, serie, prods)}
       <div class="sec"><div class="two"><div><div class="h2"><h2>Wo es den Artikel gibt</h2><span class="kd">${S.rng && a.nMk != null ? `${a.nMk} von ${a.nKn} Märkten` : "noch nicht gemessen"}</span></div>${S.rng && a.nMk != null ? `<p style="margin:6px 0 0;line-height:1.7"><span class="kd">${show[0]}:</span> ${show[1].map((s) => `<button class="${isMine(s.id) ? "lnk" : ""}" data-go="#/markt?id=${encodeURIComponent(s.id)}" style="${isMine(s.id) ? "" : "color:var(--ink2)"}">${isMine(s.id) ? "<b>" + esc(s.name) + "</b>" : esc(s.name)}</button>`).join(", ") || "keinem Markt"}</p>` : ""}</div>
         <div id="fg"><div class="h2"><h2>In der Fundgrube</h2></div><p class="sub">${now.length ? "aktuell, deine Märkte und günstigste zuerst" : "gerade kein Angebot"}</p>${now.length ? rowsFund(now.sort((x, y) => (isMine(y.mid) - isMine(x.mid)) || x.price - y.price), false) : ""}${all.length > now.length ? `<p class="kd" style="margin-top:8px">Früher: ${all.length - now.length} Angebote, ${eur(Math.min(...all.map((o) => o.price)))} bis ${eur(Math.max(...all.map((o) => o.price)))}, meist in ${[...all.reduce((m, o) => m.set(o.market, (m.get(o.market) || 0) + 1), new Map())].sort((x, y) => y[1] - x[1]).slice(0, 2).map((x) => esc(x[0])).join(" und ")}. <button class="lnk" data-go="#/produkt?art=${a.no}">alle ansehen</button></p>` : ""}</div></div></div>`;
   }
