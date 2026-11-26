@@ -36,6 +36,12 @@ class TestSubs(unittest.TestCase):
         self.assertIn("Preis gesenkt", msgs[0]); self.assertIn("ausgelistet", msgs[1])
         self.assertEqual(self.subs.catalog_messages(rules, self.db, "2026-11-20", self.des, keys), [], "nicht doppelt")
 
+    def test_anlernphase_kein_neu(self):
+        ev = lambda b: [k for k, o in self.subs.catalog_events(self.db, "2026-11-20", b) if k == "neu"]
+        self.assertEqual(ev(""), [], "Anlernphase: nichts ist neu")
+        self.assertEqual(ev("2026-11-20"), [], "bis einschliesslich Ende der Anlernphase Startbestand")
+        self.assertEqual(len(ev("2026-11-10")), 1, "danach neu")
+
 
 class TestRuleKeys(unittest.TestCase):
     def test_folgen_und_filter_keine_duplikate(self):

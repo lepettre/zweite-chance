@@ -53,14 +53,15 @@ def label(rule: dict) -> str:
     return {"des": "Designer", "serie": "Serie", "koll": "Kollektion"}.get(s.get("k"), "") + " " + s.get("v", "")
 
 
-def catalog_events(db: dict, day: str) -> list[tuple[str, dict]]:
-    """Ereignisse dieses Sortimentslaufs: neu, ausgelistet, Preis gesenkt/erhoeht."""
+def catalog_events(db: dict, day: str, baseline: str | None = None) -> list[tuple[str, dict]]:
+    """Ereignisse dieses Sortimentslaufs: neu, ausgelistet, Preis gesenkt/erhoeht.
+    baseline: Ende der Anlernphase; "" = Anlernphase laeuft (nichts ist neu), None = nicht beruecksichtigen."""
     first = min((o["first_seen"] for o in db.values()), default=day)
     ev = []
     for o in db.values():
         if o.get("status") == "stub":
             continue
-        if o["first_seen"] == day and day > first:
+        if o["first_seen"] == day and day > first and (baseline is None or (baseline and day > baseline)):
             ev.append(("neu", o))
         if [day, "gone"] in (o.get("log") or []):
             ev.append(("ausgelistet", o))
@@ -74,11 +75,11 @@ def _eur(v) -> str:
     return "–" if v is None else f"{v:,.2f} €".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def catalog_messages(rules: list[dict], db: dict, day: str, designer: dict, sent_keys: dict) -> list[str]:
+def catalog_messages(rules: list[dict], db: dict, day: str, designer: dict, sent_keys: dict, baseline: str | None = None) -> list[str]:
     subs = [r for r in rules if r.get("sub") and r.get("enabled") is not False and r.get("notify") is not False]
     if not subs:
         return []
-    ev, msgs = catalog_events(db, day), []
+    ev, msgs = catalog_events(db, day, baseline), []
     for r in subs:
         lines = []
         for kind, o in ev:
@@ -98,7 +99,7 @@ def catalog_messages(rules: list[dict], db: dict, day: str, designer: dict, sent
     return msgs
 
 
-def notify_catalog(db: dict, day: str) -> int:
+def notify_catalog(db: dict, day: str, baseline: str | None = "") -> int:
     """Nach dem taeglichen Sortimentslauf: Meldungen fuer gefolgte Designer/Serien/Kollektionen senden."""
     from katalog import store
     from . import watch
@@ -111,7 +112,7 @@ def notify_catalog(db: dict, day: str) -> int:
     designer = {k: set(v) for k, v in (facets.get("designer") or {}).items()}
     log = store.read_bin("subsent.bin", {}) or {}
     keys = log.setdefault("keys", {})
-    msgs = catalog_messages(rules, db, day, designer, keys)
+    msgs = catalog_messages(rules, db, day, designer, keys, baseline or "")
     token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
     sent = 0
     for m in msgs:
