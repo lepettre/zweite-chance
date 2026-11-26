@@ -2,7 +2,7 @@
    Datenschicht wie bisher (verschlüsselte Dateien unter d/ und k/, Merkliste über den Worker). Die alte Oberfläche liegt unter alt.html. */
 (function () {
   "use strict";
-  const APP_VERSION = "2.19";       // bei jeder Änderung erhöhen und im Handbuch-Changelog eintragen
+  const APP_VERSION = "2.20";       // bei jeder Änderung erhöhen und im Handbuch-Changelog eintragen
   /* ================= Grundlagen ================= */
   const $ = (s, el = document) => el.querySelector(s);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -605,10 +605,10 @@
   // Kern-Details eines Sortimentsartikels – auf jeder Artikel-, Angebots- und Produktseite gleich
   function coreFacts(a, extra = "") {
     if (!a) return extra ? `<dl class="kv">${extra}</dl>` : "";
-    const D = S.details?.get(a.id), F = S.facets, people = F?.ppl.get(a.id) || (D?.designer ? [D.designer] : []);
+    const D = S.details?.get(a.id), F = S.facets, dOk = D?.dv === "2", people = dOk ? F?.ppl.get(a.id) || (D.designer ? [D.designer] : []) : [];
     const missMine = S.rng ? MINE().filter((m) => carries(a, m) === false) : [];
     return `${D?.desc ? `<p class="kd" style="margin:12px 0 0;max-width:62ch;color:var(--ink2)">${esc(D.desc)}</p>` : ""}
-      <dl class="kv">${extra}<dt>Design</dt><dd>${people.length && !IOS.test(people[0]) ? people.map((n) => `<button class="lnk" data-desfilter="${esc(n)}">${esc(n)}</button> ${followBtn("des", n)}`).join(", ") + (D?.designer && people.join("/") !== D.designer ? ` <span class="kd">(bei IKEA: ${esc(D.designer)})</span>` : "") : D || F?.by.has(a.id) ? "<span class='kd'>kein Name genannt (IKEA of Sweden)</span>" : "<span class='kd'>noch nicht abgerufen</span>"}</dd>
+      <dl class="kv">${extra}<dt>Design</dt><dd>${people.length && !IOS.test(people[0]) ? people.map((n) => `<button class="lnk" data-desfilter="${esc(n)}">${esc(n)}</button> ${followBtn("des", n)}`).join(", ") + (D?.designer && people.join("/") !== D.designer ? ` <span class="kd">(bei IKEA: ${esc(D.designer)})</span>` : "") : dOk ? "<span class='kd'>kein Name genannt (IKEA of Sweden)</span>" : D ? "<span class='kd'>wird neu geprüft</span>" : "<span class='kd'>noch nicht abgerufen</span>"}</dd>
         ${D?.material ? `<dt>Material</dt><dd>${esc(D.material)}</dd>` : ""}<dt>Farbe/Größe</dt><dd>${esc(ausOf(a) || "–")}${a.nvar > 1 ? ` <span class="kd">· ${a.nvar} Farben/Größen insgesamt</span>` : ""}</dd>${D && (D.w || D.h || D.d) ? `<dt>Maße</dt><dd>${esc([D.w && `B ${D.w}`, D.h && `H ${D.h}`, D.d && `T ${D.d}`].filter(Boolean).join(" · "))}</dd>` : ""}
         <dt>Kategorie</dt><dd><button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top] }))}">${esc(a.top)}</button>${a.sub ? ` › <button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top], sub: [a.sub] }))}">${esc(a.sub)}</button>` : ""}${a.sub2 ? ` › <button class="lnk" data-crumb="${esc(JSON.stringify({ bereich: [a.top], sub: [a.sub], sub2: [a.sub2] }))}">${esc(a.sub2)}</button>` : ""}</dd>
         <dt>Serie</dt><dd><button class="lnk" data-crumb="${esc(JSON.stringify({ q: seriesOf(a) }))}">${esc(seriesOf(a))}</button> ${followBtn("serie", seriesOf(a))}</dd>
@@ -631,7 +631,7 @@
   function pageArticle(a) {
     const prods = S.kat.items.filter((x) => !x.stub && x.pk === a.pk), serie = S.kat.items.filter((x) => !x.stub && x.name === a.name);
     const now = fundNow().get(a.no) || [], all = fundAll().get(a.no) || [], c = lastChg(a), D = S.details?.get(a.id), F = S.facets;
-    const people = F?.ppl.get(a.id) || (D?.designer ? [D.designer] : []);
+    const people = D?.dv === "2" ? F?.ppl.get(a.id) || (D.designer ? [D.designer] : []) : [];
     const missMine = S.rng ? MINE().filter((m) => carries(a, m) === false) : [];
     const gallery = [...new Set([a.img, a.ctx, ...((D?.imgs || "").split("|"))].filter(Boolean))].slice(0, 8);
     const yes = S.rng ? S.rng.st.filter((s) => carries(a, s.id)) : [], no = S.rng ? S.rng.st.filter((s) => carries(a, s.id) === false) : [];

@@ -18,11 +18,22 @@ from datetime import date, datetime, timedelta, timezone
 
 from . import api, model, store
 
-FIELDS = ["designer", "desc", "material", "color", "w", "h", "d", "imgs", "cat", "day", "ok"]
+FIELDS = ["designer", "desc", "material", "color", "w", "h", "d", "imgs", "cat", "day", "ok", "dv", "dalt"]
+# dv = "2": Designer ist der, den IKEA fuer die EIGENE Artikelnummer nennt (designerName neben productId).
+# Aeltere Zeilen (dv leer) nahmen den ersten Designer der Seite, das konnte ein empfohlenes Produkt sein -> nicht mehr anzeigen.
+# dalt: frueher erkannter Designer, falls er sich dadurch aendert (bleibt erhalten).
+DV = "2"
 
 
-def parse_page(html: str) -> dict:
-    """Produktseite -> {designer, desc, material, color, w, h, d, imgs}. Fehlende Angaben bleiben leer."""
+def own_designer(html: str, own: str) -> str | None:
+    """Designer, den IKEA fuer genau diese Artikelnummer nennt; None, wenn die Seite keine Angabe dazu hat."""
+    m = re.search(r'"designerName":"((?:[^"\\]|\\.)*)"[^{]{0,400}?"productId":"' + re.escape(own.lstrip("s")) + '"', html)
+    return json.loads('"' + m.group(1) + '"').strip() if m else None
+
+
+def parse_page(html: str, own: str | None = None) -> dict:
+    """Produktseite -> {designer, desc, material, color, w, h, d, imgs}. Fehlende Angaben bleiben leer.
+    own = Artikelnummer der Seite: Designer nur aus der Angabe zu genau diesem Artikel."""
     out = {k: "" for k in FIELDS if k not in ("day", "ok")}
     for m in re.finditer(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', html, flags=re.S):
         try:
@@ -43,6 +54,10 @@ def parse_page(html: str) -> dict:
             urls = [i if isinstance(i, str) else (i or {}).get("contentUrl", "") for i in imgs]
             out["imgs"] = "|".join(u.replace(model.IMG_PREFIX, "").split("?")[0] for u in urls[:8] if u)
             break
+    if own:
+        dn = own_designer(html, own)
+        out["designer"], out["dv"] = (dn or "", DV) if dn is not None else ("", "")
+        return out
     i = html.find('"designer":{')
     if i >= 0:
         try:
@@ -80,7 +95,7 @@ def unpack(d: dict | None) -> dict:
 def facets(rows: dict, db: dict | None = None) -> dict:
     by: dict[str, list[str]] = {}
     for k, r in sorted(rows.items()):
-        if r.get("designer"):
+        if r.get("designer") and r.get("dv") == DV:          # nur Designer, die IKEA fuer genau diesen Artikel nennt
             by.setdefault(r["designer"], []).append(k)
     mat: dict[str, list[str]] = {}
     for k, r in sorted(rows.items()):
@@ -97,8 +112,11 @@ def facets(rows: dict, db: dict | None = None) -> dict:
 def pick(db: dict, have: dict, limit: int, max_age_days: int, today: str) -> list[str]:
     """Erst Artikel ohne Details (neueste zuerst), dann die am laengsten nicht aufgefrischten."""
     todo = sorted((i for i, o in db.items() if o["status"] == "active" and o.get("slug") and i not in have), key=lambda i: db[i]["first_seen"], reverse=True)
-    # danach: Artikel ohne Kategorie, deren Details noch keinen Kategoriepfad haben
+    # dann: Artikel, deren Designer noch nach dem alten Verfahren erkannt wurde (dv fehlt)
     seen = set(todo)
+    redo = sorted((i for i, o in db.items() if o["status"] == "active" and o.get("slug") and i in have and have[i].get("ok") and have[i].get("dv") != DV), key=lambda i: (not have[i].get("designer"), i))
+    todo += redo; seen |= set(redo)
+    # danach: Artikel ohne Kategorie, deren Details noch keinen Kategoriepfad haben
     todo += [i for i, o in db.items() if o["status"] == "active" and o.get("slug") and not o.get("cat") and i in have and not have[i].get("cat") and i not in seen]
     if len(todo) < limit:
         cutoff = (date.fromisoformat(today) - timedelta(days=max_age_days)).isoformat()
@@ -129,9 +147,11 @@ def main(argv=None) -> int:
             return
         try:
             html = api.get(f"{api.BASE}/de/de/p/{db[i]['slug']}/", timeout=60).decode("utf-8", "replace")
-            r = parse_page(html)
+            r = parse_page(html, i)
             with lock:
-                have[i] = {**r, "day": today, "ok": "1"}
+                prev = have.get(i) or {}
+                alt = prev.get("dalt") or (prev.get("designer") if prev.get("designer") and prev.get("designer") != r["designer"] else "")
+                have[i] = {**r, "day": today, "ok": "1", "dalt": alt or ""}
                 n_ok[0] += 1
         except api.Blocked as ex:
             blocked.set()
