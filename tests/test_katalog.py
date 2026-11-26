@@ -237,6 +237,17 @@ class TestDetails(unittest.TestCase):
         self.assertEqual(r["material"], "Holz (inkl. Verbundmaterial)"); self.assertEqual((r["w"], r["h"], r["d"]), ("80 cm", "202 cm", "28 cm"))
         self.assertTrue(r["imgs"].count("|") >= 1)
 
+    def test_designer_nur_eigener_artikel(self):
+        page = ('<script>{"designer":{"label":"Designer","name":"K Hagberg/M Hagberg"}}</script>'
+                '{"designerLabel":"Designer","designerName":"IKEA of Sweden","labelClosed":"x","labelOpen":"y"},"productId":"00621354","title":"t"}'
+                '{"designerLabel":"Designer","designerName":"Sabine Marcelis","labelClosed":"x"},"productId":"00531532"}')
+        r = self.d.parse_page(page, "00621354")
+        self.assertEqual((r["designer"], r["dv"]), ("IKEA of Sweden", "2"), "nicht der Designer eines anderen Produkts")
+        self.assertEqual(self.d.parse_page(page, "00531532")["designer"], "Sabine Marcelis")
+        self.assertEqual(self.d.parse_page(page, "s99999999")["dv"], "", "ohne Angabe: ungeprueft")
+        fac = self.d.facets({"a": {"designer": "X", "dv": "2"}, "b": {"designer": "Y"}})
+        self.assertEqual(fac["designer"], {"X": ["a"]}, "alte Zuordnungen nicht in den Facetten")
+
     def test_pack_roundtrip_and_pick(self):
         rows = {"a": {**self.d.parse_page(self.page), "day": "2026-11-01", "ok": "1"}, "b": {"day": "2026-01-01", "ok": "1"}}
         self.assertEqual(self.d.unpack(self.d.pack(rows))["a"]["designer"], "Gillis Lundgren")
@@ -254,7 +265,8 @@ class TestDetails(unittest.TestCase):
             calls.append(url)
             if "knivshult" in url:
                 raise FileNotFoundError(url)
-            return self.page.encode()
+            own = url.rstrip("/").rsplit("-", 1)[-1].lstrip("s")
+            return (self.page + '{"designerName":"Gillis Lundgren","labelClosed":"x"},"productId":"' + own + '"}').encode()
         self.api.get = fake
         self.assertEqual(self.d.main(["--limit", "3"]), 0)
         have = self.d.unpack(self.store.read_bin("details.bin"))
@@ -265,8 +277,8 @@ class TestDetails(unittest.TestCase):
 class TestFacets(unittest.TestCase):
     def test_facets(self):
         from katalog import details
-        f = details.facets({"a": {"designer": "X", "material": "Holz (inkl. Verbundmaterial)"}, "b": {"designer": "", "material": "holz, Metall"},
-                            "c": {"designer": "X", "material": "Stahl"}, "d": {"designer": "Y"}})
+        f = details.facets({"a": {"designer": "X", "dv": "2", "material": "Holz (inkl. Verbundmaterial)"}, "b": {"designer": "", "material": "holz, Metall"},
+                            "c": {"designer": "X", "dv": "2", "material": "Stahl"}, "d": {"designer": "Y", "dv": "2"}})
         self.assertEqual(f["designer"], {"X": ["a", "c"], "Y": ["d"]}); self.assertEqual(f["n"], 4)
         self.assertEqual(f["material"]["Holz"], ["a", "b"]); self.assertEqual(f["material"]["Stahl"], ["c"])
 
