@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zugang (alte Ansicht)</title>
+<meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#16181D">
+<link rel="stylesheet" href="styles-alt.css?v=1e78dff">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Zweite Chance">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+</head>
+<body class="locked">
+<div id="login" class="login" hidden>
+  <form id="login-form" autocomplete="on">
+    <h1>Zugang</h1>
+    <label class="sr" for="login-pw">Passwort</label>
+    <input id="login-pw" class="inp" type="password" autocomplete="current-password" placeholder="Passwort" required>
+    <button class="btn btn--primary" type="submit">Öffnen</button>
+    <p id="login-msg" role="status"></p>
+  </form>
+</div>
+<a class="skip" href="#view">Zum Inhalt springen</a>
+<header class="masthead">
+  <div class="masthead__inner">
+    <a class="brand" href="#/aktuell" aria-label="Zweite-Chance-Monitor, Startseite">
+      <svg class="brand__tag" viewBox="0 0 40 24" aria-hidden="true"><path d="M1 1h27l11 11-11 11H1z"/><circle cx="8" cy="12" r="2.6"/></svg>
+      <span class="brand__name">Zweite&#8209;Chance&#8209;Monitor</span>
+      <span class="brand__sub">IKEA Deutschland · inoffiziell</span>
+    </a>
+    <p class="status" id="status" aria-live="polite">Lade Daten …</p>
+  </div>
+  <nav class="tabs" aria-label="Hauptnavigation">
+    <a href="#/aktuell" data-tab="aktuell">Aktuell <span class="tabs__n" id="n-aktuell"></span></a>
+    <a href="#/archiv" data-tab="archiv">Archiv</a>
+    <a href="#/aktuell?m=all" data-tab="gemerkt">Gemerkt <span class="tabs__n tabs__n--hit" id="n-hits"></span></a>
+    <a href="#/maerkte" data-tab="maerkte">Märkte</a>
+    <a href="#/katalog" data-tab="katalog">Katalog</a>
+    <a href="#/sortiment" data-tab="sortiment">Sortiment</a>
+    <a href="#/statistik" data-tab="statistik">Statistik</a>
+    <a href="#/daten" data-tab="daten">Daten &amp; Methodik</a>
+    <a href="./" style="color:#FFDB00">Neue Ansicht ›</a>
+  </nav>
+</header>
+<main id="view" tabindex="-1"></main>
+<dialog id="detail" aria-labelledby="detail-title"></dialog>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+<footer class="foot">
+  Privates Projekt, nicht mit IKEA verbunden. Angaben ohne Gewähr – Verfügbarkeit immer bei IKEA prüfen.
+</footer>
+<script src="core.js?v=1e78dff"></script>
+<script src="app-alt.js?v=1e78dff"></script>
+</body>
+</html>
